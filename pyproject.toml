@@ -1,0 +1,29 @@
+[project]
+name = "bazaar"
+version = "0.1.0"
+description = "Seller and buyer agents negotiate commodity trades, learning from historical transactions."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.8",
+    "pydantic-ai-slim>=1.0",
+]
+
+[project.scripts]
+bazaar = "bazaar.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bazaar"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
