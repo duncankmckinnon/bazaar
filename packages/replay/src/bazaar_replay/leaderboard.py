@@ -17,9 +17,9 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationErro
 
 from bazaar_replay.comparison import MismatchCode
 
-# The runner writes "baseline-buy-and-hold"; earlier drafts used "baseline:buy-and-hold-v1".
-BASELINE_PREFIXES = ("baseline:", "baseline-")
-REFERENCE_POLICY = "buy-and-hold"
+# Runner policy_ref names: scripted-momentum-v1, baseline-buy-and-hold, baseline-cash-only.
+BASELINE_PREFIX = "baseline-"
+REFERENCE_PREFIX = "baseline-buy-and-hold"
 SCORE_STATUSES = ("scored", "pending", "failed", "unsupported")
 
 
@@ -132,12 +132,11 @@ class Run(ReadModel):
 
     @property
     def is_baseline(self) -> bool:
-        return self.policy_ref.startswith(BASELINE_PREFIXES)
+        return self.policy_ref.startswith(BASELINE_PREFIX)
 
     @property
     def is_reference(self) -> bool:
-        policy = self.policy_ref
-        return any(policy.startswith(prefix + REFERENCE_POLICY) for prefix in BASELINE_PREFIXES)
+        return self.policy_ref.startswith(REFERENCE_PREFIX)
 
     @property
     def failure(self) -> str | None:

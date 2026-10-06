@@ -103,12 +103,16 @@ def demo_runs(runs_dir):
         runs_dir, "cash", policy_ref="baseline-cash-only", period_return="0", orders=(), scores=()
     )
     write_run(
-        runs_dir, "null-return", policy_ref="scripted-null-v1", period_return=None, reconciled=False
+        runs_dir,
+        "null-return",
+        policy_ref="scripted-momentum-v1",
+        period_return=None,
+        reconciled=False,
     )
     write_run(
         runs_dir,
         "crashed",
-        policy_ref="scripted-crash-v1",
+        policy_ref="scripted-momentum-v1",
         period_return=None,
         status="failed",
         failure="decide timed out at event 7",
@@ -116,7 +120,7 @@ def demo_runs(runs_dir):
     write_run(
         runs_dir,
         "other-period",
-        policy_ref="scripted-q3-v1",
+        policy_ref="scripted-momentum-v1",
         period_return="0.0900",
         period_start="2026-02-03T14:30:00Z",
     )
@@ -217,13 +221,14 @@ def test_mismatched_or_unreadable_evaluation_is_invalid(tmp_path):
     assert ids(board.ranked) == ["bh"]
 
 
-def test_colon_prefixed_baseline_is_the_reference(tmp_path):
-    write_run(tmp_path, "bh", policy_ref="baseline:buy-and-hold-v1", period_return="0.01")
-    write_run(tmp_path, "agent", policy_ref="scripted-momentum-v1", period_return="0.03")
-    board = load_board(tmp_path)
+def test_only_the_runner_baseline_prefix_marks_a_baseline(tmp_path):
+    write_run(tmp_path, "bh", policy_ref="baseline-buy-and-hold", period_return="0.01")
+    write_run(tmp_path, "colon", policy_ref="baseline:buy-and-hold-v1", period_return="0.03")
+    rows = {e.run_id: e for e in load_board(tmp_path).ranked}
 
-    assert board.reference_run_id == "bh"
-    assert board.ranked[0].excess_vs_buy_and_hold == Decimal("0.02")
+    assert rows["bh"].is_reference
+    assert rows["colon"].kind == "agent"
+    assert rows["colon"].excess_vs_buy_and_hold == Decimal("0.02")
 
 
 def test_without_buy_and_hold_there_is_no_excess_but_matching_still_applies(tmp_path):
@@ -232,7 +237,7 @@ def test_without_buy_and_hold_there_is_no_excess_but_matching_still_applies(tmp_
     write_run(
         tmp_path,
         "shifted",
-        policy_ref="scripted-q3-v1",
+        policy_ref="scripted-momentum-v1",
         period_return="0.09",
         period_start="2026-02-03T14:30:00Z",
     )
