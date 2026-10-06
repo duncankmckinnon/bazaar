@@ -33,6 +33,7 @@ from pydantic import ValidationError
 from bazaar_runner.clock import utc_z
 from bazaar_runner.market import (
     ApprovalDenied,
+    FiscalCycle,
     FutureData,
     MarketError,
     MissingPrice,
@@ -43,6 +44,7 @@ APPROVAL_HEADER = "X-Bazaar-Approval"
 # Sent only on the control routes (cutoff, create account, close); never logged or echoed.
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
 RUNNER_TOKEN_ENV = "BAZAAR_RUNNER_TOKEN"
+ACCOUNT_HEADER = "X-Bazaar-Account"
 DEFAULT_BASE_URL = "http://localhost:8000"
 # Long enough to reach back over a weekend plus a holiday to the latest close.
 PRICE_LOOKBACK = timedelta(days=10)
@@ -63,6 +65,14 @@ def parse_order_page(content: bytes) -> tuple[tuple[OrderResult, ...], str | Non
         items = body["items"] if "items" in body else body["orders"]
         cursor = body.get("next_cursor")
     return tuple(order_result_adapter.validate_python(item) for item in items), cursor
+
+
+def parse_fiscal_cycles(content: bytes) -> tuple[FiscalCycle, ...]:
+    """The one place that knows the fiscal-cycles shape: the market sends a bare list of
+    {symbol, start}, omitting symbols with no public filing; {"items": [...]} is accepted too."""
+    body = json.loads(content)
+    items = body if isinstance(body, list) else body["items"]
+    return tuple(FiscalCycle.model_validate(item) for item in items)
 
 
 class RunnerConfigError(Exception):
@@ -122,7 +132,14 @@ class HttpMarketPort:
         if experiment_id != self._experiment_id:
             raise ValueError(f"this adapter is bound to experiment {self._experiment_id}")
 
-    async def _request(self, method: str, path: str, *, control: bool = False, **kwargs) -> bytes:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        control: bool = False,
+        **kwargs,
+    ) -> bytes:
         headers = self._headers | {RUNNER_TOKEN_HEADER: self._token} if control else self._headers
         # One attempt only: never resend a POST after an ambiguous failure (market-agent API docs).
         try:
@@ -214,6 +231,15 @@ class HttpMarketPort:
                 message=f"order history did not end after {MAX_PRICE_PAGES} pages",
             )
         )
+
+    async def fiscal_cycles(
+        self, ctx: ExperimentContext, symbols: Sequence[str]
+    ) -> tuple[FiscalCycle, ...]:
+        # Not a control route: the approval header only, never the runner token.
+        self._check(ctx.experiment_id)
+        params = {"symbols": ",".join(symbols)}
+        content = await self._request("GET", "/fiscal-cycles", params=params)
+        return parse_fiscal_cycles(content)
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
         params = {

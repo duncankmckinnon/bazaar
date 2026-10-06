@@ -14,6 +14,7 @@ import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext
 
 from bazaar_runner.agent_step import AgentDecision, DecideWithAgent
+from bazaar_runner.market import FiscalCycle
 
 AGENT_FIXTURE_INSTRUCTIONS = "Inspect account and eligible prices; hold or trade once."
 # A small news page: real articles cost ~1k tokens each and run_decision's default budget is 16k
@@ -30,10 +31,10 @@ def make_agent_decider(
     *,
     budget: Any = None,
     runtime: Any = None,
-    cycles: Sequence[Any] = (),
 ) -> DecideWithAgent:
-    """`cycles` are trusted FiscalCycle records from an importer; never invented (default none)."""
+    """Fiscal cycles arrive per decision from the market (AgentStep), never invented here."""
     from bazaar_agent.registry_store import digest
+    from bazaar_agent.research import FiscalCycle as ResearchFiscalCycle
     from bazaar_agent.research import ResearchContext
     from bazaar_agent.trading import MarketIdentity, run_decision
     from bazaar_protocol.registry import StrategyDefinition, StrategyVersion
@@ -58,7 +59,9 @@ def make_agent_decider(
         account: AccountSnapshot,
         client: httpx.AsyncClient,
         client_order_id: UUID,
+        cycles: Sequence[FiscalCycle] = (),
     ) -> AgentDecision:
+        trusted = tuple(ResearchFiscalCycle(symbol=c.symbol, start=c.start) for c in cycles)
         result = await run_decision(
             identity=MarketIdentity(
                 agent_id=ctx.agent_id,
@@ -67,7 +70,7 @@ def make_agent_decider(
                 strategy_version_id=ctx.strategy_version_id,
             ),
             version=version_for(ctx),
-            context=ResearchContext(experiment=ctx, cycles=tuple(cycles)),
+            context=ResearchContext(experiment=ctx, cycles=trusted),
             client=client,
             client_order_id=client_order_id,
             budget=budget,

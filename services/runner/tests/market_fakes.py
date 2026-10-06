@@ -25,7 +25,7 @@ from bazaar_protocol import (
 )
 from bazaar_runner.clock import ClockScript, TradingSession
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER, utc_z
-from bazaar_runner.market import FutureData, MarketError, MissingPrice
+from bazaar_runner.market import FiscalCycle, FutureData, MarketError, MissingPrice
 from bazaar_runner.run import RunSpec
 
 DATA_VERSION = "synthetic-v1"
@@ -80,6 +80,8 @@ class InMemoryMarket:
         self.accounts: dict[UUID, AccountSnapshot] = {}
         self.closed: set[UUID] = set()
         self.results: dict[UUID, list] = {}
+        # What GET fiscal-cycles returns; a symbol with no public filing is simply absent.
+        self.cycles: tuple[FiscalCycle, ...] = ()
         self._ids = 0
 
     def _id(self) -> UUID:
@@ -202,6 +204,10 @@ class InMemoryMarket:
         self.results.setdefault(account_id, []).append(result)
         return result
 
+    async def fiscal_cycles(self, ctx, symbols):
+        self.calls.append(("fiscal_cycles", ctx.simulated_at, tuple(symbols)))
+        return tuple(c for c in self.cycles if c.symbol in symbols)
+
     async def orders(self, ctx, start_at):
         self.calls.append(("orders", ctx.simulated_at))
         return tuple(
@@ -281,6 +287,23 @@ ARTICLE = (
     "Shares moved as analysts weighed services growth, handset demand and margin guidance"
     " ahead of the quarter. "
 ) * 19
+
+
+def empty_page(eid, account, fake: InMemoryMarket, params) -> dict:
+    return {
+        "experiment_id": str(eid),
+        "account_id": str(account.account_id),
+        "agent_id": str(account.agent_id),
+        "strategy_version_id": str(account.strategy_version_id),
+        "cutoff_at": utc_z(fake.cutoff),
+        "start_at": params["start_at"],
+        "end_at": params["end_at"],
+        "source": "fixture-filings",
+        "data_version": DATA_VERSION,
+        "coverage": "complete",
+        "items": [],
+        "next_cursor": None,
+    }
 
 
 def news_page(symbol: str, available: int, params) -> list[dict]:
@@ -379,6 +402,19 @@ def delegating_transport(
                         "next_cursor": None,
                     }
                     return httpx.Response(200, json=page)
+                case "GET", ["fiscal-cycles"]:
+                    symbols = request.url.params["symbols"].split(",")
+                    found = await fake.fiscal_cycles(view, symbols)
+                    return httpx.Response(
+                        200, json=[json.loads(c.model_dump_json()) for c in found]
+                    )
+                case "GET", ["filings", symbol]:
+                    # An empty FilingPage the agent's filings tool accepts.
+                    account = fake.accounts[UUID(request.headers["X-Bazaar-Account"])]
+                    fake.calls.append(("filings", symbol))
+                    return httpx.Response(
+                        200, json=empty_page(eid, account, fake, request.url.params)
+                    )
                 case "GET", ["news", symbol]:
                     # The HistoryPage the agent's news tool validates; no articles in the fixture.
                     account = fake.accounts[UUID(request.headers["X-Bazaar-Account"])]

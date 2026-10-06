@@ -120,6 +120,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--demo", action="store_true", required=True, help="run the demo launches")
     parser.add_argument("--no-momentum", action="store_true", help="leave out scripted-momentum-v1")
     parser.add_argument(
+        "--no-fiscal-cycles",
+        action="store_true",
+        help="fallback: give the agent no fiscal cycles, so its filings tool reports unsupported",
+    )
+    parser.add_argument(
         "--refused-demo",
         action="store_true",
         help="test only: also launch an unlisted approval/experiment pair the market must refuse",
@@ -169,7 +174,7 @@ def load_evaluate() -> Evaluate | None:
     return evaluate_and_emit
 
 
-def load_policies(market_url: str) -> dict[str, PolicyFactory]:
+def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, PolicyFactory]:
     try:
         import bazaar_agent.trading  # noqa: F401 - fail at startup, not at the first decision
         import pydantic_ai  # noqa: F401
@@ -185,7 +190,12 @@ def load_policies(market_url: str) -> dict[str, PolicyFactory]:
     def agent(prices):
         # A fresh decider and fixture model per launch; the agent reads prices itself.
         decider = make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory())
-        return AgentStep(decider, market_url=market_url)
+        return AgentStep(
+            decider,
+            market_url=market_url,
+            symbols=DEMO_SYMBOLS,
+            read_fiscal_cycles=fiscal_cycles,
+        )
 
     policies: dict[str, PolicyFactory] = {
         AGENT_FIXTURE_REF: agent,
@@ -202,7 +212,7 @@ def load_policies(market_url: str) -> dict[str, PolicyFactory]:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    policies = load_policies(args.market_url)
+    policies = load_policies(args.market_url, fiscal_cycles=not args.no_fiscal_cycles)
     launches = []
     for prefix, ref, _ in demo_launches(args):
         if ref in policies:

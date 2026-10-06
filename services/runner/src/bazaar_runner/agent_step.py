@@ -8,15 +8,15 @@ account's orders from the market to learn what actually settled.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import NamedTuple
 from uuid import UUID, uuid5
 
 import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext, OrderRequest, OrderResult
 
-from bazaar_runner.http_market import APPROVAL_HEADER
-from bazaar_runner.market import MarketPort
+from bazaar_runner.http_market import ACCOUNT_HEADER, APPROVAL_HEADER
+from bazaar_runner.market import FiscalCycle, MarketPort
 from bazaar_runner.run import (
     DecisionError,
     DecisionStep,
@@ -28,7 +28,6 @@ from bazaar_runner.run import (
 
 logger = logging.getLogger(__name__)
 
-ACCOUNT_HEADER = "X-Bazaar-Account"
 AGENT_TIMEOUT_SECONDS = 60.0
 
 
@@ -39,8 +38,10 @@ class AgentDecision(NamedTuple):
     error: str | None
 
 
+# (ctx, account, the agent's client, the reserved client_order_id, fiscal cycles as of ctx).
 DecideWithAgent = Callable[
-    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, UUID], Awaitable[AgentDecision]
+    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, UUID, tuple[FiscalCycle, ...]],
+    Awaitable[AgentDecision],
 ]
 
 
@@ -60,10 +61,14 @@ class AgentStep(DecisionStep):
         decide: DecideWithAgent,
         *,
         market_url: str,
+        symbols: Sequence[str] = (),
+        read_fiscal_cycles: bool = True,
         timeout: float = AGENT_TIMEOUT_SECONDS,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._decide = decide
+        self._symbols = tuple(symbols)
+        self._read_fiscal_cycles = read_fiscal_cycles
         self._market_url = market_url
         self._timeout = timeout
         self._transport = transport
@@ -76,7 +81,12 @@ class AgentStep(DecisionStep):
         orders: list[OrderRecord],
     ) -> StepOutcome:
         reserved = reserved_order_id(ctx)
-        attributes: dict[str, str | bool] = {"agent": True, "client_order_id": str(reserved)}
+        attributes: dict[str, str | bool | int] = {
+            "agent": True,
+            "client_order_id": str(reserved),
+        }
+        cycles, read = await self._fiscal_cycles(ctx, market)
+        attributes |= {"fiscal_cycles": len(cycles), "fiscal_cycles_read": read}
         try:
             async with httpx.AsyncClient(
                 base_url=self._market_url,
@@ -84,7 +94,7 @@ class AgentStep(DecisionStep):
                 timeout=self._timeout,
                 transport=self._transport,
             ) as client:
-                outcome = await self._decide(ctx, account, client, reserved)
+                outcome = await self._decide(ctx, account, client, reserved, cycles)
         except asyncio.CancelledError:
             # Record what settled before propagating; the cancellation always wins.
             try:
@@ -121,6 +131,20 @@ class AgentStep(DecisionStep):
             reconciled=reconciled,
         )
         return StepOutcome(error=error, attributes=attributes | {"reconcile": reconciled})
+
+    async def _fiscal_cycles(
+        self, ctx: ExperimentContext, market: MarketPort
+    ) -> tuple[tuple[FiscalCycle, ...], str]:
+        """As of this decision's cutoff. Missing cycles make filings unsupported, not a failure."""
+        if not self._read_fiscal_cycles or not self._symbols:
+            return (), "off"
+        try:
+            return await market.fiscal_cycles(ctx, self._symbols), "ok"
+        except Exception as exc:  # noqa: BLE001 - run on without cycles; never invent dates
+            logger.warning(
+                "fiscal cycles unavailable at %s: %s", ctx.simulated_at, type(exc).__name__
+            )
+            return (), "failed"
 
     async def _find(
         self, ctx: ExperimentContext, market: MarketPort, reserved: UUID

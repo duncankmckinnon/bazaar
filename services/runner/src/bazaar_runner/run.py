@@ -166,7 +166,7 @@ def _at(kind: str, event_sequence: int, simulated_at: datetime) -> str:
 class StepOutcome:
     error: DecisionError | None = None
     # Added to the runner.decision span; never a credential.
-    attributes: Mapping[str, str | bool] = field(default_factory=dict)
+    attributes: Mapping[str, str | bool | int] = field(default_factory=dict)
 
 
 class DecisionStep(ABC):

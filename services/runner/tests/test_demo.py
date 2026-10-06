@@ -212,7 +212,9 @@ def offline_cli(monkeypatch):
     monkeypatch.setattr(
         cli,
         "load_policies",
-        lambda market_url: {ref: (lambda prices: cash_only) for _, ref, _ in cli.DEMO_LAUNCHES},
+        lambda market_url, **_: {
+            ref: (lambda prices: cash_only) for _, ref, _ in cli.DEMO_LAUNCHES
+        },
     )
     for prefix in [p for p, _, _ in cli.DEMO_LAUNCHES] + ["agent"]:
         for kind in cli.KINDS:
