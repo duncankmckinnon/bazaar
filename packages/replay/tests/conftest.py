@@ -28,6 +28,7 @@ def _write_run(
     evaluation_account=SAME,
     account=True,
     failure_code=None,
+    evaluator_version="evals-v1",
 ):
     account_id = str(uuid5(NAMESPACE, f"{run_id}-account")) if account else None
     manifest = {
@@ -74,7 +75,7 @@ def _write_run(
         "status": "scored" if period_return is not None else "unsupported",
         "period_return": period_return,
         "reconciled": reconciled,
-        "evaluator_version": "evals-v1",
+        "evaluator_version": evaluator_version,
     }
     (run_dir / "evaluation.json").write_text(
         json.dumps(
@@ -82,7 +83,7 @@ def _write_run(
                 "experiment_id": manifest["experiment_id"],
                 "account_id": account_id if evaluation_account is SAME else evaluation_account,
                 "agent_id": manifest["agent_id"],
-                "evaluator_version": "evals-v1",
+                "evaluator_version": evaluator_version,
                 "run_status": status,
                 "run_failure": failure,
                 "trade_scores": [{"status": s, "order_id": str(NAMESPACE)} for s in scores],

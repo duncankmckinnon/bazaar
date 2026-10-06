@@ -197,3 +197,39 @@ def test_missing_account_on_one_side_only_is_invalid(tmp_path, write_run):
     assert (
         load_board(tmp_path).invalid[0].reason == "record and evaluation have different account_id"
     )
+
+
+def test_refused_buy_and_hold_still_compares_evaluator_versions(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "a-bh",
+        policy_ref="baseline-buy-and-hold",
+        period_return=None,
+        status="failed",
+        failure="refused before any account was opened",
+        failure_code="approval_denied",
+        account=False,
+        orders=(),
+        evaluation=False,
+    )
+    write_run(tmp_path, "b-agent", policy_ref="scripted-momentum-v1", period_return="0.02")
+    write_run(
+        tmp_path,
+        "c-agent",
+        policy_ref="scripted-momentum-v1",
+        period_return="0.05",
+        evaluator_version="evals-v2",
+    )
+    board = load_board(tmp_path)
+
+    assert ids(board.ranked) == ["b-agent"]
+    assert board.not_comparable[0].run_id == "c-agent"
+    assert board.not_comparable[0].mismatch is MismatchCode.EVALUATOR_VERSION
+    [refused] = board.failed
+    assert (refused.run_id, refused.is_reference, refused.failure_code) == (
+        "a-bh",
+        True,
+        "approval_denied",
+    )
+    assert board.reference_run_id == "a-bh"
+    assert board.ranked[0].excess_vs_buy_and_hold is None

@@ -245,9 +245,13 @@ def build_board(loaded: list[Run | Entry]) -> Leaderboard:
     reference = next((run for run in references if run.failure is None), None)
     if reference is None and references:
         reference = references[0]
-    # Without a buy-and-hold run, anchor matching on the first completed run so that
-    # mismatched runs are still never ranked side by side.
-    anchor = reference or next((run for run in runs if run.failure is None), None)
+    # Anchor matching on an evaluated run, so evaluator versions are always compared: the
+    # buy-and-hold run if it was evaluated, else the first completed run. Mismatched runs are
+    # then never ranked side by side, even when buy-and-hold is missing or was refused.
+    if reference is not None and reference.evaluation is not None:
+        anchor = reference
+    else:
+        anchor = next((run for run in runs if run.failure is None), reference)
 
     ranked, failed, not_comparable = [], [], []
     for run in runs:
