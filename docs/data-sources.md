@@ -61,6 +61,8 @@ Redirects are never followed, so the Alpaca key headers are sent to `data.alpaca
 `SourceError` is raised for a company or ticker missing from the snapshot, for a filing history whose older files
 were not all frozen, and for news whose fetch stopped before the last page.
 None of these is returned as a shorter list.
+The readers read only files the manifest lists, and raise `SourceError` for a file on disk that the manifest
+does not list or whose SHA-256 no longer matches.
 
 `sources.visibility` filters records by a timezone-aware simulated time:
 

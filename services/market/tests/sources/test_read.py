@@ -165,3 +165,49 @@ def test_load_news_returns_articles_in_publication_order_whatever_the_page_order
 def test_load_facts_fails_for_a_company_missing_from_the_snapshot(tmp_path):
     with pytest.raises(SourceError, match="99"):
         load_facts(edgar_snapshot(tmp_path), 99)
+
+
+def test_load_news_refuses_a_page_the_manifest_does_not_list(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1, token="t")).encode(), url="u", rows=1)
+    stray = snap.dir / "AAPL" / "page-0002.json"
+    stray.write_text(json.dumps(page(2)))
+
+    with pytest.raises(SourceError, match="does not list"):
+        load_news(snap.dir, "AAPL")
+
+
+def test_load_news_refuses_a_symbol_whose_only_page_is_unlisted(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1)).encode(), url="u", rows=1)
+    (snap.dir / "MSFT").mkdir()
+    (snap.dir / "MSFT" / "page-0001.json").write_text(json.dumps(page(2)))
+
+    with pytest.raises(SourceError, match="does not list"):
+        load_news(snap.dir, "MSFT")
+
+
+def test_load_news_refuses_a_page_edited_after_it_was_frozen(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1)).encode(), url="u", rows=1)
+    snap.path("AAPL/page-0001.json").write_text(json.dumps(page(2)))
+
+    with pytest.raises(SourceError, match="SHA-256"):
+        load_news(snap.dir, "AAPL")
+
+
+def test_load_filings_refuses_a_history_file_edited_after_it_was_frozen(tmp_path):
+    snap_dir = edgar_snapshot(tmp_path)
+    older = snap_dir / "submissions" / "CIK0000000042-submissions-001.json"
+    older.write_text(json.dumps(columns("a-9", "10-Q", "2014-05-09")))
+
+    with pytest.raises(SourceError, match="SHA-256"):
+        load_filings(snap_dir, 42)
+
+
+def test_load_facts_refuses_numbers_edited_after_they_were_frozen(tmp_path):
+    snap_dir = edgar_snapshot(tmp_path)
+    (snap_dir / "companyfacts" / "CIK0000000042.json").write_text("{}")
+
+    with pytest.raises(SourceError, match="SHA-256"):
+        load_facts(snap_dir, 42)
