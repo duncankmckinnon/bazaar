@@ -63,7 +63,7 @@ def test_markers_and_labels(tmp_path, demo_runs):
     html = render(load_board(tmp_path))
 
     assert html.count("⚠ not reconciled") == 1
-    assert html.count('<span class="label">computed</span>') == 2
+    assert html.count('<span class="label">computed</span>') == 3
     assert "synthetic prices" in html
     assert "+2.10%" in html
     assert "-3.10%" in html
@@ -103,3 +103,37 @@ def test_failure_code_is_escaped(tmp_path, write_run):
     )
 
     assert "&lt;i&gt;denied&lt;/i&gt;: x" in render(load_board(tmp_path))
+
+
+def test_decision_errors_badge_and_footnote(tmp_path, demo_runs):
+    demo_runs(tmp_path)
+    html = render(load_board(tmp_path))
+
+    assert html.count("⚠ decision errors: 2") == 1
+    assert "<h2>Decision errors</h2>" in html
+    assert (
+        "#4 scripted-momentum-v1: 2 decision errors; "
+        "first at 2026-02-03 14:30 UTC: order rejected: market_closed"
+    ) in html
+
+
+def test_no_decision_errors_means_no_badge_or_footnote(tmp_path, write_run):
+    write_run(tmp_path, "bh", policy_ref="baseline-buy-and-hold", period_return="0.01")
+    html = render(load_board(tmp_path))
+
+    assert "decision error" not in html
+
+
+def test_decision_error_text_is_escaped(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "evil",
+        policy_ref="scripted-momentum-v1",
+        period_return="0",
+        decision_errors=((1, "2026-02-03T14:30:00Z", "<script>alert(1)</script>"),),
+    )
+    html = render(load_board(tmp_path))
+
+    assert "<script" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "1 decision error;" in html

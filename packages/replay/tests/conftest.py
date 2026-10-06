@@ -29,6 +29,7 @@ def _write_run(
     account=True,
     failure_code=None,
     evaluator_version="evals-v1",
+    decision_errors=(),
 ):
     account_id = str(uuid5(NAMESPACE, f"{run_id}-account")) if account else None
     manifest = {
@@ -53,6 +54,16 @@ def _write_run(
         "status": status,
         "failure": failure,
         "failure_code": failure_code,
+        "decision_errors": [
+            {
+                "event_sequence": sequence,
+                "decided_at": decided_at,
+                "client_order_id": str(uuid5(NAMESPACE, f"{run_id}-order-{sequence}")),
+                "error": error,
+                "reconciled": "absent",
+            }
+            for sequence, decided_at, error in decision_errors
+        ],
         "orders": [
             {
                 "event_sequence": i,
@@ -128,6 +139,18 @@ def _demo_runs(runs_dir):
         policy_ref="scripted-momentum-v1",
         period_return="0.0900",
         period_start="2026-02-03T14:30:00Z",
+    )
+    _write_run(
+        runs_dir,
+        "flaky",
+        policy_ref="scripted-momentum-v1",
+        period_return="0",
+        orders=(),
+        scores=(),
+        decision_errors=(
+            (9, "2026-02-04T14:30:00Z", "decide timed out after 20s"),
+            (4, "2026-02-03T14:30:00Z", "order rejected: market_closed"),
+        ),
     )
     _write_run(
         runs_dir,
