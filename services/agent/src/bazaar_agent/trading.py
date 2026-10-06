@@ -21,6 +21,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from bazaar_agent.monty import CalculationRecord, MontyCalculator
 from bazaar_agent.research import PrivateHistoryReader, ResearchContext, ResearchTools, ToolError
 
 # Trusted injection only. Never resolve a provider/model/URL from candidate text.
@@ -48,6 +49,7 @@ class DecisionResult(WireModel):
     decision: Decision | None = None
     error: ToolError | None = None
     usage: DecisionUsage = DecisionUsage()
+    calculations: tuple[CalculationRecord, ...] = ()
     # Settlement/reconciliation evidence survives invalid final output or a budget failure.
     order_request: OrderRequest | None = None
     order_result: OrderResult | None = None
@@ -97,6 +99,7 @@ async def run_decision(
     budget: DecisionBudget | None = None,
     model_factory: ModelFactory | None = None,
     private_history: PrivateHistoryReader | None = None,
+    calculator: MontyCalculator | None = None,
 ) -> DecisionResult:
     """Run once with fresh messages/cursors and at most one immutable market order.
 
@@ -111,6 +114,7 @@ async def run_decision(
     decision: Decision | None = None
     error: ToolError | None = None
     cancelled = False
+    calculation_start = len(calculator.records) if calculator else 0
     with logfire.span("trading decision", _span_name="trading.decision", _tags=["trading"]) as span:
         try:
             # Revalidate even frozen DTOs: model_copy/model_construct can bypass validation.
@@ -133,8 +137,18 @@ async def run_decision(
             definition: StrategyDefinition = version.definition
             if definition.artifact_ref is not None:
                 _stop("unsupported", "Executable strategy artifacts are unsupported")
-            if definition.harness not in ("single_shot", "research") or "monty" in definition.tools:
-                _stop("unsupported", "Monty and orchestrated capabilities are not implemented")
+            if definition.harness not in ("single_shot", "research", "monty"):
+                _stop("unsupported", "Orchestrated capabilities are not implemented")
+            if definition.harness == "monty" or "monty" in definition.tools:
+                if calculator is None or "monty" not in definition.tools:
+                    _stop(
+                        "unsupported",
+                        "Monty requires runner-bound snapshots and explicit capability",
+                    )
+                if calculator.snapshot.context != ctx:
+                    _stop("invalid_request", "Calculation snapshot context mismatch")
+                if not calculator.reserve():
+                    _stop("invalid_request", "A fresh calculator is required for each decision")
             if model_factory is None:
                 _stop(
                     "unsupported",
@@ -144,7 +158,7 @@ async def run_decision(
 
             def wrap(name: str) -> Tool:
                 # Preserve shared DTO signatures; no duplicated argument schemas.
-                fn = getattr(tools, name)
+                fn = getattr(calculator if name.startswith("monty_") else tools, name)
 
                 async def invoke(*args, **kwargs):
                     nonlocal calls
@@ -187,6 +201,7 @@ async def run_decision(
                 "reports": ("filings",),
                 "private_history": ("private_history",),
                 "orders": ("orders",),
+                "monty": ("monty_inputs", "monty_calculate"),
             }
             for capability in definition.tools:
                 registered.extend(wrap(name) for name in groups[capability])
@@ -268,4 +283,5 @@ async def run_decision(
         ),
         order_request=submitted,
         order_result=settled,
+        calculations=tuple(calculator.records[calculation_start:]) if calculator else (),
     )

@@ -14,7 +14,9 @@ named `seller` and `buyer`.
 versioning, scoped research clients and a bounded PydanticAI decision loop are implemented.
 The [trading harness guide](docs/trading-agent.md) describes local fixture usage, tool capabilities,
 budgets and order recovery. Registration and the placeholder processes still do not execute
-strategies. Live market handlers, historical experiments, Monty, gateway binding and approvals
+strategies. A model-callable [Monty calculation tool](docs/monty-calculations.md) computes
+from runner-owned historical snapshots without Monty-specific quotas or truncation.
+Live market handlers, historical experiments, gateway binding and approvals
 are not implemented yet. The target design is in
 `docs/superpowers/specs/`; `docs/superpowers/plans/` contains an archived skeleton plan.
 

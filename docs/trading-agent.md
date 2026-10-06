@@ -4,7 +4,8 @@
 model/tool loop, not a period runner. Registration remains nonexecuting. The caller supplies a
 registered `AgentRecord`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
 client, a runner-reserved `client_order_id`, and optionally `DecisionBudget`, `ModelFactory`
-and the existing `PrivateHistoryReader`. Identity/version/context must agree; inputs are
+and the existing `PrivateHistoryReader` or a runner-bound `MontyCalculator`.
+Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
 
@@ -12,8 +13,9 @@ database access, approval implementation or scheduler is added.
 
 The only accepted models today are explicitly injected local `TestModel`/`FunctionModel`
 instances (from **pydantic-ai-slim 1.70.0**, no provider extras). Missing factories, non-fixture
-models, artifact references, `orchestrated`/`monty` harnesses or the `monty` capability return
-structured `unsupported` errors before model execution. Model references are passed to a
+models, artifact references and `orchestrated` harnesses return structured `unsupported`
+errors before model execution. The `monty` harness/capability requires a fresh runner-bound
+calculator; see [Monty calculations](monty-calculations.md). Model references are passed to a
 trusted factory, never parsed as gateway routes, URLs or credentials. No API key is needed.
 
 ```python
@@ -66,6 +68,7 @@ DTO validation, not a claim that models ignore malicious prose.
 | `reports` | `filings` (requires trusted `FiscalCycle`) |
 | `private_history` | `private_history` (default unsupported adapter) |
 | `orders` | `orders` (own order history), `market_order` (structured buy/sell) |
+| `monty` | `monty_inputs`, `monty_calculate` (runner-owned historical snapshots) |
 
 Tools reuse #21/shared DTO signatures and `ToolResult`/`ToolError`. PydanticAI flattens a single
 Pydantic argument into the tool's top-level JSON object: `market_order` accepts the exact
@@ -102,9 +105,10 @@ reported total tokens and 30 seconds. Tool execution is sequential; SDK batch ch
 over-budget validated tool batch before executing it. Local failed tool executions count too.
 Schema-invalid/unknown calls do not execute tools; their retries consume model requests. Token
 limits are checked **after** responses using SDK-reported/fixture-estimated usage, not exact
-preflight cost or billing guarantees. No nested models, delegation, forecasting or Monty execution
-can bypass these limits because those capabilities are unsupported. Async timeouts cannot preempt
-a malicious synchronous factory/function: injections are trusted test fixtures, not sandbox code.
+preflight cost or billing guarantees. Monty calls use this same decision loop and cancellation
+boundary; Monty itself adds no resource quotas or truncation. Async timeouts cannot preempt
+a malicious synchronous factory/function: injections are trusted test fixtures. Monty runs in a
+separate worker that is killed and reaped on cancellation.
 
 ## Monitoring and next interfaces
 
@@ -117,9 +121,7 @@ response capture false; do not add independently logging hooks. Payload-marker t
 monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata and actual
 AI Gateway/private SDK binding are **#23**, not implemented or gateway-ready here.
 
-For **#22**, extend capability admission and the same per-decision budget boundary only after
-real Monty integration has verified resource limits and host/network/file denial. Existing
-`ResearchContext`/`FiscalCycle`, `ResearchTools`, `PrivateHistoryReader`, shared DTOs and the
-`DecisionBudget`/`DecisionResult` interface are reusable. There is deliberately no fake forecast
-API or fabricated sandbox result today. No real historical experiment was run; fixtures prove
+The **#22** [Monty integration](monty-calculations.md) uses real SDK execution, a runner-bound
+point-in-time snapshot and caller-owned immutable calculation records. It denies host access
+without inventing a separate forecasting API or accepting model-provided datasets. No real historical experiment was run; fixtures prove
 client behavior, not server authorization, source completeness, live grants or model quality.

@@ -1,0 +1,191 @@
+import asyncio
+import json
+from datetime import datetime
+
+import pytest
+from bazaar_agent.monty import CalculationSnapshot, MontyCalculator
+from bazaar_protocol import PriceHistory
+from pydantic import ValidationError
+from pydantic_ai.messages import ToolCallPart
+
+from .test_research import FUTURE, context, prices
+from .test_trading import invoke, output, script
+
+
+def calculator():
+    snapshot = CalculationSnapshot(
+        context=context().experiment, prices=(PriceHistory.model_validate(prices()),)
+    )
+    return MontyCalculator(snapshot)
+
+
+async def test_actual_sdk_calculation_and_audit():
+    calc = calculator()
+    result = await calc.monty_calculate(
+        "sum(float(p['price']) for p in inputs['prices'][0]['observations'])"
+    )
+    assert result.error is None
+    assert json.loads(result.data.output_json) > 0
+    assert result.data.code_digest and result.data.snapshot_digest
+    assert result.data.sdk_version == "0.0.14"
+    assert calc.records == [result.data]
+    assert json.loads((await calc.monty_inputs()).data)["context"]["simulated_at"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nos.getenv('LOGFIRE_TOKEN')",
+        "open('/etc/passwd').read()",
+        "import datetime\ndatetime.datetime.now()",
+        "requests.get('https://example.invalid')",
+        "unknown_host_function()",
+        "import subprocess\nsubprocess.run(['echo', 'unsafe'])",
+    ],
+)
+async def test_host_capabilities_are_denied(code):
+    calc = calculator()
+    result = await calc.monty_calculate(code)
+    assert result.error is not None
+    assert calc.records[-1].status in ("denied", "runtime")
+    assert calc.records[-1].output_json is None
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("1 +", "syntax"),
+        ("1 / 0", "runtime"),
+        ("float('inf')", "serialization"),
+    ],
+)
+async def test_invalid_runtime_and_resource_results(code, status):
+    calc = calculator()
+    result = await calc.monty_calculate(code)
+    assert result.error is not None
+    assert calc.records[-1].status == status
+
+
+async def test_no_artificial_code_or_output_limits_and_snapshot_cutoff():
+    calc = calculator()
+    result = await calc.monty_calculate("#" + "x" * 17000 + "\n'x' * 300000")
+    assert result.error is None
+    assert len(json.loads(result.data.output_json)) == 300000
+    history = PriceHistory.model_validate(prices())
+    unsafe = history.model_copy(update={"cutoff_at": datetime.fromisoformat(FUTURE)})
+    with pytest.raises(ValidationError):
+        CalculationSnapshot(context=context().experiment, prices=(unsafe,))
+    with pytest.raises(ValidationError):
+        CalculationSnapshot(context=context().experiment, prices=(history, history))
+
+
+@pytest.mark.parametrize("during_spawn", [False, True])
+async def test_cancellation_reaps_process(monkeypatch, during_spawn):
+    processes = []
+    original = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        process = await original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    calc = calculator()
+    task = asyncio.create_task(calc.monty_calculate("while True:\n pass"))
+    if during_spawn:
+        await asyncio.sleep(0)
+    else:
+        async with asyncio.timeout(5):
+            while not processes:
+                await asyncio.sleep(0.001)
+        await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert all(process.returncode is not None for process in processes)
+
+
+async def test_model_tool_integration_and_overall_budget():
+    model, calls = script(
+        [ToolCallPart("monty_calculate", {"code": "1+2"})], lambda info: [output(info)]
+    )
+    result, requests = await invoke(
+        model, tools=("monty",), harness="monty", overrides={"calculator": calculator()}
+    )
+    assert result.error is None and result.decision.action == "hold"
+    assert len(result.calculations) == 1
+    assert json.loads(result.calculations[0].output_json) == 3
+    assert len(calls) == 2 and not requests
+    model, _ = script([ToolCallPart("monty_calculate", {"code": "1+2"})])
+    from bazaar_agent.trading import DecisionBudget
+
+    result, _ = await invoke(
+        model,
+        tools=("monty",),
+        overrides={
+            "calculator": calculator(),
+            "budget": DecisionBudget(tool_calls=1, model_requests=1),
+        },
+    )
+    assert result.error is not None and len(result.calculations) == 1
+
+
+async def test_forecast_volatility_and_hypothetical_backtest():
+    data = prices()
+    point = data["observations"][0]
+    data["observations"] = [
+        dict(point, price=price, observed_at=date, available_at=date)
+        for price, date in (
+            ("10", "2020-03-30T12:00:00Z"),
+            ("11", "2020-03-31T12:00:00Z"),
+            ("12.34", "2020-04-01T12:00:00Z"),
+        )
+    ]
+    calc = MontyCalculator(
+        CalculationSnapshot(
+            context=context().experiment, prices=(PriceHistory.model_validate(data),)
+        )
+    )
+    result = await calc.monty_calculate("""import math
+p = [float(x['price']) for x in inputs['prices'][0]['observations']]
+r = [p[i] / p[i-1] - 1 for i in range(1, len(p))]
+mean = sum(r)/len(r)
+{'volatility': math.sqrt(sum((x-mean)**2 for x in r)/len(r)), 'forecast': p[-1]*(1+mean), 'buy_and_hold_return': p[-1]/p[0]-1}
+""")
+    assert result.error is None
+    output = json.loads(result.data.output_json)
+    assert output["buy_and_hold_return"] == pytest.approx(0.234)
+    assert output["volatility"] > 0
+    assert output["forecast"] > 12.34
+
+
+async def test_prints_and_failure_diagnostics_are_not_truncated():
+    calc = calculator()
+    result = await calc.monty_calculate("print('x' * 6000)\nraise ValueError('diagnostic' * 1000)")
+    assert result.error is not None
+    record = calc.records[-1]
+    assert "x" * 6000 in record.prints_json
+    assert "diagnostic" * 1000 in record.error_text
+
+
+async def test_spawn_failure_is_a_recorded_failure(monkeypatch):
+    async def fail(*args, **kwargs):
+        raise OSError("worker unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail)
+    calc = calculator()
+    result = await calc.monty_calculate("1+2")
+    assert result.error is not None
+    assert calc.records[-1].status == "worker_error"
+    assert "worker unavailable" in calc.records[-1].error_text
+
+
+async def test_private_code_inputs_results_excluded_from_logfire(capfire):
+    marker = "PRIVATE-MONTY-CODE-12345"
+    calc = calculator()
+    result = await calc.monty_calculate(repr(marker))
+    assert json.loads(result.data.output_json) == marker
+    assert marker in result.data.code
+    spans = capfire.exporter.exported_spans_as_dict()
+    assert marker not in json.dumps(spans, default=str)
+    assert any(span["name"] == "monty.calculate" for span in spans)
