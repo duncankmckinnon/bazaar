@@ -106,10 +106,14 @@ version = "0.1.0"
 source = { editable = "services/runner" }
 dependencies = [
     { name = "bazaar-protocol" },
+    { name = "httpx" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bazaar-protocol", editable = "packages/protocol" }]
+requires-dist = [
+    { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "httpx", specifier = ">=0.27" },
+]
 
 [[package]]
 name = "bazaar-workspace"

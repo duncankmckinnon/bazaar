@@ -31,7 +31,7 @@ def session(day: date) -> TradingSession:
     return TradingSession(date=day, open_at=open_at, close_at=open_at + timedelta(hours=6.5))
 
 
-# Demo fixture calendar: 2026-02-02..13, weekends skipped. Price data starts at the 2026-01-30 close.
+# Demo calendar: 2026-02-02..13, weekends skipped. Price data starts at the 2026-01-30 close.
 SESSIONS = tuple(session(date(2026, 2, d)) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13))
 CLOSES = (datetime(2026, 1, 30, 21, 0, tzinfo=UTC), *(s.close_at for s in SESSIONS))
 # Synthetic: the close on trading day i (2026-01-30 is day 0) is base + i.

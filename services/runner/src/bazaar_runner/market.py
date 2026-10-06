@@ -35,6 +35,13 @@ class ApprovalDenied(MarketError):
         super().__init__(ErrorDetail(code=ErrorCode.EXPERIMENT_NOT_APPROVED, message=message))
 
 
+class RunnerUnauthorized(MarketError):
+    """The market refused the runner's own credential on a control route (401 unauthorized)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorDetail(code=ErrorCode.UNAUTHORIZED, message=message))
+
+
 class FutureData(MarketError):
     """A read past the experiment's trusted cutoff (403 forbidden); never answered with data."""
 
