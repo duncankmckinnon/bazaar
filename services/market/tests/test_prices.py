@@ -136,7 +136,7 @@ def test_a_day_without_bars_has_no_session(tmp_path):
 
 
 def test_price_source_is_the_source_the_bars_were_imported_with(tmp_path):
-    assert load(tmp_path).price_source == "fixture"
+    assert load(tmp_path).price_source == "fixture/test-v1"
 
 
 def test_the_bar_csv_round_trips(tmp_path):

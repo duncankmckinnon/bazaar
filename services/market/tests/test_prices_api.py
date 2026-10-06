@@ -59,7 +59,7 @@ def test_history_up_to_the_cutoff_includes_the_close_at_the_boundary_instant(app
     assert (history.cutoff_at, history.data_version, history.source) == (
         close_at(TUE),
         "synthetic-v1",
-        "synthetic",
+        "synthetic/synthetic-v1",
     )
 
 
@@ -125,5 +125,5 @@ def test_a_bundle_experiment_reports_its_bundle_version_and_the_bars_as_the_sour
     response = get(app, close_at(MON), close_at(TUE))
 
     history = PriceHistory.model_validate(response.json())
-    assert (history.data_version, history.source) == ("demo-bundle-v1", "synthetic")
+    assert (history.data_version, history.source) == ("demo-bundle-v1", "synthetic/synthetic-v1")
     assert [str(o.price) for o in history.observations] == ["100.00", "101.50"]

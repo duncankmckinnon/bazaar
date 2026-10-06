@@ -150,7 +150,7 @@ def test_importing_a_snapshot_twice_stores_each_bar_once(tmp_path):
     ]
     market = SqliteMarketData(db, "alpaca-bars-v1")
     assert market.price_at("KO", close_at(WEEK[2])).observed_at == close_at(WEEK[2])
-    assert market.price_source == "alpaca/sip/raw"
+    assert market.price_source == "alpaca/sip/raw/alpaca-bars-v1"
 
 
 def test_cli_bars_then_import_bars_end_to_end(tmp_path, capsys):
@@ -314,7 +314,7 @@ def test_another_feed_needs_its_own_data_version(tmp_path):
     with closing(sqlite3.connect(db)) as connection:
         import_bars_snapshot(connection, iex.dir, required={}, data_version="alpaca-bars-v1-iex")
 
-    assert SqliteMarketData(db, "alpaca-bars-v1-iex").price_source == "alpaca/iex/raw"
+    assert SqliteMarketData(db, "alpaca-bars-v1-iex").price_source == "alpaca/iex/raw/alpaca-bars-v1-iex"
 
 
 def test_cli_import_bars_without_a_snapshot_prints_how_to_fetch_one(tmp_path, capsys):
