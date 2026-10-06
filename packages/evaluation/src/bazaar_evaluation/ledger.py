@@ -159,6 +159,8 @@ def replay_ledger(evidence: RunEvidence, config: EvaluatorConfig) -> LedgerRepla
     def score(order, status, reason="", **metrics) -> TradeScore:
         return TradeScore(
             order_id=order.order_id,
+            symbol=order.symbol,
+            side=order.side,
             status=status,
             evaluator_version=config.evaluator_version,
             evidence=_evidence(order, reason),

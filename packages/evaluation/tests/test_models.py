@@ -317,6 +317,8 @@ def test_trade_score_links_order_status_evidence_version_and_denominators():
     )
     score = TradeScore(
         order_id=ORDER,
+        symbol="AAPL",
+        side="buy",
         status=ScoreStatus.PENDING,
         evaluator_version="evals-v1",
         evidence=(evidence,),
@@ -332,7 +334,12 @@ def test_failed_and_unsupported_results_require_a_reason(status):
     without_reason = Evidence(order_id=ORDER, data_version="fixture-v1")
     with pytest.raises(ValidationError, match="reason"):
         TradeScore(
-            order_id=ORDER, status=status, evaluator_version="v1", evidence=(without_reason,)
+            order_id=ORDER,
+            symbol="AAPL",
+            side="buy",
+            status=status,
+            evaluator_version="v1",
+            evidence=(without_reason,),
         )
     with pytest.raises(ValidationError, match="reason"):
         PeriodSummary(
@@ -340,7 +347,14 @@ def test_failed_and_unsupported_results_require_a_reason(status):
         )
 
     with_reason = Evidence(order_id=ORDER, reason="no price at horizon")
-    TradeScore(order_id=ORDER, status=status, evaluator_version="v1", evidence=(with_reason,))
+    TradeScore(
+        order_id=ORDER,
+        symbol="AAPL",
+        side="buy",
+        status=status,
+        evaluator_version="v1",
+        evidence=(with_reason,),
+    )
 
 
 def test_denominator_rejects_negative_and_float_values():

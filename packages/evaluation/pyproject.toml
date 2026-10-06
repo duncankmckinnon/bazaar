@@ -3,7 +3,7 @@ name = "bazaar-evaluation"
 version = "0.1.0"
 description = "Evaluator-only trade and portfolio scoring over full-timeline evidence."
 requires-python = ">=3.12"
-dependencies = ["bazaar-protocol", "pydantic>=2.10"]
+dependencies = ["bazaar-protocol", "logfire>=5.1.1", "pydantic>=2.10"]
 
 [tool.uv.sources]
 bazaar-protocol = { workspace = true }

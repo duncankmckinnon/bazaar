@@ -78,12 +78,14 @@ version = "0.1.0"
 source = { editable = "packages/evaluation" }
 dependencies = [
     { name = "bazaar-protocol" },
+    { name = "logfire" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "logfire", specifier = ">=5.1.1" },
     { name = "pydantic", specifier = ">=2.10" },
 ]
 

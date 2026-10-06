@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from bazaar_protocol import ExactAmount, NonNegativeAmount, Version
+from bazaar_protocol import ExactAmount, NonNegativeAmount, OrderSide, Symbol, Version
 from pydantic import Field, model_validator
 
 from bazaar_evaluation._base import EvaluationModel
@@ -47,6 +47,8 @@ class _Result(EvaluationModel):
 
 class TradeScore(_Result):
     order_id: UUID
+    symbol: Symbol
+    side: OrderSide
     realized_pnl: ExactAmount | None = None  # net of this sell's fee and the closed lots' buy fees
     closed_quantity: NonNegativeAmount | None = None
     fee: NonNegativeAmount | None = None

@@ -309,7 +309,13 @@ def test_every_score_links_order_and_version_evidence():
 
 def test_scored_result_requires_evidence():
     with pytest.raises(ValidationError, match="evidence"):
-        TradeScore(order_id=order_id(1), status=ScoreStatus.SCORED, evaluator_version="v1")
+        TradeScore(
+            order_id=order_id(1),
+            symbol="AAPL",
+            side="buy",
+            status=ScoreStatus.SCORED,
+            evaluator_version="v1",
+        )
 
 
 def test_ledger_that_allows_overselling_fails_the_sell():
