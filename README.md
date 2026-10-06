@@ -30,6 +30,13 @@ docker compose up --build
 curl localhost:8000/health
 ```
 
+## Shared API contracts
+
+`packages/protocol` provides the Pydantic models used by both services. The initial agreement is
+immediate fill or rejection, with market-owned accounts and point-in-time data. See the
+[market–agent API agreement](docs/market-agent-api.md) for routes, examples and safety rules.
+The trading endpoints are specified, not implemented yet.
+
 ## Develop
 
 ```sh
