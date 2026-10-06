@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from bazaar_protocol import PositiveAmount, Version
@@ -8,13 +9,19 @@ from bazaar_evaluation._base import EvaluationModel
 
 
 class CashRoundingRule(EvaluationModel):
-    """How an execution rule rounds each fill's cash delta (notional plus fee).
+    """How a market rule rounds an amount: a fill's cash delta or a holding's marked value.
 
-    `quantum=None` means exact. A placeholder until the market rig publishes its own rule.
+    `quantum=None` means exact.
     """
 
     quantum: PositiveAmount | None
     rounding: Literal["half_even", "half_up"] = "half_even"
+
+    def apply(self, amount: Decimal) -> Decimal:
+        if self.quantum is None:
+            return amount
+        mode = ROUND_HALF_EVEN if self.rounding == "half_even" else ROUND_HALF_UP
+        return (amount / self.quantum).quantize(Decimal(1), rounding=mode) * self.quantum
 
 
 class EvaluatorConfig(EvaluationModel):
@@ -24,6 +31,7 @@ class EvaluatorConfig(EvaluationModel):
     horizons: tuple[timedelta, ...] = ()
     lot_method: Literal["fifo", "specific_lot"] = "fifo"
     execution_rules: dict[Version, CashRoundingRule] = Field(default_factory=dict)
+    valuation_rules: dict[Version, CashRoundingRule] = Field(default_factory=dict)
 
     @field_validator("horizons")
     @classmethod

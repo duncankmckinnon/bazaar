@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -38,6 +38,7 @@ class OpenLot(EvaluationModel):
 class LedgerReplay(EvaluationModel):
     trade_scores: tuple[TradeScore, ...]
     open_lots: tuple[OpenLot, ...]
+    final_cash: ExactAmount | None = None  # None when the ledger could not be replayed
 
 
 @dataclass
@@ -59,16 +60,8 @@ class _Book:
         held = {s: sum((lot.quantity for lot in lots), Decimal(0)) for s, lots in self.lots.items()}
         return {s: q for s, q in held.items() if q}
 
-    def cash_delta(self, amount: Decimal) -> Decimal:
-        """Round one fill's cash movement under the run's execution rule."""
-        quantum = self.rule.quantum
-        if quantum is None:
-            return amount
-        mode = ROUND_HALF_EVEN if self.rule.rounding == "half_even" else ROUND_HALF_UP
-        return (amount / quantum).quantize(Decimal(1), rounding=mode) * quantum
-
     def buy(self, fill: FilledOrder) -> None:
-        cost = self.cash_delta(fill.quantity * fill.unit_price + fill.fee)
+        cost = self.rule.apply(fill.quantity * fill.unit_price + fill.fee)
         self.cash -= cost
         self.lots.setdefault(fill.symbol, []).append(
             _Lot(fill.quantity, cost, fill.order_id, fill.executed_at)
@@ -76,7 +69,7 @@ class _Book:
 
     def sell(self, fill: FilledOrder) -> tuple[Decimal, Decimal | None, Decimal]:
         """Close lots FIFO; return (net proceeds, closed basis or None if unknown, uncovered)."""
-        proceeds = self.cash_delta(fill.quantity * fill.unit_price - fill.fee)
+        proceeds = self.rule.apply(fill.quantity * fill.unit_price - fill.fee)
         self.cash += proceeds
         lots = self.lots.get(fill.symbol, [])
         remaining = fill.quantity
@@ -224,7 +217,9 @@ def replay_ledger(evidence: RunEvidence, config: EvaluatorConfig) -> LedgerRepla
                     fee=order.fee,
                 )
             )
-    return LedgerReplay(trade_scores=tuple(scores), open_lots=book.open_lots())
+    return LedgerReplay(
+        trade_scores=tuple(scores), open_lots=book.open_lots(), final_cash=book.cash
+    )
 
 
 def _all_unsupported(evidence: RunEvidence, reason: str, score) -> LedgerReplay:

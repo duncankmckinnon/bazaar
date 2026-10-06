@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from bazaar_protocol import ExactAmount, NonNegativeAmount, Version
@@ -53,5 +53,34 @@ class TradeScore(_Result):
 
 
 class PeriodSummary(_Result):
+    """Whole-run money summary. `fees` are already inside realized and unrealized PnL."""
+
     account_id: UUID
     experiment_id: UUID
+    start_value: ExactAmount | None = None
+    end_value: ExactAmount | None = None  # cash + per-holding values under the valuation rule
+    market_end_value: ExactAmount | None = None  # the last mark's portfolio_value
+    realized_pnl: ExactAmount | None = None
+    unrealized_pnl: ExactAmount | None = None
+    fees: NonNegativeAmount | None = None
+    net_pnl: ExactAmount | None = None
+    period_return: ExactAmount | None = None
+    excess_return_vs_cash: ExactAmount | None = None  # the cash-only baseline returns 0
+    max_drawdown: ExactAmount | None = None
+    max_drawdown_fraction: ExactAmount | None = None
+    reconciled: bool = False
+
+
+class RunEvaluation(EvaluationModel):
+    experiment_id: UUID
+    account_id: UUID
+    agent_id: UUID
+    strategy_version_id: UUID
+    approval_id: UUID
+    data_version: Version
+    execution_rule_version: Version
+    evaluator_version: Version
+    run_status: Literal["completed", "failed"]
+    run_failure: str | None = None
+    trade_scores: tuple[TradeScore, ...]
+    period: PeriodSummary

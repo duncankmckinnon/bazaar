@@ -11,6 +11,7 @@ from bazaar_protocol import (
     ExperimentContext,
     NonNegativeAmount,
     OrderResult,
+    PortfolioSnapshot,
     PositiveAmount,
     PriceObservation,
     Symbol,
@@ -127,4 +128,22 @@ class RunEvidence(EvaluationModel):
         times = [opening.simulated_at, *(o.account.simulated_at for o in self.orders)]
         if times != sorted(times):
             raise ValueError("orders must be ordered by time, after the opening account")
+        return self
+
+
+class RunOutcome(EvaluationModel):
+    """How the run ended: closing marks (the last is the end of the run) and final account."""
+
+    marks: tuple[PortfolioSnapshot, ...]
+    final_account: AccountSnapshot
+    run_status: Literal["completed", "failed"]
+    run_failure: str | None = None
+
+    @model_validator(mode="after")
+    def ordered_marks_and_explained_failure(self) -> Self:
+        times = [m.simulated_at for m in self.marks]
+        if times != sorted(times):
+            raise ValueError("marks must be ordered by time")
+        if self.run_status == "failed" and not (self.run_failure or "").strip():
+            raise ValueError("a failed run needs run_failure")
         return self
