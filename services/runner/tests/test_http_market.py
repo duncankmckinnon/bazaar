@@ -8,19 +8,16 @@ import httpx
 import pytest
 from bazaar_protocol import (
     AccountSnapshot,
-    ApiError,
     ErrorCode,
-    ErrorDetail,
     FilledOrder,
     Holding,
     OrderRequest,
     OrderSide,
-    PriceHistory,
-    PriceObservation,
     RejectedOrder,
 )
 from bazaar_runner.http_market import (
     APPROVAL_HEADER,
+    MAX_PRICE_PAGES,
     RUNNER_TOKEN_ENV,
     RUNNER_TOKEN_HEADER,
     HttpMarketPort,
@@ -36,11 +33,21 @@ from bazaar_runner.market import (
 )
 from bazaar_runner.run import RunState, run_strategy
 
-from .market_fakes import CLOSES, SESSIONS, SPEC, InMemoryMarket
+from .market_fakes import (
+    CLOSES,
+    CONTROL_ROUTES,
+    SESSIONS,
+    SPEC,
+    TOKEN,
+    InMemoryMarket,
+    api_error,
+    delegating_transport,
+    history,
+    model_response,
+    route,
+)
 
 EID, APPROVAL = SPEC.experiment_id, SPEC.approval_id
-TOKEN = "runner-token-do-not-leak"
-CONTROL_ROUTES = {"PUT /cutoff", "POST /accounts", "POST /close"}
 ACCOUNT_ID = UUID("00000000-0000-0000-0000-0000000000b1")
 OPEN = SESSIONS[0].open_at
 ROOT = f"/experiments/{EID}"
@@ -56,16 +63,6 @@ ACCOUNT = AccountSnapshot(
 )
 CTX = SimpleNamespace(experiment_id=EID, account_id=ACCOUNT_ID)
 ORDER = OrderRequest(client_order_id=UUID(int=7), symbol="AAPL", side=OrderSide.BUY, quantity=1)
-
-
-def model_response(status: int, model) -> httpx.Response:
-    return httpx.Response(
-        status, content=model.model_dump_json(), headers={"content-type": "application/json"}
-    )
-
-
-def api_error(status: int, code: ErrorCode, message: str = "refused") -> httpx.Response:
-    return model_response(status, ApiError(error=ErrorDetail(code=code, message=message)))
 
 
 def port_answering(*responses: httpx.Response) -> tuple[HttpMarketPort, list[httpx.Request]]:
@@ -169,21 +166,6 @@ async def test_close_account_posts_close():
     only(seen, "POST", f"/accounts/{ACCOUNT_ID}/close")
 
 
-def history(*closes: datetime, cursor: str | None = None) -> PriceHistory:
-    return PriceHistory(
-        experiment_id=EID,
-        symbol="AAPL",
-        cutoff_at=OPEN,
-        source="fixture",
-        data_version="synthetic-v1",
-        observations=tuple(
-            PriceObservation(observed_at=c, available_at=c, price=str(200 + i))
-            for i, c in enumerate(closes)
-        ),
-        next_cursor=cursor,
-    )
-
-
 async def test_price_at_follows_the_cursor_and_returns_the_latest_close():
     older = CLOSES[0] - timedelta(days=1)
     port, seen = port_answering(
@@ -199,6 +181,21 @@ async def test_price_at_follows_the_cursor_and_returns_the_latest_close():
     assert first.url.params["start_at"] == "2026-01-23T14:30:00Z"
     assert "cursor" not in first.url.params
     assert second.url.params["cursor"] == "page-2"
+
+
+async def test_price_at_gives_up_on_a_cursor_that_never_ends():
+    seen: list[httpx.Request] = []
+
+    def forever(request):
+        seen.append(request)
+        return model_response(200, history(CLOSES[0], cursor="same-again"))
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(forever), base_url="http://m")
+    with pytest.raises(MarketError) as error:
+        await HttpMarketPort(client, EID, APPROVAL, TOKEN).price_at("AAPL", OPEN)
+    assert type(error.value) is MarketError
+    assert error.value.detail.code is ErrorCode.INTERNAL_ERROR
+    assert len(seen) == MAX_PRICE_PAGES
 
 
 @pytest.mark.parametrize(
@@ -286,80 +283,6 @@ async def test_misuse_is_refused_before_any_request():
     with pytest.raises(ValueError, match="bound to experiment"):
         await port.close_account(UUID(int=99), ACCOUNT_ID)
     assert seen == []
-
-
-def route(request: httpx.Request) -> str:
-    return f"{request.method} /{request.url.path.split('/')[-1]}"
-
-
-def delegating_transport(
-    fake: InMemoryMarket, seen: list[httpx.Request] | None = None
-) -> httpx.MockTransport:
-    """Serves the market routes from the in-memory fake, so the adapter meets the driver."""
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        if seen is not None:
-            seen.append(request)
-        if request.headers.get(APPROVAL_HEADER) != str(SPEC.approval_id):
-            return api_error(403, ErrorCode.EXPERIMENT_NOT_APPROVED)
-        if route(request) in CONTROL_ROUTES and request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
-            return api_error(401, ErrorCode.UNAUTHORIZED, "runner token required")
-        _, _, eid, *rest = request.url.path.split("/")
-        eid = UUID(eid)
-        body = json.loads(request.content) if request.content else {}
-        view = SimpleNamespace(
-            simulated_at=fake.cutoff,
-            data_version=SPEC.data_version,
-            execution_rule_version=SPEC.execution_rule_version,
-        )
-        try:
-            match request.method, rest:
-                case "PUT", ["cutoff"]:
-                    cutoff = await fake.set_cutoff(
-                        eid,
-                        datetime.fromisoformat(body["cutoff"]),
-                        body["data_version"],
-                        body["execution_rule_version"],
-                    )
-                    return httpx.Response(
-                        200, json={"experiment_id": str(eid), "cutoff": utc_z(cutoff)}
-                    )
-                case "POST", ["accounts"]:
-                    account = await fake.create_account(
-                        eid,
-                        UUID(body["agent_id"]),
-                        UUID(body["strategy_version_id"]),
-                        Decimal(body["cash"]),
-                        request_id=UUID(body["request_id"]),
-                    )
-                    return model_response(201, account)
-                case "GET", ["accounts", aid]:
-                    view.account_id = UUID(aid)
-                    return model_response(200, await fake.account(view))
-                case "POST", ["accounts", aid, "orders"]:
-                    view.account_id = UUID(aid)
-                    order = OrderRequest.model_validate(body)
-                    return model_response(200, await fake.submit(view, order))
-                case "GET", ["accounts", aid, "portfolio"]:
-                    view.account_id = UUID(aid)
-                    return model_response(200, await fake.portfolio(view))
-                case "POST", ["accounts", aid, "close"]:
-                    return model_response(200, await fake.close_account(eid, UUID(aid)))
-                case "GET", ["prices", symbol]:
-                    end_at = datetime.fromisoformat(request.url.params["end_at"])
-                    observation = await fake.price_at(symbol, end_at)
-                    page = history().model_copy(
-                        update={"cutoff_at": fake.cutoff, "observations": (observation,)}
-                    )
-                    return model_response(200, page)
-        except MissingPrice as exc:
-            return api_error(404, ErrorCode.NOT_FOUND, exc.detail.message)
-        except MarketError as exc:
-            status = 403 if exc.detail.code is ErrorCode.FORBIDDEN else 409
-            return api_error(status, exc.detail.code, exc.detail.message)
-        return api_error(404, ErrorCode.NOT_FOUND, "no route")
-
-    return httpx.MockTransport(handle)
 
 
 def buy_and_hold(price_at):

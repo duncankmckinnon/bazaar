@@ -3,7 +3,7 @@ name = "bazaar-runner"
 version = "0.1.0"
 description = "Experiment runner: simulated clock, event ordering and run lifecycle."
 requires-python = ">=3.12"
-dependencies = ["bazaar-protocol", "httpx>=0.27"]
+dependencies = ["bazaar-protocol", "httpx>=0.27", "logfire>=5.1.1"]
 
 [tool.uv.sources]
 bazaar-protocol = { workspace = true }

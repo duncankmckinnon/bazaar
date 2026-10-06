@@ -5,24 +5,28 @@ from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
 
+import logfire
 from bazaar_protocol import (
     AccountSnapshot,
     ErrorCode,
+    ExperimentContext,
+    OrderRequest,
     OrderResult,
     PortfolioSnapshot,
     PositiveAmount,
+    RejectedOrder,
     Version,
     WireModel,
 )
-from pydantic import Field
+from pydantic import AwareDatetime, Field
 
 from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule
-from bazaar_runner.market import ApprovalDenied, MarketError, MarketPort
+from bazaar_runner.market import ApprovalDenied, FutureData, MarketError, MarketPort
 from bazaar_runner.policy import DecisionPolicy
 
 Index = Annotated[int, Field(ge=0, strict=True)]
 # The market's error code, or one of two runner codes. T4, evals and Logfire match on it.
-FailureCode = Literal["approval_denied", "policy_error"] | ErrorCode
+FailureCode = Literal["approval_denied", "future_data", "policy_error"] | ErrorCode
 
 
 class RunState(StrEnum):
@@ -47,12 +51,14 @@ class OrderRecord(WireModel):
     event_sequence: Index
     # Position within its decision; orders fill at the decision's simulated_at (A4).
     order_index: Index
+    decided_at: AwareDatetime
+    request: OrderRequest
     result: OrderResult
 
 
 class MarkRecord(WireModel):
     event_sequence: Index
-    portfolio: PortfolioSnapshot
+    snapshot: PortfolioSnapshot
 
 
 class RunResult(WireModel):
@@ -69,9 +75,37 @@ class RunResult(WireModel):
 def failure_code(exc: Exception) -> FailureCode:
     if isinstance(exc, ApprovalDenied):
         return "approval_denied"
+    if isinstance(exc, FutureData):
+        return "future_data"
     if isinstance(exc, MarketError):
         return exc.detail.code
     return "policy_error"
+
+
+async def _submit(
+    market: MarketPort,
+    ctx: ExperimentContext,
+    index: int,
+    order: OrderRequest,
+    orders: list[OrderRecord],
+) -> AccountSnapshot:
+    with logfire.span(
+        "runner.order", symbol=order.symbol, side=order.side.value, quantity=str(order.quantity)
+    ) as span:
+        result = await market.submit(ctx, order)
+        span.set_attribute("status", result.status)
+        if isinstance(result, RejectedOrder):
+            span.set_attribute("error_code", result.error.code.value)
+    orders.append(
+        OrderRecord(
+            event_sequence=ctx.event_sequence,
+            order_index=index,
+            decided_at=ctx.simulated_at,
+            request=order,
+            result=result,
+        )
+    )
+    return result.account
 
 
 async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy) -> RunResult:
@@ -102,21 +136,20 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
         )
         for event in schedule:
             ctx = event.context(manifest)
-            await set_cutoff(event.simulated_at)
+            at = {"event_sequence": event.event_sequence, "simulated_at": event.simulated_at}
             if event.kind is EventKind.MARK:
-                portfolio = await market.portfolio(ctx)
-                marks.append(MarkRecord(event_sequence=event.event_sequence, portfolio=portfolio))
+                with logfire.span("runner.mark", **at) as span:
+                    await set_cutoff(event.simulated_at)
+                    snapshot = await market.portfolio(ctx)
+                    span.set_attribute("portfolio_value", str(snapshot.portfolio_value))
+                marks.append(MarkRecord(event_sequence=event.event_sequence, snapshot=snapshot))
                 continue
-            account = await market.account(ctx)
-            decision = await policy(ctx, account)
-            for index, order in enumerate(decision):
-                result = await market.submit(ctx, order)
-                orders.append(
-                    OrderRecord(
-                        event_sequence=event.event_sequence, order_index=index, result=result
-                    )
-                )
-                account = result.account
+            with logfire.span("runner.decision", **at):
+                await set_cutoff(event.simulated_at)
+                account = await market.account(ctx)
+                decision = await policy(ctx, account)
+                for index, order in enumerate(decision):
+                    account = await _submit(market, ctx, index, order, orders)
         state = RunState.COMPLETED
     except Exception as exc:  # noqa: BLE001 - any policy or market failure ends the run as failed
         state, failure, code = RunState.FAILED, f"{type(exc).__name__}: {exc}", failure_code(exc)

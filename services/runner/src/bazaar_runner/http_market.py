@@ -44,6 +44,8 @@ RUNNER_TOKEN_ENV = "BAZAAR_RUNNER_TOKEN"
 DEFAULT_BASE_URL = "http://localhost:8000"
 # Long enough to reach back over a weekend plus a holiday to the latest close.
 PRICE_LOOKBACK = timedelta(days=10)
+# The market does not page today; this bounds a server that keeps returning a cursor.
+MAX_PRICE_PAGES = 10
 
 
 def utc_z(value: datetime) -> str:
@@ -190,7 +192,7 @@ class HttpMarketPort:
             "limit": "100",
         }
         latest: PriceObservation | None = None
-        while True:
+        for _ in range(MAX_PRICE_PAGES):
             try:
                 content = await self._request("GET", f"/prices/{symbol}", params=params)
             except MarketError as exc:
@@ -207,6 +209,13 @@ class HttpMarketPort:
             if page.next_cursor is None:
                 break
             params = params | {"cursor": page.next_cursor}
+        else:
+            raise MarketError(
+                ErrorDetail(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message=f"{symbol} price history did not end after {MAX_PRICE_PAGES} pages",
+                )
+            )
         if latest is None:
             raise MissingPrice(symbol, cutoff)
         return latest

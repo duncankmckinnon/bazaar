@@ -59,7 +59,7 @@ async def test_scripted_run_completes_end_to_end():
     ]
     assert [ctx.event_sequence for ctx, _ in seen] == list(range(0, 20, 2))
     assert [m.event_sequence for m in result.marks] == list(range(1, 20, 2))
-    values = [m.portfolio.portfolio_value for m in result.marks]
+    values = [m.snapshot.portfolio_value for m in result.marks]
     # 02-02 close: 8000 + 10*201. 02-03 close: 6780 + 10*202 + 20*62. Last: 7588 + 6*210 + 20*70.
     assert (values[0], values[1], values[-1]) == (Decimal(10010), Decimal(10040), Decimal(10248))
     assert RunResult.model_validate_json(result.model_dump_json()) == result
@@ -172,7 +172,7 @@ async def test_a_policy_reading_a_future_price_fails_the_run():
 
     result = await run_strategy(SPEC, market, peek)
     assert result.state is RunState.FAILED
-    assert result.failure_code is ErrorCode.FORBIDDEN
+    assert result.failure_code == "future_data"
     assert result.failure.startswith("FutureData: forbidden: 2026-02-13T21:00:00+00:00 is after")
     assert result.orders == () and result.marks == ()
     assert result.account.account_id in market.closed
