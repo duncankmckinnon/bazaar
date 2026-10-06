@@ -5,10 +5,11 @@ Mounted like `news_api`, behind the approval check, with the account from X-Baza
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Annotated
 from uuid import UUID
 
-from bazaar_protocol import ApiError, ErrorCode, Symbol
+from bazaar_protocol import ApiError, ErrorCode, Symbol, WireModel
 from bazaar_protocol.research import CompanyFiling, FilingPage
 from fastapi import APIRouter, Depends, Request
 from pydantic import TypeAdapter, ValidationError
@@ -21,6 +22,14 @@ from .ledger_api import research_scope
 
 router = APIRouter()
 symbol_adapter = TypeAdapter(Symbol)
+MAX_CYCLE_SYMBOLS = 50
+
+
+class FiscalCycleStart(WireModel):
+    """The same shape as the agent client's FiscalCycle: when a company's current cycle began."""
+
+    symbol: Symbol
+    start: date
 
 
 def _missing(message: str) -> MarketError:
@@ -90,3 +99,46 @@ def filings(
     return build_page(
         FilingPage, scope, query, route="filings", source=source, items=items, symbol=symbol
     )
+
+
+@router.get(
+    "/experiments/{experiment_id}/fiscal-cycles",
+    response_model=list[FiscalCycleStart],
+    responses={code: {"model": ApiError} for code in (403, 404, 422)},
+)
+def fiscal_cycles(request: Request, experiment_id: UUID, symbols: str) -> list[FiscalCycleStart]:
+    """Each company's current fiscal cycle at the experiment's cutoff, for the runner.
+
+    The response is a bare JSON list of {"symbol": "AAPL", "start": "YYYY-MM-DD"}, exactly the
+    fields of the agent client's FiscalCycle, so the runner can build FiscalCycle(**item).
+
+    `start` is the day after the latest fiscal period end among the company's served 10-K and
+    10-Q filings accepted by the cutoff. It uses only filings visible then and no fiscal-year
+    arithmetic, so it can lag the real cycle but never runs ahead of it. The latest period end,
+    not the latest filing's, so a late amendment for an older period never moves it back. A
+    company with no such filing, or an experiment whose filings are not imported, is omitted,
+    which the agent's client treats as unsupported. A malformed symbol is 422.
+    """
+    wanted = list(dict.fromkeys(s.strip() for s in symbols.split(",") if s.strip()))
+    if not 1 <= len(wanted) <= MAX_CYCLE_SYMBOLS:
+        raise MarketError(
+            422, ErrorCode.INVALID_REQUEST, f"Give 1 to {MAX_CYCLE_SYMBOLS} comma-separated symbols"
+        )
+    try:
+        wanted = [symbol_adapter.validate_python(s) for s in wanted]
+    except ValidationError:
+        raise MarketError(422, ErrorCode.INVALID_REQUEST, "Invalid symbol") from None
+    try:
+        experiment = request.app.state.clock.experiment(experiment_id)
+    except LookupError:
+        raise MarketError(404, ErrorCode.NOT_FOUND, "Unknown experiment") from None
+    ends: dict[str, date] = {}
+    try:
+        version = request.app.state.component(experiment_id, "filings")
+        archive = SqliteFilingArchive(request.app.state.market_db_path, version)
+        ends = archive.latest_period_ends(wanted, experiment.cutoff_at)
+    except (LookupError, MissingCoverage):
+        pass  # no filings for this experiment: every symbol is omitted
+    return [
+        FiscalCycleStart(symbol=s, start=ends[s] + timedelta(days=1)) for s in wanted if s in ends
+    ]

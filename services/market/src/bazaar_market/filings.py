@@ -183,3 +183,25 @@ class SqliteFilingArchive:
             )
             for r in rows
         ]
+
+    def latest_period_ends(self, symbols: list[str], cutoff: datetime) -> dict[str, date]:
+        """For each symbol, the latest fiscal period end among filings accepted by the cutoff.
+
+        A symbol with no such filing is absent. Raises `MissingCoverage` when no filings were
+        ever imported. The maximum, not the most recent filing's period, so a late amendment
+        for an older period never moves a company's cycle backwards.
+        """
+        with closing(self._connect()) as connection:
+            imported = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_filings'"
+            ).fetchone()
+            if imported is None:
+                raise MissingCoverage(f"no filings are imported under {self.data_version}")
+            marks = ", ".join("?" for _ in symbols)
+            rows = connection.execute(
+                "SELECT symbol, MAX(period_end) AS period_end FROM data_filings "
+                f"WHERE data_version = ? AND accepted_at <= ? AND symbol IN ({marks}) "
+                "GROUP BY symbol",
+                (self.data_version, stored_time(cutoff), *symbols),
+            ).fetchall()
+        return {r["symbol"]: date.fromisoformat(r["period_end"]) for r in rows}
