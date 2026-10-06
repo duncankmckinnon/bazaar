@@ -21,11 +21,13 @@ from pathlib import Path
 
 import httpx
 
+from ..filings import FILINGS_VERSION
 from ..news import NEWS_VERSION
 from .alpaca_bars import ticker_windows
 from .bars_import import ALPACA_BARS_VERSION, import_bars_snapshot
 from .errors import SourceError
 from .fetch import fetch_bars_range, fetch_edgar, fetch_news_range, fetch_universe
+from .filings_import import document_window, import_filings_snapshot
 from .news_import import import_news_snapshot
 from .snapshot import SnapshotConflict
 from .universe import load_config
@@ -77,6 +79,7 @@ def _run(
             "bars",
             "import-bars",
             "import-news",
+            "import-filings",
         ],
     )
     parser.add_argument("--config", default="config/demo-sources.toml")
@@ -98,6 +101,8 @@ def _run(
         return _import_bars(args)
     if args.command == "import-news":
         return _import_news(args)
+    if args.command == "import-filings":
+        return _import_filings(args)
     env = os.environ if env is None else env
     now = now or datetime.now(UTC)
     version = args.version or now.astimezone(UTC).strftime("%Y-%m-%dT%H%MZ")
@@ -200,6 +205,34 @@ def _import_news(args: argparse.Namespace) -> int:
     if report.left_out:
         print(f"import-news: left out, not imported: {', '.join(report.left_out)}")
     print(f"import-news: imported {args.snapshot} into {args.db} as {data_version}")
+    return 0
+
+
+def _import_filings(args: argparse.Namespace) -> int:
+    if _missing_snapshot(args, "edgar"):
+        return 1
+    cfg = load_config(Path(args.config))
+    symbols = _symbols(args)
+    companies = {c.ticker: c.cik for c in cfg.companies if not symbols or c.ticker in symbols}
+    unknown = sorted(set(symbols or ()) - set(companies))
+    if unknown:
+        raise SourceError(f"not in the config: {', '.join(unknown)}")
+    window = document_window(cfg.edgar_documents_since, cfg.period_end)
+    data_version = args.data_version or FILINGS_VERSION
+    args.db.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(args.db)) as connection:
+        report = import_filings_snapshot(
+            connection, args.snapshot, companies, window, data_version=data_version
+        )
+    for c in report:
+        print(
+            f"import-filings: {c.symbol} (CIK {c.cik}) {c.served} 10-K/10-Q served, "
+            f"{c.truncated} truncated, {len(c.excluded)} left out without an XBRL period, "
+            f"{c.outside_window} outside the document window"
+        )
+        for e in c.excluded:
+            print(f"import-filings:   left out {e.form} {e.accession}: {e.reason}")
+    print(f"import-filings: imported {args.snapshot} into {args.db} as {data_version}")
     return 0
 
 

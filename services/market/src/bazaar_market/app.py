@@ -16,7 +16,7 @@ from uuid import UUID
 import logfire
 from fastapi import Depends, FastAPI
 
-from bazaar_market import bundles, db, ledger_api, news_api, prices, prices_api
+from bazaar_market import bundles, db, filings_api, ledger_api, news_api, prices, prices_api
 from bazaar_market.clock import SqliteClock
 from bazaar_market.dev_grants import DevAllowListGrants
 from bazaar_market.ledger import Ledger
@@ -97,6 +97,9 @@ def create_app(
 
     app.include_router(prices_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
     app.include_router(news_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
+    app.include_router(
+        filings_api.router, dependencies=[Depends(ledger_api.approval_check(grants))]
+    )
     ledger_api.install(app, ledger, grants, token)
     logfire.instrument_fastapi(
         app,

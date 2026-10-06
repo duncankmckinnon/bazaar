@@ -116,6 +116,46 @@ Redirects are never followed, so the Alpaca key headers are sent to `data.alpaca
 
 `data/raw/` is ignored by git.
 
+## Research archives: news and filings
+
+The market serves archived news and company filings to agents at
+`GET /experiments/{id}/news/{symbol}` and `GET /experiments/{id}/filings/{symbol}`, as `NewsPage` and `FilingPage`.
+An experiment's data bundle (for example `demo-bundle-v1`) names the news and filings versions it reads.
+Every page and item carries the experiment's `data_version`, and `source` names the archive version,
+for example `alpaca-news/alpaca-news-v1`.
+A window the archive does not cover is 404, never an empty page.
+
+```sh
+uv run python -m bazaar_market.sources import-news --snapshot data/raw/alpaca-news/<version> --db data/market.sqlite3
+uv run python -m bazaar_market.sources import-filings --snapshot data/raw/edgar/<version> --db data/market.sqlite3
+```
+
+News (`alpaca-news-v1`):
+
+- An article is published at `created_at`, and its revision on file is available at `updated_at`, or at
+  `created_at` if that is later.
+  It is served only once that revision is available, so an article revised after the cutoff is left out.
+- The fetch selects by revision time, so an article revised after the fetched window ended is absent.
+  A request is covered only when the window and the cutoff are both inside the fetched window.
+- Text is the content's HTML as plain text, or the summary when there is no content, or empty when there is neither.
+  It is cut at 100,000 characters with the marker `[truncated at 100000 characters]`.
+
+Filings (`edgar-filings-v1`):
+
+- Only 10-K and 10-Q filings and their amendments are served.
+  8-K filings have no fiscal period and are not served.
+- A filing's fiscal period comes from its own XBRL facts: the duration that ends on its report date and lasts
+  350 to 380 days for a 10-K or 84 to 98 days for a 10-Q.
+  A 10-K also reports prior-year and quarterly durations, and a 10-Q reports year-to-date ones, so the first duration
+  found is not used.
+  A filing with no such duration, or more than one, is left out, and `import-filings` lists it with the reason.
+- A filing is published, revised and available at its acceptance time.
+- The archive covers acceptances from `edgar.documents_since` (2024-07-01) to the end of the period, because only those
+  filings' documents were fetched.
+  A qualifying filing in that window without its document stops the import.
+- Text is the primary document as plain text, without inline XBRL headers.
+  It is cut at 200,000 characters with the marker `[truncated at 200000 characters]`; most annual reports are cut.
+
 ## Reading point-in-time
 
 `sources.read` loads a snapshot into `Filing`, `Fact` and `NewsItem` records.
