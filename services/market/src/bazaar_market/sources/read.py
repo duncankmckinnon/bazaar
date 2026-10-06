@@ -103,8 +103,8 @@ def load_news(snapshot_dir: Path, symbol: str) -> list[NewsItem]:
             return sorted(by_id.values(), key=lambda n: (n.created_at, n.id))
 
 
-def bar_windows(snapshot_dir: Path) -> dict[str, dict[str, str]]:
-    """Each ticker's recorded request: start, end, adjustment and feed."""
+def recorded_windows(snapshot_dir: Path) -> dict[str, dict[str, str]]:
+    """Each symbol's recorded request window, with any details such as adjustment and feed."""
     return dict(_Frozen(snapshot_dir).coverage)
 
 
