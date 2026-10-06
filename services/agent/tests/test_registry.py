@@ -384,7 +384,15 @@ def test_definition_contract_is_frozen_and_instructions_only(client):
 @pytest.mark.parametrize("method", ["register", "add_version"])
 @pytest.mark.parametrize(
     "kind",
-    ["legacy_subclass", "copy_legacy", "construct_legacy", "copy_invalid", "construct_invalid"],
+    [
+        "legacy_subclass",
+        "copy_legacy",
+        "construct_legacy",
+        "copy_invalid",
+        "construct_invalid",
+        "copy_unsafe_utf8",
+        "construct_unsafe_utf8",
+    ],
 )
 def test_public_write_methods_revalidate_before_transactions(
     client, monkeypatch, capfire, method, kind
@@ -411,7 +419,9 @@ def test_public_write_methods_revalidate_before_transactions(
         definition = (
             legacy
             if kind.endswith("legacy")
-            else StrategyDefinition.model_construct(instructions=" ")
+            else StrategyDefinition.model_construct(
+                instructions=b"PRIVATE-WRITE-STRATEGY\xff" if kind.endswith("unsafe_utf8") else " "
+            )
         )
         request = (
             valid.model_copy(update={"definition": definition})

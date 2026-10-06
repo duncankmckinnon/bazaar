@@ -23,6 +23,7 @@ from bazaar_protocol.registry import (
     StrategyVersion,
 )
 from pydantic import ValidationError
+from pydantic_core import PydanticSerializationError
 
 
 class _LegacyCreateStrategyRequest(CreateStrategyRequest):
@@ -230,7 +231,7 @@ class RegistryStore:
             request = CreateStrategyRequest.model_validate_json(
                 request.model_dump_json(serialize_as_any=True)
             )
-        except ValidationError:
+        except (ValidationError, PydanticSerializationError):
             # Validation details may contain private strategy text; keep telemetry safe.
             raise RegistryError(422, ErrorCode.INVALID_REQUEST, "Invalid request") from None
         fingerprint = digest(request.model_dump(mode="json"))
@@ -309,7 +310,7 @@ class RegistryStore:
             request = CreateVersionRequest.model_validate_json(
                 request.model_dump_json(serialize_as_any=True)
             )
-        except ValidationError:
+        except (ValidationError, PydanticSerializationError):
             raise RegistryError(422, ErrorCode.INVALID_REQUEST, "Invalid request") from None
         fingerprint = digest(request.model_dump(mode="json"))
         with self.connect() as connection:
