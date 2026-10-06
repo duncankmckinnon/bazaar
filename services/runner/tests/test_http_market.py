@@ -366,9 +366,7 @@ async def test_a_wrong_token_fails_the_run_as_runner_unauthorized():
     result = await run_strategy(SPEC, port, buy_and_hold(port.price_at))
     assert result.state is RunState.FAILED
     assert result.failure_code == "runner_unauthorized"
-    assert result.failure == (
-        "runner unauthorized while opening the run: the market refused the runner's credential"
-    )
+    assert result.failure == ("the market refused the runner's credential while opening the run")
     assert fake.calls == []
 
 

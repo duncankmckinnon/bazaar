@@ -120,8 +120,7 @@ async def test_decide_raising_fails_the_run_and_keeps_its_fills():
     assert result.state is RunState.FAILED
     # 2026-02-05 is the fourth session; its open is event 6.
     assert result.failure == (
-        "policy error during the decision at 2026-02-05T14:30:00Z (event 6):"
-        " the run stopped on RuntimeError"
+        "the run stopped on RuntimeError during the decision at 2026-02-05T14:30:00Z (event 6)"
     )
     assert "policy blew up" not in result.failure
     assert result.failure_code == "policy_error"
@@ -160,7 +159,7 @@ async def test_close_failure_is_recorded_and_the_run_is_failed():
     result = await run_strategy(SPEC, market, scripted_policy([]))
     assert result.state is RunState.FAILED
     assert result.failure == (
-        "market error while closing the account (internal_error): down"
+        "while closing the account, the market said: down"
         f"; account {result.account.account_id} was left open"
     )
     assert result.failure_code is ErrorCode.INTERNAL_ERROR
@@ -178,8 +177,8 @@ async def test_a_policy_reading_a_future_price_fails_the_run():
     assert result.state is RunState.FAILED
     assert result.failure_code == "future_data"
     assert result.failure == (
-        "future data refused during the decision at 2026-02-02T14:30:00Z (event 0):"
-        " a read asked for data past the experiment's clock"
+        "a read past the experiment's clock was refused"
+        " during the decision at 2026-02-02T14:30:00Z (event 0)"
     )
     assert result.orders == () and result.marks == ()
     assert result.account.account_id in market.closed
