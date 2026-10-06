@@ -186,3 +186,15 @@ def test_the_command_line_writes_and_imports_the_synthetic_set(tmp_path):
     assert market.price_at("KO", close_at(date(2026, 2, 13))).observed_at == close_at(
         date(2026, 2, 13)
     )
+
+
+def test_synthetic_prices_answer_at_every_close_of_the_runner_demo_window(tmp_path):
+    path = tmp_path / "market.sqlite3"
+    with closing(sqlite3.connect(path)) as connection:
+        import_bars(connection, synthetic_bars(), data_version="synthetic-v1", source="synthetic")
+    market = SqliteMarketData(path, "synthetic-v1")
+    window = [date(2026, 1, 30) + timedelta(days=d) for d in range(15)]
+
+    for symbol in ("AAPL", "MSFT", "KO"):
+        for day in (d for d in window if d.weekday() < 5):
+            assert market.price_at(symbol, close_at(day)).observed_at == close_at(day)
