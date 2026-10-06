@@ -86,20 +86,18 @@ sqlite3 data/market.sqlite3 "SELECT * FROM data_imports;"
 
 ## 2. Start the server
 
-Pick a runner token and the approvals to allow, then start the server on the same database file
-you imported into:
+Pick a runner token, then start the server on the same database file you imported into:
 
 ```sh
 export BAZAAR_RUNNER_TOKEN="$(openssl rand -hex 32)"   # give the same value to the runner
 BAZAAR_MARKET_DB=data/market.sqlite3 \
-BAZAAR_DEV_APPROVAL_IDS="<approval_id>:<experiment_id>" \
     uv run uvicorn bazaar_market.app:app --port 8000
 curl localhost:8000/health
 ```
 
-- `BAZAAR_DEV_APPROVAL_IDS` is a comma-separated list of `<approval_id>:<experiment_id>` pairs.
-  Each approval is good for its one experiment only. Unset means every approval is denied. A
-  malformed entry stops the server at startup. Every call it allows logs a DEV warning.
+- Every route needs an `X-Bazaar-Approval` header for the experiment in its path. Approvals come
+  from the approval service (#18). Until it exists the market denies every approval (403), so
+  nothing can trade yet.
 - If `BAZAAR_RUNNER_TOKEN` is unset or empty, the server starts, but it refuses every cutoff,
   create-account and close call.
 
@@ -146,7 +144,6 @@ becomes visible at 16:00 New York time. A cutoff during a session sees the previ
 | --- | --- | --- |
 | `BAZAAR_MARKET_DB` | server | SQLite file. Default `data/market.sqlite3`. Must match `--db` above. |
 | `BAZAAR_RUNNER_TOKEN` | server, runner | Shared secret for the control calls (cutoff, create account, close). Unset or empty means those calls are all refused. |
-| `BAZAAR_DEV_APPROVAL_IDS` | server | DEV ONLY. Comma-separated `<approval_id>:<experiment_id>` pairs to allow. Unset means every approval is denied. |
 | `LOGFIRE_TOKEN` | server | Logfire write token. Traces are sent only when it is set. |
 | `BAZAAR_ENVIRONMENT` | server | Logfire environment label. Default `development`. |
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `bars` | Alpaca keys, exported in the shell or loaded with `--env-file .env`. Not needed to import or serve. |
