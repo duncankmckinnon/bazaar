@@ -20,7 +20,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from ..archive import html_to_text, truncate
-from ..filings import FILINGS_VERSION, TEXT_LIMIT, FilingRecord, import_filings
+from ..filings import FILINGS_VERSION, TEXT_LIMIT, ExcludedFiling, FilingRecord, import_filings
 from .errors import SourceError
 from .models import Fact, Filing
 from .read import load_document, load_facts, load_filings
@@ -106,6 +106,7 @@ def import_filings_snapshot(
     without its document, raises, so a company is never served from part of its filings.
     """
     records: list[FilingRecord] = []
+    gaps: list[ExcludedFiling] = []
     report = []
     for symbol, cik in companies.items():
         facts_by_accession: dict[str, list[Fact]] = defaultdict(list)
@@ -122,6 +123,11 @@ def import_filings_snapshot(
             period = find_period(filing, facts_by_accession.get(filing.accession, []))
             if isinstance(period, str):
                 excluded.append(Excluded(filing.accession, filing.form, period))
+                gaps.append(
+                    ExcludedFiling(
+                        symbol, filing.accession, filing.form, filing.accepted_at, period
+                    )
+                )
                 continue
             document = load_document(snapshot_dir, filing)
             if document is None:
@@ -146,5 +152,5 @@ def import_filings_snapshot(
         report.append(
             CompanyFilings(symbol, cik, served, truncated, tuple(excluded), outside_window)
         )
-    import_filings(connection, records, companies, window, data_version=data_version)
+    import_filings(connection, records, companies, window, gaps, data_version=data_version)
     return report

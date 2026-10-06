@@ -17,6 +17,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import TypeAdapter, ValidationError
 
 from .archive import MissingCoverage
+from .bundles import NoComponent
+from .clock import UnknownExperiment
 from .db import MarketError
 from .history import PageScope, build_page, parse_history_request
 from .ledger_api import research_scope
@@ -60,7 +62,7 @@ def news(
         raise MarketError(403, ErrorCode.FORBIDDEN, "end_at is after the experiment's current time")
     try:
         version = request.app.state.component(experiment_id, "news")
-    except LookupError:
+    except (UnknownExperiment, NoComponent):
         raise _missing("This experiment's data has no news archive") from None
     archive = SqliteNewsArchive(request.app.state.market_db_path, version)
     try:

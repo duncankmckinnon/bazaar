@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
-from bazaar_market.clock import Experiment
+from bazaar_market.clock import Experiment, UnknownExperiment
 from bazaar_market.prices import Bar, SqliteMarketData, close_at, import_bars
 from bazaar_market.prices_api import router
 from bazaar_protocol import PriceHistory
@@ -23,7 +23,7 @@ class FakeClock:
 
     def experiment(self, experiment_id: UUID) -> Experiment:
         if experiment_id != EXPERIMENT:
-            raise LookupError(str(experiment_id))
+            raise UnknownExperiment(str(experiment_id))
         return Experiment(experiment_id, self.data_version, "exec-v1", self.at, 1)
 
 

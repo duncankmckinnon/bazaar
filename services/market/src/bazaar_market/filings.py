@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS data_filings (
     text TEXT NOT NULL,
     PRIMARY KEY (data_version, symbol, accession)
 );
+CREATE TABLE IF NOT EXISTS data_filings_exclusions (
+    data_version TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    accession TEXT NOT NULL,
+    form TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (data_version, symbol, accession)
+);
 CREATE TABLE IF NOT EXISTS data_filings_coverage (
     data_version TEXT NOT NULL,
     symbol TEXT NOT NULL,
@@ -46,6 +55,17 @@ CREATE TABLE IF NOT EXISTS data_filings_coverage (
 
 class FilingConflict(Exception):
     """An import would change a filing or coverage already stored under the same version."""
+
+
+@dataclass(frozen=True)
+class ExcludedFiling:
+    """A 10-K or 10-Q inside the covered window that is not served, and why."""
+
+    symbol: str
+    accession: str
+    form: str
+    accepted_at: datetime
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -68,6 +88,7 @@ def import_filings(
     records: Iterable[FilingRecord],
     companies: dict[str, int],
     window: tuple[datetime, datetime],
+    excluded: Iterable[ExcludedFiling] = (),
     *,
     data_version: str = FILINGS_VERSION,
 ) -> int:
@@ -92,6 +113,28 @@ def import_filings(
                 )
             elif tuple(stored) != coverage:
                 raise FilingConflict(f"{symbol} already has different coverage in {data_version}")
+        for e in excluded:
+            row = (
+                data_version,
+                e.symbol,
+                e.accession,
+                e.form,
+                stored_time(e.accepted_at),
+                e.reason,
+            )
+            stored = connection.execute(
+                "SELECT * FROM data_filings_exclusions "
+                "WHERE data_version = ? AND symbol = ? AND accession = ?",
+                (data_version, e.symbol, e.accession),
+            ).fetchone()
+            if stored is None:
+                connection.execute(
+                    "INSERT INTO data_filings_exclusions VALUES (?, ?, ?, ?, ?, ?)", row
+                )
+            elif tuple(stored) != row:
+                raise FilingConflict(
+                    f"{e.symbol} exclusion {e.accession} changed in {data_version}"
+                )
         for r in records:
             if r.symbol not in companies:
                 raise FilingConflict(f"{r.symbol} has filings but no loaded history")
@@ -159,6 +202,16 @@ class SqliteFilingArchive:
                 and stored_time(end_at) <= covered["end_at"]
             ):
                 raise MissingCoverage(f"filings for {symbol} do not cover the whole window")
+            # A 10-K or 10-Q left out for want of a fiscal period is a gap, not an absence.
+            gap = connection.execute(
+                "SELECT accession FROM data_filings_exclusions WHERE data_version = ? "
+                "AND symbol = ? AND accepted_at >= ? AND accepted_at <= ? LIMIT 1",
+                (self.data_version, symbol, stored_time(start_at), stored_time(end_at)),
+            ).fetchone()
+            if gap is not None:
+                raise MissingCoverage(
+                    f"filing {gap['accession']} for {symbol} in this window is not served"
+                )
             rows = connection.execute(
                 "SELECT * FROM data_filings WHERE data_version = ? AND symbol = ? "
                 "AND accepted_at >= ? AND accepted_at <= ? AND accepted_at <= ? "

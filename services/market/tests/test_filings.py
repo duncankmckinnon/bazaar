@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from bazaar_market.archive import FutureDataError, MissingCoverage, html_to_text
@@ -128,13 +128,14 @@ def columns(rows):
     return out
 
 
-def edgar_snapshot(tmp_path, *, documents=None, body="<p>Annual report.</p>"):
-    """One company: a 10-K in the window, a 10-Q before it, and an 8-K."""
+def edgar_snapshot(tmp_path, *, documents=None, body="<p>Annual report.</p>", extra=()):
+    """One company: a 10-K in the window, a 10-Q before it, an 8-K, and any `extra` rows."""
     snap = Snapshot(tmp_path / "raw", source="edgar", version="v1")
     rows = [
         ("k-1", "10-K", "2024-12-31", "2025-02-03", "2025-02-03T21:00:00.000Z"),
         ("q-0", "10-Q", "2024-03-31", "2024-05-01", "2024-05-01T20:00:00.000Z"),
         ("e-1", "8-K", "", "2025-03-03", "2025-03-03T13:00:00.000Z"),
+        *extra,
     ]
     submissions = {"cik": f"{CIK:010d}", "filings": {"recent": columns(rows)}}
     point = {"val": 1, "form": "10-K", "filed": "2025-02-03", "fy": 2024, "fp": "FY"}
@@ -157,7 +158,9 @@ def edgar_snapshot(tmp_path, *, documents=None, body="<p>Annual report.</p>"):
     }  # fmt: skip
     snap.write(f"submissions/CIK{CIK:010d}.json", json.dumps(submissions).encode(), url="u", rows=3)
     snap.write(f"companyfacts/CIK{CIK:010d}.json", json.dumps(facts).encode(), url="u", rows=3)
-    for accession in documents if documents is not None else ["k-1", "q-0", "e-1"]:
+    for accession in (
+        documents if documents is not None else ["k-1", "q-0", "e-1", *(r[0] for r in extra)]
+    ):
         snap.write(f"documents/{CIK}/{accession}/doc.htm", body.encode(), url="u", rows=1)
     return snap.dir
 
@@ -242,3 +245,38 @@ def test_cli_import_filings_without_a_snapshot_says_to_fetch_edgar(tmp_path, cap
 
     assert code == 1
     assert "sources edgar --version edgar-x first." in capsys.readouterr().err
+
+
+# A 10-Q inside the window that EDGAR has no XBRL facts for yet.
+UNPROCESSED = ("q-9", "10-Q", "2025-06-30", "2025-08-01", "2025-08-01T20:00:00.000Z")
+UNPROCESSED_AT = datetime(2025, 8, 1, 20, tzinfo=UTC)
+
+
+def test_a_window_holding_an_excluded_filing_is_missing_not_complete(tmp_path):
+    filings, [report] = load(tmp_path, extra=[UNPROCESSED])
+
+    assert [e.accession for e in report.excluded] == ["q-9"]
+    with pytest.raises(MissingCoverage, match="q-9"):
+        filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
+    with pytest.raises(MissingCoverage):
+        filings.visible("ACME", UNPROCESSED_AT, UNPROCESSED_AT, cutoff=UNPROCESSED_AT)
+
+
+def test_a_window_clear_of_exclusions_is_still_complete(tmp_path):
+    filings, _ = load(tmp_path, extra=[UNPROCESSED])
+    before = UNPROCESSED_AT - timedelta(microseconds=1)
+
+    assert [f.accession for f in filings.visible("ACME", START, before, cutoff=before)] == ["k-1"]
+
+
+def test_reimporting_into_a_database_from_before_exclusions_records_them(tmp_path):
+    load(tmp_path, extra=[UNPROCESSED])
+    with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
+        connection.execute("DROP TABLE data_filings_exclusions")  # as an older import left it
+
+    filings, _ = load(tmp_path, extra=[UNPROCESSED])
+
+    with pytest.raises(MissingCoverage, match="q-9"):
+        filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
+    with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM data_filings").fetchone()[0] == 1

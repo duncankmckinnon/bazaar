@@ -20,7 +20,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from .clock import SqliteClock
+from .bundles import NoComponent
+from .clock import SqliteClock, UnknownExperiment
 from .prices import FutureDataError, MissingData, SqliteMarketData
 
 router = APIRouter()
@@ -54,7 +55,7 @@ def price_history(
     try:
         experiment = clock.experiment(experiment_id)
         market_data = market_data_for(experiment_id)
-    except LookupError:
+    except (UnknownExperiment, NoComponent):
         return _error(404, ErrorCode.NOT_FOUND, "Unknown experiment")
     try:
         observations = market_data.price_history(
