@@ -1,5 +1,7 @@
 # Bazaar
 
+> **On the `demo/aie-nyc` branch:** start with [DEMO.md](DEMO.md) to run the full loop locally.
+
 Bazaar's target is historical stock strategy experimentation with fake-money accounts in a market
 DB. Agents buy and sell through simulated market execution using point-in-time prices, news,
 prior-cycle company reports and Pydantic Monty. An orchestrator proposes the next strategy/test plan
