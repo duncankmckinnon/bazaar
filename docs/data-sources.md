@@ -111,6 +111,9 @@ They do not authorize anything, and the market server still has to enforce the c
   This catches only early labels that cross a filing-date boundary.
   An early label that stays on the filing date, such as 16:30 Eastern stamped as 16:30 UTC, is still undetectable
   without the index page.
+  A late-labelling filer (AAPL, AMZN, JPM or META) that files after about 19:30 Eastern on the evening before a
+  weekday holiday would trip this check, so `load_filings` fails closed for that company; none of the 6,430 such
+  filings for the thirteen demo companies, from 1994 to 2026, did (checked 2026-10-06).
 - Membership is keyed by the ticker in use at the time.
   `in_universe` is false for FISV from 2023-06-07 to 2025-11-10, when Fiserv traded as FI.
   Mapping a company across a rename is left to the importer.
