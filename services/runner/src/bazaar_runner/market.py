@@ -28,6 +28,20 @@ class MarketError(Exception):
         self.detail = detail
 
 
+class ApprovalDenied(MarketError):
+    """The market refused the run's approval (403 experiment_not_approved); nothing was written."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorDetail(code=ErrorCode.EXPERIMENT_NOT_APPROVED, message=message))
+
+
+class FutureData(MarketError):
+    """A read past the experiment's trusted cutoff (403 forbidden); never answered with data."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorDetail(code=ErrorCode.FORBIDDEN, message=message))
+
+
 class MissingPrice(MarketError):
     """No close for the symbol is available at the cutoff; never filled with a default."""
 
@@ -80,7 +94,11 @@ class MarketPort(Protocol):
         ...
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
-        """The latest daily close whose available_at <= cutoff; raises MissingPrice if none."""
+        """The latest daily close whose available_at <= cutoff.
+
+        Raises MissingPrice if there is none, and FutureData if cutoff is later than the
+        experiment's current trusted cutoff.
+        """
         ...
 
     async def close_account(self, experiment_id: UUID, account_id: UUID) -> AccountSnapshot: ...

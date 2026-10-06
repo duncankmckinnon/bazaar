@@ -9,7 +9,11 @@ Decision = tuple[OrderRequest, ...]
 
 
 class PriceAt(Protocol):
-    """As-of price lookup, bound to the market port and injected into a policy at construction."""
+    """As-of price lookup, bound to the market port and injected into a policy at construction.
+
+    A cutoff later than the experiment's current trusted cutoff raises FutureData; a symbol with
+    no close available by the cutoff raises MissingPrice (both in bazaar_runner.market).
+    """
 
     async def __call__(self, symbol: str, cutoff: AwareDatetime) -> PriceObservation: ...
 
