@@ -4,6 +4,7 @@ Validation is defense in depth, NOT server authorization. No automatic order ret
 state cache, external search, database access or unrestricted private-history query.
 """
 
+from asyncio import CancelledError
 from datetime import date, datetime
 from hashlib import sha256
 from typing import Literal, Protocol, TypeVar
@@ -369,6 +370,9 @@ class ResearchTools:
                 else:
                     raise BoundaryError
                 return ToolResult(data=value)
+            except CancelledError:
+                # Exit the span normally, then propagate without untrusted text/context.
+                pass
             except httpx.HTTPError:
                 return ToolResult(
                     error=ToolError(
@@ -393,6 +397,10 @@ class ResearchTools:
                         message="Market client failed; retry orders only with the same ID",
                     )
                 )
+
+        # Outside both the span and except block: no original exception chain survives
+        # for outer tool decorators (or caller instrumentation) to export.
+        raise CancelledError from None
 
     @logfire.instrument("account tool", extract_args=False)
     async def account(self) -> ToolResult[AccountSnapshot]:
@@ -434,35 +442,41 @@ class ResearchTools:
     async def orders(self, request: HistoryRequest) -> ToolResult[OrderHistoryPage]:
         return await self._call(f"{self._account_root}/orders", OrderHistoryPage, request)
 
-    @logfire.instrument("private history tool", extract_args=False)
     async def private_history(self, request: HistoryRequest) -> ToolResult[PrivateHistoryPage]:
-        prepared = False
-        try:
-            request = HistoryRequest.model_validate_json(request.model_dump_json())
-            self._window(request, "private")
-            prepared = True
-            # SDK/HTTP child spans can expose cursors or exceptions before we catch them.
-            with logfire.suppress_instrumentation():
-                value = await self._private.read(self._ctx, request)
-            value = PrivateHistoryPage.model_validate_json(value.model_dump_json())
-            if value.coverage != "complete":
+        with logfire.span("private history tool"):
+            prepared = False
+            try:
+                request = HistoryRequest.model_validate_json(request.model_dump_json())
+                self._window(request, "private")
+                prepared = True
+                # SDK/HTTP child spans can expose cursors or exceptions before we catch them.
+                with logfire.suppress_instrumentation():
+                    value = await self._private.read(self._ctx, request)
+                value = PrivateHistoryPage.model_validate_json(value.model_dump_json())
+                if value.coverage != "complete":
+                    return ToolResult(
+                        error=ToolError(code="missing_data", message="Private coverage incomplete")
+                    )
+                self._page(value, request, "private")
+                return ToolResult(data=value)
+            except CancelledError:
+                # Do not let cancellation text/tracebacks reach the enclosing tool span.
+                pass
+            except PrivateHistoryUnavailable:
                 return ToolResult(
-                    error=ToolError(code="missing_data", message="Private coverage incomplete")
+                    error=ToolError(
+                        code="unsupported",
+                        message="Protected private-history adapter not configured",
+                    )
                 )
-            self._page(value, request, "private")
-            return ToolResult(data=value)
-        except PrivateHistoryUnavailable:
-            return ToolResult(
-                error=ToolError(
-                    code="unsupported", message="Protected private-history adapter not configured"
+            except Exception:  # noqa: BLE001 -- untrusted SDK failures must not leak payloads
+                return ToolResult(
+                    error=ToolError(
+                        code="invalid_response" if prepared else "invalid_request",
+                        message="Private-history boundary or adapter failure"
+                        if prepared
+                        else "Request violates scoped contract",
+                    )
                 )
-            )
-        except Exception:  # noqa: BLE001 -- untrusted SDK failures must not leak payloads
-            return ToolResult(
-                error=ToolError(
-                    code="invalid_response" if prepared else "invalid_request",
-                    message="Private-history boundary or adapter failure"
-                    if prepared
-                    else "Request violates scoped contract",
-                )
-            )
+        # Preserve cancellation, but discard its message, traceback and implicit context.
+        raise CancelledError from None

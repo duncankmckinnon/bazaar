@@ -710,6 +710,106 @@ async def test_terminal_page_replay_must_be_identical():
         assert (await tools.news(request(cursor="first"))).error.code == "invalid_response"
 
 
+@pytest.mark.parametrize("method", ["private_history", "news", "account_history"])
+@pytest.mark.parametrize("cancellation", ["adapter", "caller"])
+async def test_read_cancellation_is_clean_and_instrumentation_restored(
+    method, cancellation, capfire, caplog
+):
+    cursor_marker = "SECRET-CANCEL-CURSOR-TOKEN"
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    cancel_read = True
+    adapter_calls = []
+
+    def payload(cursor):
+        if method == "private_history":
+            item = private_record(record_id="n2" if cursor else "n1")
+        elif method == "news":
+            item = news(record_id="n2" if cursor else "n1")
+        else:
+            item = account(state_version=2 if cursor else 1, simulated_at=NOW if cursor else EARLY)
+        return page([item], next_cursor=None if cursor else cursor_marker)
+
+    async def handler(r):
+        cursor = r.url.params.get("cursor")
+        if cursor and cancel_read:
+            assert cursor == cursor_marker
+            entered.set()
+            if cancellation == "adapter":
+                try:
+                    raise RuntimeError(cursor_marker)
+                except RuntimeError as exc:
+                    raise asyncio.CancelledError(SECRET) from exc
+            await blocked.wait()
+        return httpx.Response(200, json=payload(cursor))
+
+    class InstrumentedPrivateReader:
+        @logfire.instrument("private SDK read")
+        async def read(self, ctx, req):
+            adapter_calls.append((ctx, req))
+            response = await client.get("/private", params={"cursor": req.cursor or ""})
+            return PrivateHistoryPage.model_validate(response.json())
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        logfire.instrument_httpx(
+            client, capture_headers=False, capture_request_body=False, capture_response_body=False
+        )
+        tools = ResearchTools(client, context(), InstrumentedPrivateReader())
+        read = getattr(tools, method)
+        make_request = request if method == "news" else history_request
+        first = await read(make_request())
+        assert first.error is None
+        assert first.data.next_cursor == cursor_marker
+
+        async def continuation():
+            try:
+                with logfire.span("caller read span"):
+                    return await read(make_request(cursor=cursor_marker))
+            finally:
+                # This executes in the cancelled task, not merely in the parent task.
+                with logfire.span("instrumentation restored after cancellation"):
+                    pass
+
+        task = asyncio.create_task(continuation())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if cancellation == "caller":
+            task.cancel(cursor_marker)
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert task.cancelled()
+        assert caught.value.args == ()
+        assert caught.value.__context__ is None
+        assert caught.value.__cause__ is None
+        cancel_read = False
+        # Cancellation must not consume the cursor or change the bound scope.
+        second = await read(make_request(cursor=cursor_marker))
+        assert second.error is None
+        assert second.data.account_id == context().experiment.account_id
+        if method == "private_history":
+            assert adapter_calls == [
+                (context().experiment, make_request()),
+                (context().experiment, make_request(cursor=cursor_marker)),
+                (context().experiment, make_request(cursor=cursor_marker)),
+            ]
+
+    spans = capfire.exporter.exported_spans_as_dict()
+    names = {s["name"] for s in spans}
+    assert "instrumentation restored after cancellation" in names
+    assert "caller read span" in names
+    assert ("private history tool" if method == "private_history" else "research.tool") in names
+    if method == "news":
+        assert "news tool" in names
+    assert "private SDK read" not in names
+    assert not any(
+        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
+    )
+    for marker in (SECRET, cursor_marker):
+        assert marker not in json.dumps(spans, default=str)
+        assert marker not in caplog.text
+
+
 async def test_http_cancellation_is_not_swallowed():
     def handler(r):
         raise asyncio.CancelledError
