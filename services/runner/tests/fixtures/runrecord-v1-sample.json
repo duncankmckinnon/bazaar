@@ -1,0 +1,304 @@
+{
+  "record_version": "runrecord-v1",
+  "manifest": {
+    "experiment_id": "00000000-0000-4000-8000-000000000001",
+    "agent_id": "00000000-0000-4000-8000-000000000002",
+    "account_id": "00000000-0000-4000-8000-000000000003",
+    "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+    "approval_id": "00000000-0000-4000-8000-000000000005",
+    "data_version": "synthetic-v1",
+    "execution_rule_version": "exec-v1",
+    "schedule_digest": "sched-v1:0000000000000000000000000000000000000000000000000000000000000000",
+    "period_start": "2025-07-01T13:30:00+00:00",
+    "period_end": "2025-07-03T20:00:00+00:00",
+    "starting_cash": "10000",
+    "policy_ref": "scripted-momentum-v1"
+  },
+  "status": "completed",
+  "failure": null,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "orders": [
+    {
+      "event_sequence": 1,
+      "order_index": 0,
+      "decided_at": "2025-07-01T13:30:00+00:00",
+      "request": {
+        "client_order_id": "00000000-0000-0000-0000-000000000001",
+        "symbol": "AAPL",
+        "side": "buy",
+        "quantity": "7"
+      },
+      "result": {
+        "status": "filled",
+        "order_id": "00000000-0000-0000-0000-000000000065",
+        "client_order_id": "00000000-0000-0000-0000-000000000001",
+        "symbol": "AAPL",
+        "side": "buy",
+        "quantity": "7",
+        "unit_price": "150.003",
+        "fee": "0",
+        "executed_at": "2025-07-01T13:30:00Z",
+        "price_observed_at": "2025-07-01T13:30:00Z",
+        "price_available_at": "2025-07-01T13:30:00Z",
+        "price_source": "synthetic-bars",
+        "data_version": "synthetic-v1",
+        "execution_rule_version": "exec-v1",
+        "account": {
+          "account_id": "00000000-0000-4000-8000-000000000003",
+          "agent_id": "00000000-0000-4000-8000-000000000002",
+          "experiment_id": "00000000-0000-4000-8000-000000000001",
+          "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+          "simulated_at": "2025-07-01T13:30:00Z",
+          "state_version": 1,
+          "currency": "USD",
+          "cash": "8949.98",
+          "holdings": [
+            {
+              "symbol": "AAPL",
+              "quantity": "7"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event_sequence": 1,
+      "order_index": 1,
+      "decided_at": "2025-07-01T13:30:00+00:00",
+      "request": {
+        "client_order_id": "00000000-0000-0000-0000-000000000002",
+        "symbol": "MSFT",
+        "side": "buy",
+        "quantity": "5"
+      },
+      "result": {
+        "status": "filled",
+        "order_id": "00000000-0000-0000-0000-000000000066",
+        "client_order_id": "00000000-0000-0000-0000-000000000002",
+        "symbol": "MSFT",
+        "side": "buy",
+        "quantity": "5",
+        "unit_price": "400",
+        "fee": "0",
+        "executed_at": "2025-07-01T13:30:00Z",
+        "price_observed_at": "2025-07-01T13:30:00Z",
+        "price_available_at": "2025-07-01T13:30:00Z",
+        "price_source": "synthetic-bars",
+        "data_version": "synthetic-v1",
+        "execution_rule_version": "exec-v1",
+        "account": {
+          "account_id": "00000000-0000-4000-8000-000000000003",
+          "agent_id": "00000000-0000-4000-8000-000000000002",
+          "experiment_id": "00000000-0000-4000-8000-000000000001",
+          "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+          "simulated_at": "2025-07-01T13:30:00Z",
+          "state_version": 2,
+          "currency": "USD",
+          "cash": "6949.98",
+          "holdings": [
+            {
+              "symbol": "AAPL",
+              "quantity": "7"
+            },
+            {
+              "symbol": "MSFT",
+              "quantity": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event_sequence": 3,
+      "order_index": 0,
+      "decided_at": "2025-07-02T13:30:00+00:00",
+      "request": {
+        "client_order_id": "00000000-0000-0000-0000-000000000003",
+        "symbol": "MSFT",
+        "side": "buy",
+        "quantity": "100"
+      },
+      "result": {
+        "status": "rejected",
+        "order_id": "00000000-0000-0000-0000-000000000067",
+        "client_order_id": "00000000-0000-0000-0000-000000000003",
+        "symbol": "MSFT",
+        "side": "buy",
+        "quantity": "100",
+        "rejected_at": "2025-07-02T13:30:00Z",
+        "error": {
+          "code": "insufficient_cash",
+          "message": "Order cost exceeds cash",
+          "retryable": false
+        },
+        "account": {
+          "account_id": "00000000-0000-4000-8000-000000000003",
+          "agent_id": "00000000-0000-4000-8000-000000000002",
+          "experiment_id": "00000000-0000-4000-8000-000000000001",
+          "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+          "simulated_at": "2025-07-02T13:30:00Z",
+          "state_version": 2,
+          "currency": "USD",
+          "cash": "6949.98",
+          "holdings": [
+            {
+              "symbol": "AAPL",
+              "quantity": "7"
+            },
+            {
+              "symbol": "MSFT",
+              "quantity": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event_sequence": 5,
+      "order_index": 0,
+      "decided_at": "2025-07-03T13:30:00+00:00",
+      "request": {
+        "client_order_id": "00000000-0000-0000-0000-000000000004",
+        "symbol": "AAPL",
+        "side": "sell",
+        "quantity": "7"
+      },
+      "result": {
+        "status": "filled",
+        "order_id": "00000000-0000-0000-0000-000000000068",
+        "client_order_id": "00000000-0000-0000-0000-000000000004",
+        "symbol": "AAPL",
+        "side": "sell",
+        "quantity": "7",
+        "unit_price": "155.555",
+        "fee": "0",
+        "executed_at": "2025-07-03T13:30:00Z",
+        "price_observed_at": "2025-07-03T13:30:00Z",
+        "price_available_at": "2025-07-03T13:30:00Z",
+        "price_source": "synthetic-bars",
+        "data_version": "synthetic-v1",
+        "execution_rule_version": "exec-v1",
+        "account": {
+          "account_id": "00000000-0000-4000-8000-000000000003",
+          "agent_id": "00000000-0000-4000-8000-000000000002",
+          "experiment_id": "00000000-0000-4000-8000-000000000001",
+          "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+          "simulated_at": "2025-07-03T13:30:00Z",
+          "state_version": 3,
+          "currency": "USD",
+          "cash": "8038.86",
+          "holdings": [
+            {
+              "symbol": "MSFT",
+              "quantity": "5"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "marks": [
+    {
+      "event_sequence": 2,
+      "snapshot": {
+        "account_id": "00000000-0000-4000-8000-000000000003",
+        "experiment_id": "00000000-0000-4000-8000-000000000001",
+        "simulated_at": "2025-07-01T20:00:00Z",
+        "state_version": 2,
+        "currency": "USD",
+        "cash": "6949.98",
+        "holdings": [
+          {
+            "symbol": "AAPL",
+            "quantity": "7",
+            "unit_mark": "152.125",
+            "mark_observed_at": "2025-07-01T20:00:00Z",
+            "mark_available_at": "2025-07-01T20:00:00Z"
+          },
+          {
+            "symbol": "MSFT",
+            "quantity": "5",
+            "unit_mark": "401.10",
+            "mark_observed_at": "2025-07-01T20:00:00Z",
+            "mark_available_at": "2025-07-01T20:00:00Z"
+          }
+        ],
+        "portfolio_value": "10020.36",
+        "valuation_rule_version": "value-v1",
+        "source": "synthetic-bars",
+        "data_version": "synthetic-v1"
+      }
+    },
+    {
+      "event_sequence": 4,
+      "snapshot": {
+        "account_id": "00000000-0000-4000-8000-000000000003",
+        "experiment_id": "00000000-0000-4000-8000-000000000001",
+        "simulated_at": "2025-07-02T20:00:00Z",
+        "state_version": 2,
+        "currency": "USD",
+        "cash": "6949.98",
+        "holdings": [
+          {
+            "symbol": "AAPL",
+            "quantity": "7",
+            "unit_mark": "149.00",
+            "mark_observed_at": "2025-07-02T20:00:00Z",
+            "mark_available_at": "2025-07-02T20:00:00Z"
+          },
+          {
+            "symbol": "MSFT",
+            "quantity": "5",
+            "unit_mark": "398.00",
+            "mark_observed_at": "2025-07-02T20:00:00Z",
+            "mark_available_at": "2025-07-02T20:00:00Z"
+          }
+        ],
+        "portfolio_value": "9982.98",
+        "valuation_rule_version": "value-v1",
+        "source": "synthetic-bars",
+        "data_version": "synthetic-v1"
+      }
+    },
+    {
+      "event_sequence": 6,
+      "snapshot": {
+        "account_id": "00000000-0000-4000-8000-000000000003",
+        "experiment_id": "00000000-0000-4000-8000-000000000001",
+        "simulated_at": "2025-07-03T20:00:00Z",
+        "state_version": 3,
+        "currency": "USD",
+        "cash": "8038.86",
+        "holdings": [
+          {
+            "symbol": "MSFT",
+            "quantity": "5",
+            "unit_mark": "404.25",
+            "mark_observed_at": "2025-07-03T20:00:00Z",
+            "mark_available_at": "2025-07-03T20:00:00Z"
+          }
+        ],
+        "portfolio_value": "10060.11",
+        "valuation_rule_version": "value-v1",
+        "source": "synthetic-bars",
+        "data_version": "synthetic-v1"
+      }
+    }
+  ],
+  "final_account": {
+    "account_id": "00000000-0000-4000-8000-000000000003",
+    "agent_id": "00000000-0000-4000-8000-000000000002",
+    "experiment_id": "00000000-0000-4000-8000-000000000001",
+    "strategy_version_id": "00000000-0000-4000-8000-000000000004",
+    "simulated_at": "2025-07-03T20:00:00Z",
+    "state_version": 3,
+    "currency": "USD",
+    "cash": "8038.86",
+    "holdings": [
+      {
+        "symbol": "MSFT",
+        "quantity": "5"
+      }
+    ]
+  }
+}

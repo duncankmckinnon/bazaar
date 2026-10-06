@@ -11,6 +11,13 @@ from bazaar_protocol import ExperimentContext, Version, WireModel
 from pydantic import AwareDatetime, Field, TypeAdapter, model_validator
 
 
+def utc_z(value: dt.datetime) -> str:
+    """UTC with a Z suffix: the market rejects offsets, and a "+" in a query decodes as a space."""
+    if value.utcoffset() != dt.timedelta(0):
+        raise ValueError("market times must be UTC")
+    return value.astimezone(dt.UTC).isoformat().replace("+00:00", "Z")
+
+
 class TradingSession(WireModel):
     """One scripted trading session; the calendar is explicit, not derived from an exchange."""
 
