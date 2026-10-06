@@ -56,6 +56,8 @@ ALL_TOOLS = {
     "private_history",
     "orders",
     "market_order",
+    "monty_inputs",
+    "monty_calculate",
 }
 
 

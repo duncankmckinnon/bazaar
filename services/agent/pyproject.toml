@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-ai-slim==1.70.0",
     "logfire[fastapi,httpx,sqlite3,system-metrics]>=5.1.1",
     "uvicorn>=0.30",
+    "pydantic-monty==0.0.14",
 ]
 
 [tool.uv.sources]

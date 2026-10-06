@@ -4,7 +4,8 @@
 model/tool loop, not a period runner. Registration remains nonexecuting. The caller supplies a
 trusted `MarketIdentity`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
 client, a runner-reserved `client_order_id`, and optionally `RuntimeConfig`, `DecisionBudget`,
-`ModelFactory` and the existing `PrivateHistoryReader`. Identity/version/context must agree; inputs are
+`ModelFactory`, the existing `PrivateHistoryReader`, and an optional trusted `MontyCalculator`.
+Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
 
@@ -102,7 +103,7 @@ client corroboration does not replace market-side authorization, approval or set
 
 ## Public tool mapping and failure semantics
 
-All ten tools are always registered, independent of the strategy definition:
+All twelve tools are always registered, independent of the strategy definition:
 
 | Purpose | Exposed tools |
 | --- | --- |
@@ -112,6 +113,7 @@ All ten tools are always registered, independent of the strategy definition:
 | Reports | `filings` (requires trusted `FiscalCycle`) |
 | Private evidence | `private_history` (default unsupported adapter) |
 | Own orders | `orders` (own order history), `market_order` (structured buy/sell) |
+| Pure calculations | `monty_inputs`, `monty_calculate` (actual SDK 0.0.14; no strategy flag) |
 
 Registration does not bypass fiscal-cycle, private-adapter, authorization or budget requirements.
 
@@ -126,7 +128,9 @@ account settlement remain authoritative. See [research tools](agent-research-too
 Each invocation creates fresh messages and research cursor state. There is no inherited model
 history, cache, automatic pagination or automatic data/order retry. Any scoped tool error ends
 that decision immediately, returning a readable fixed error, never silently advancing time or
-calling the model again with invalid evidence. Invalid tool arguments/unknown tools and invalid
+calling the model again with invalid evidence. Ordinary Monty syntax/runtime/serialization failures
+are the exception: complete private calculation records are tool feedback allowing code correction
+within the same overall budgets. Host denial and invalid worker responses remain fatal. Invalid tool arguments/unknown tools and invalid
 final outputs can use **one** SDK validation retry, within the model-request budget. The final
 `Decision.action` is only `hold` or `ordered` and must agree with actual tool settlement evidence;
 model text cannot manufacture a fill. Market rejections are terminal evidence, not harness failures.
@@ -150,8 +154,9 @@ reported total tokens and 30 seconds. Tool execution is sequential; SDK batch ch
 over-budget validated tool batch before executing it. Local failed tool executions count too.
 Schema-invalid/unknown calls do not execute tools; their retries consume model requests. Token
 limits are checked **after** responses using SDK-reported/fixture-estimated usage, not exact
-preflight cost or billing guarantees. No nested models, delegation, forecasting or Monty execution
-can bypass these limits because those capabilities are unsupported. Async timeouts cannot preempt
+preflight cost or billing guarantees. Monty executions and corrections share these same budgets;
+there are no Monty-specific quotas or truncation. No nested models or delegation are added.
+Async timeouts cannot preempt
 a malicious synchronous factory/function: injections are trusted test fixtures, not sandbox code.
 
 ## Monitoring and next interfaces
@@ -165,9 +170,12 @@ response capture false; do not add independently logging hooks. Payload-marker t
 monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata and actual
 AI Gateway/private SDK binding are **#23**, not implemented or gateway-ready here.
 
-For **#22**, extend the trusted runtime and the same per-decision budget boundary only after
-real Monty integration has verified resource limits and host/network/file denial. Existing
-`ResearchContext`/`FiscalCycle`, `ResearchTools`, `PrivateHistoryReader`, shared DTOs and the
-`DecisionBudget`/`DecisionResult` interface are reusable. There is deliberately no fake forecast
-API or fabricated sandbox result today. No real historical experiment was run; fixtures prove
-client behavior, not server authorization, source completeness, live grants or model quality.
+The builtin [Monty tools](monty-calculations.md) calculate over a fresh harness-owned snapshot.
+Default financial inputs come from the initial protected API reads. A runner can inject additional
+validated historical price inputs through `CalculationSnapshot`; supplied financial snapshots must
+match those API reads exactly. This snapshot stays fixed: subsequent research tool results are not
+automatically ingested into Monty. Dynamic research-to-calculator binding is a remaining runner seam,
+not permission for model-supplied arrays or future observations. No real historical experiment was
+run; fixtures prove client behavior, not server authorization, source completeness, live grants or
+model quality. Provisioning, account-status and performance-statistics contracts remain deferred;
+no market service or Compose changes accompany this harness.
