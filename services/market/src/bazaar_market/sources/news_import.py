@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..archive import truncate
+from ..archive import html_to_text, truncate
 from ..news import HEADLINE_LIMIT, NEWS_VERSION, TEXT_LIMIT, NewsRecord, import_news
 from .errors import SourceError
 from .models import NewsItem
@@ -30,6 +30,12 @@ class NewsImportReport:
     left_out: tuple[str, ...]
 
 
+def article_text(item: NewsItem) -> str:
+    """The article's content as plain text, or its summary when it has no content."""
+    content = html_to_text(item.body)
+    return content if content else html_to_text(item.summary)
+
+
 def to_record(symbol: str, item: NewsItem) -> NewsRecord:
     return NewsRecord(
         symbol=symbol,
@@ -38,7 +44,7 @@ def to_record(symbol: str, item: NewsItem) -> NewsRecord:
         published_at=item.created_at,
         available_at=max(item.created_at, item.updated_at),
         headline=truncate(item.headline.strip(), HEADLINE_LIMIT),
-        text=truncate(item.body, TEXT_LIMIT),
+        text=truncate(article_text(item), TEXT_LIMIT),
     )
 
 

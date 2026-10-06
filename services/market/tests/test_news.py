@@ -203,3 +203,36 @@ def test_cli_import_news_imports_and_reports(tmp_path, capsys):
     assert code == 0
     assert "import-news: AAPL 1 articles, 1 without a headline left out" in out
     assert "as alpaca-news-v1" in out
+
+
+def summarised(id_, content, summary):
+    return {**article(id_, T, content=content), "summary": summary}
+
+
+def test_html_content_is_served_as_plain_text(tmp_path):
+    html = "<p>Apple <b>beat</b> estimates.</p><script>x()</script><p>Shares rose &amp; held.</p>"
+    news, _ = load(tmp_path, {"AAPL": [article(1, T, content=html)]})
+
+    [record] = news.visible("AAPL", T, T, cutoff=T)
+    assert record.text == "Apple beat estimates.\nShares rose & held."
+
+
+def test_an_article_without_content_falls_back_to_its_summary(tmp_path):
+    news, _ = load(tmp_path, {"AAPL": [summarised(1, "", "Apple to report <i>Thursday</i>.")]})
+
+    [record] = news.visible("AAPL", T, T, cutoff=T)
+    assert record.text == "Apple to report Thursday."
+
+
+def test_an_article_without_content_or_summary_has_empty_text(tmp_path):
+    news, _ = load(tmp_path, {"AAPL": [summarised(1, "", "")]})
+
+    [record] = news.visible("AAPL", T, T, cutoff=T)
+    assert record.text == ""
+
+
+def test_content_that_strips_to_nothing_falls_back_to_the_summary(tmp_path):
+    news, _ = load(tmp_path, {"AAPL": [summarised(1, "<div> </div>", "Short summary.")]})
+
+    [record] = news.visible("AAPL", T, T, cutoff=T)
+    assert record.text == "Short summary."

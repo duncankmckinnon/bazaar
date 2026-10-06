@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from html.parser import HTMLParser
+
+SKIPPED_TAGS = {"script", "style", "head", "ix:header"}
+BLOCK_TAGS = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "hr"}
 
 
 class MissingCoverage(LookupError):
@@ -26,3 +30,35 @@ def truncate(text: str, limit: int) -> str:
         return text
     marker = f"\n[truncated at {limit} characters]"
     return text[: limit - len(marker)] + marker
+
+
+class _Text(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skipping = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in SKIPPED_TAGS:
+            self.skipping += 1
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in SKIPPED_TAGS:
+            self.skipping = max(0, self.skipping - 1)
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self.skipping:
+            self.parts.append(data)
+
+
+def html_to_text(html: str) -> str:
+    """Visible text of an HTML document, one paragraph per line, without inline XBRL headers."""
+    parser = _Text()
+    parser.feed(html)
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    return "\n".join(line for line in lines if line)

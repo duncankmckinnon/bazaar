@@ -124,3 +124,12 @@ def load_bars(snapshot_dir: Path, ticker: str) -> list[Bar]:
         bars += parse_bars(payload, ticker)
         if not payload.get("next_page_token"):
             return sorted(bars, key=lambda b: b.session)
+
+
+def load_document(snapshot_dir: Path, filing: Filing) -> bytes | None:
+    """A filing's frozen primary document, checked against the manifest. None if not frozen."""
+    if not filing.primary_document:
+        return None
+    frozen = _Frozen(snapshot_dir)
+    name = f"documents/{filing.cik}/{filing.accession}/{filing.primary_document}"
+    return frozen.read_bytes(name) if frozen.has(name) else None
