@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Protocol
@@ -36,9 +36,11 @@ from bazaar_protocol import (
 from bazaar_market import db
 from bazaar_market.clock import Experiment, SqliteClock, UnknownExperiment, load_experiment
 from bazaar_market.history import PageScope
-from bazaar_market.prices import MissingData
+from bazaar_market.prices import MissingData, TradingSession
 
 CENT = Decimal("0.01")
+# How far back the fill rule looks for the latest session. No US market closure has come close.
+SESSION_LOOKBACK = timedelta(days=14)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS acct_accounts (
@@ -113,6 +115,10 @@ class PriceSource(Protocol):
 
     def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation: ...
 
+    def session(self, day: date) -> TradingSession | None:
+        """The session on `day`, or None when the data version has no bars that day."""
+        ...
+
 
 @dataclass(frozen=True)
 class ExecutionRule:
@@ -130,6 +136,19 @@ class ExecutionRule:
 
 
 RULES = {"exec-v1": ExecutionRule(version="exec-v1", valuation_rule_version="value-v1")}
+
+
+def latest_session(prices: PriceSource, cutoff: datetime) -> TradingSession | None:
+    """The most recent session whose close is at or before `cutoff`, from the data version's own
+    calendar. None if there is none within SESSION_LOOKBACK.
+    """
+    day = cutoff.date()
+    while day >= (cutoff - SESSION_LOOKBACK).date():
+        session = prices.session(day)
+        if session is not None and session.close_at <= cutoff:
+            return session
+        day -= timedelta(days=1)
+    return None
 
 
 def rule_for(version: str) -> ExecutionRule:
@@ -381,40 +400,93 @@ class Ledger:
         with db.read_connection(self.database_path) as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
+        at = account.closed_at or experiment.cutoff_at
+        return self._value(experiment, self._snapshot(account, at), at)
+
+    def account_history(
+        self, experiment_id: UUID, account_id: UUID
+    ) -> tuple[PageScope, list[AccountSnapshot]]:
+        """The account as created (state 0), then as it stood after each fill."""
+        with db.read_connection(self.database_path) as connection:
+            experiment = self._experiment(connection, experiment_id)
+            account = self._load(connection, experiment_id, account_id)
+            states = self._states(connection, account_id)
+        return self._page_scope(experiment, account), states
+
+    def portfolio_history(
+        self, experiment_id: UUID, account_id: UUID
+    ) -> tuple[PageScope, list[PortfolioSnapshot] | None]:
+        """One valuation per cutoff the experiment has had, from the account's creation to its
+        close or the current cutoff. None when the experiment's cutoff record is incomplete.
+
+        Each valuation uses the account as it stood after every fill at or before that cutoff,
+        marked with the close available at that cutoff (value-v1).
+        """
+        experiment, cutoffs = self.clock.cutoff_history(experiment_id)
+        with db.read_connection(self.database_path) as connection:
+            account = self._load(connection, experiment_id, account_id)
+            states = self._states(connection, account_id)
+        scope = self._page_scope(experiment, account)
+        if cutoffs is None:
+            return scope, None
+        end = account.closed_at or experiment.cutoff_at
+        valuations = []
+        for cutoff in cutoffs:
+            if not states[0].simulated_at <= cutoff <= end:
+                continue
+            state = [s for s in states if s.simulated_at <= cutoff][-1]
+            valuations.append(self._value(experiment, state, cutoff))
+        return scope, valuations
+
+    @staticmethod
+    def _states(connection: sqlite3.Connection, account_id: UUID) -> list[AccountSnapshot]:
+        created = connection.execute(
+            "SELECT created_response FROM acct_accounts WHERE account_id = ?", (str(account_id),)
+        ).fetchone()
+        fills = connection.execute(
+            "SELECT result FROM acct_orders WHERE account_id = ? AND status = 'filled' "
+            "ORDER BY rowid",
+            (str(account_id),),
+        ).fetchall()
+        return [
+            AccountSnapshot.model_validate_json(created["created_response"]),
+            *(FilledOrder.model_validate_json(row["result"]).account for row in fills),
+        ]
+
+    def _value(
+        self, experiment: Experiment, state: AccountSnapshot, at: datetime
+    ) -> PortfolioSnapshot:
+        """value-v1: each holding marked with the close available at `at`."""
         rule = rule_for(experiment.execution_rule_version)
         prices = self.prices_for(experiment.data_version)
-        at = account.closed_at or experiment.cutoff_at
         marked = []
-        for symbol, quantity in sorted(account.holdings.items()):
+        for holding in state.holdings:
             try:
-                mark = prices.price_at(symbol, at)
+                mark = prices.price_at(holding.symbol, at)
             except MissingData:
                 raise db.MarketError(
-                    409, ErrorCode.DATA_UNAVAILABLE, f"No mark for {symbol} at the cutoff"
+                    409, ErrorCode.DATA_UNAVAILABLE, f"No mark for {holding.symbol} at {at}"
                 ) from None
-            marked.append((quantity, mark))
-        cash = from_cents(account.cash_cents)
+            marked.append((holding, mark))
         return PortfolioSnapshot(
-            account_id=account.account_id,
-            experiment_id=experiment_id,
+            account_id=state.account_id,
+            experiment_id=experiment.experiment_id,
             simulated_at=at,
-            state_version=account.state_version,
-            cash=cash,
+            state_version=state.state_version,
+            cash=state.cash,
             holdings=tuple(
                 MarkedHolding(
-                    symbol=symbol,
-                    quantity=Decimal(quantity),
+                    symbol=holding.symbol,
+                    quantity=holding.quantity,
                     unit_mark=mark.price,
                     mark_observed_at=mark.observed_at,
                     mark_available_at=mark.available_at,
                 )
-                for (symbol, _), (quantity, mark) in zip(
-                    sorted(account.holdings.items()), marked, strict=True
-                )
+                for holding, mark in marked
             ),
-            portfolio_value=cash
+            portfolio_value=state.cash
             + sum(
-                (rule.market_value(quantity, mark.price) for quantity, mark in marked),
+                (rule.market_value(int(h.quantity), mark.price) for h, mark in marked),
                 Decimal(0),
             ),
             valuation_rule_version=rule.valuation_rule_version,
@@ -446,12 +518,19 @@ class Ledger:
             )
 
         prices = self.prices_for(experiment.data_version)
+        session = latest_session(prices, now)
+        if session is None:
+            return reject(ErrorCode.MARKET_CLOSED, "No trading session has closed by the cutoff")
         try:
             price = prices.price_at(order.symbol, now)
         except MissingData:
             return reject(ErrorCode.DATA_UNAVAILABLE, f"No price for {order.symbol}")
         if price.available_at > now:
             raise db.MarketError(500, ErrorCode.INTERNAL_ERROR, "Price source returned future data")
+        if price.observed_at != session.close_at:
+            # exec-v1 fills only at the latest session's close. A symbol that has no bar there
+            # (delisted, acquired, halted) must not fill at an older, dead price.
+            return reject(ErrorCode.DATA_UNAVAILABLE, f"No {session.day} close for {order.symbol}")
         notional = to_cents(rule.notional(quantity, price.price))
         holdings = dict(account.holdings)
         if order.side is OrderSide.BUY:

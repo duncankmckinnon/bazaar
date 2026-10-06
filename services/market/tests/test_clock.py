@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -69,3 +70,19 @@ def test_empty_versions_are_refused(clock, versions):
     with pytest.raises(db.MarketError) as error:
         clock.set_cutoff(uuid4(), START, *versions)
     assert error.value.status_code == 422
+
+
+def test_every_advance_is_recorded_once_and_the_record_is_append_only(clock):
+    eid = uuid4()
+    clock.set_cutoff(eid, START, "fixture-v1", "exec-v1")
+    clock.set_cutoff(eid, START)
+    clock.set_cutoff(eid, START + timedelta(days=1))
+    with pytest.raises(db.MarketError):
+        clock.set_cutoff(eid, START)
+    experiment, cutoffs = clock.cutoff_history(eid)
+    assert (experiment.cutoff_seq, cutoffs) == (2, [START, START + timedelta(days=1)])
+    with db.read_connection(clock.database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE acct_cutoff_history SET cutoff_at = 'x'")
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("DELETE FROM acct_cutoff_history")

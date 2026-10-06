@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+from datetime import timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -256,3 +257,38 @@ def test_a_price_from_after_the_cutoff_is_never_filled(tmp_path):
     with db.read_connection(tmp_path / "market.db") as connection:
         assert connection.execute("SELECT COUNT(*) FROM acct_orders").fetchone()[0] == 0
     assert ledger.account(eid, aid).cash == Decimal("1000.00")
+
+
+def test_order_ids_sort_in_sequence_across_hex_digit_boundaries():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE acct_orders (x)")
+    ids = []
+    for _ in range(300):  # crosses 0xf -> 0x10 and 0xff -> 0x100
+        ids.append(str(Ledger._next_order_id(connection)))
+        connection.execute("INSERT INTO acct_orders VALUES (1)")
+    assert ids == sorted(ids)
+    assert len(set(ids)) == 300
+    assert [int(i.replace("-", "")[:16], 16) for i in ids[14:17]] == [15, 16, 17]
+
+
+def test_a_symbol_without_a_bar_in_the_latest_session_does_not_fill(tmp_path):
+    prices = FakePrices({**BARS, "DEAD": [close(DAY1_CLOSE, "50.00")]})
+    ledger = make_ledger(tmp_path / "market.db", prices)
+    eid, aid = open_account(ledger)
+    ledger.set_cutoff(eid, DAY2_CLOSE)
+    dead = ledger.submit(eid, aid, order("buy", "1", symbol="DEAD"))
+    assert (dead.status, dead.error.code) == ("rejected", ErrorCode.DATA_UNAVAILABLE)
+    assert dead.account.state_version == 0
+    live = ledger.submit(eid, aid, order("buy", "1"))
+    assert (live.status, live.unit_price) == ("filled", Decimal("110.00"))
+
+
+def test_no_fill_before_the_first_session_has_closed(tmp_path):
+    ledger = make_ledger(tmp_path / "market.db")
+    eid = uuid4()
+    ledger.set_cutoff(eid, DAY1_CLOSE - timedelta(hours=1), "fixture-v1", "exec-v1")
+    account = ledger.create_account(
+        eid, request_id=uuid4(), agent_id=uuid4(), strategy_version_id=uuid4(), cash=Decimal(1000)
+    )
+    result = ledger.submit(eid, account.account_id, order("buy", "1"))
+    assert (result.status, result.error.code) == ("rejected", ErrorCode.MARKET_CLOSED)

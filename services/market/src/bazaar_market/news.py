@@ -115,6 +115,14 @@ def import_news(
     return added
 
 
+def _imported(connection: sqlite3.Connection) -> bool:
+    """Whether any news was ever imported, so a missing table reads as missing, not as a 500."""
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_news_coverage'"
+    ).fetchone()
+    return row is not None
+
+
 class SqliteNewsArchive:
     """Reads one news version. Every read takes the cutoff from the caller's trusted clock."""
 
@@ -133,20 +141,25 @@ class SqliteNewsArchive:
     ) -> list[NewsRecord]:
         """Every article published in [start_at, end_at] and available by the cutoff.
 
-        Raises `MissingCoverage` unless the fetched window covers the whole request, and
-        `FutureDataError` when end_at is after the cutoff. Paging is the caller's job.
+        Raises `MissingCoverage` unless the fetched window covers the whole request and the
+        cutoff, and `FutureDataError` when end_at is after the cutoff. Paging is the caller's job.
         """
         if end_at > cutoff:
             raise FutureDataError(f"end_at {end_at.isoformat()} is after the cutoff")
         with closing(self._connect()) as connection:
+            if not _imported(connection):
+                raise MissingCoverage(f"no news is imported under {self.data_version}")
             window = connection.execute(
                 "SELECT start_at, end_at FROM data_news_coverage "
                 "WHERE data_version = ? AND symbol = ?",
                 (self.data_version, symbol),
             ).fetchone()
+            # The fetch selects by revision time, so it is complete only up to its window's end:
+            # with a cutoff past that end, an article revised after it is missing, not absent.
             if window is None or not (
                 window["start_at"] <= stored_time(start_at)
                 and stored_time(end_at) <= window["end_at"]
+                and stored_time(cutoff) <= window["end_at"]
             ):
                 raise MissingCoverage(f"news for {symbol} was not fetched for the whole window")
             rows = connection.execute(

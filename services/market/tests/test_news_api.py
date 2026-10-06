@@ -14,7 +14,7 @@ from bazaar_market.app import create_app
 from bazaar_market.prices import Bar, close_at, import_bars
 from bazaar_market.sources.news_import import import_news_snapshot
 from bazaar_market.sources.snapshot import Snapshot
-from bazaar_protocol import ExperimentContext
+from bazaar_protocol import ExperimentContext, PriceHistoryRequest
 from bazaar_protocol.research import ResearchRequest
 from fastapi.testclient import TestClient
 
@@ -55,7 +55,7 @@ class Approvals:
 class Market:
     """A market with bars and news, one experiment on `data_version`, cut off at D2's close."""
 
-    def __init__(self, tmp_path, data_version: str = "demo-bundle-v1") -> None:
+    def __init__(self, tmp_path, data_version: str = "demo-bundle-v1", news: bool = True) -> None:
         path = tmp_path / "market.sqlite3"
         snap = Snapshot(tmp_path / "raw", source="alpaca-news", version="v1")
         snap.cover("AAPL", start="2026-01-01T00:00:00Z", end="2026-02-28T23:59:59Z")
@@ -79,7 +79,8 @@ class Market:
             price = Decimal("100.00")
             bars = [Bar("AAPL", d, price, price, price, price, 1) for d in (D1, D2, D3)]
             import_bars(connection, bars, data_version="alpaca-bars-v1", source="synthetic")
-            import_news_snapshot(connection, snap.dir)
+            if news:
+                import_news_snapshot(connection, snap.dir)
         self.approvals = Approvals()
         self.app = create_app(path, self.approvals, runner_token=TOKEN)
         self.http = TestClient(self.app)
@@ -235,3 +236,35 @@ def test_a_plain_bars_experiment_has_no_news(tmp_path):
         assert response.status_code == 404
     finally:
         market.close()
+
+
+async def test_a_bundle_whose_news_was_never_imported_is_missing_data(tmp_path):
+    market = Market(tmp_path, news=False)
+    try:
+        params = {"start_at": z(at(D1, 0)), "end_at": z(market.now)}
+        response = market.http.get(market.url(), params=params, headers=market.headers())
+        assert (response.status_code, response.json()["error"]["code"]) == (
+            404,
+            "data_unavailable",
+        )
+        tools, client = market.tools()
+        async with client:
+            result = await tools.news(request(market, at(D1, 0)))
+        assert (result.data, result.error.code) == (None, "missing_data")
+    finally:
+        market.close()
+
+
+async def test_the_client_accepts_bundle_price_pages(market):
+    tools, client = market.tools()
+    async with client:
+        result = await tools.prices(
+            PriceHistoryRequest(symbol="AAPL", start_at=close_at(D1), end_at=market.now)
+        )
+
+    assert result.error is None
+    assert (result.data.data_version, result.data.source) == (
+        "demo-bundle-v1",
+        "synthetic/alpaca-bars-v1",
+    )
+    assert [o.observed_at for o in result.data.observations] == [close_at(D1), close_at(D2)]

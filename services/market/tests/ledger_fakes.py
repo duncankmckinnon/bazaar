@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from bazaar_market.prices import MissingData
+from bazaar_market.prices import MissingData, TradingSession
 from bazaar_protocol import PriceObservation
 
 DAY1_CLOSE = datetime(2025, 7, 1, 20, 0, tzinfo=UTC)
@@ -29,6 +29,15 @@ class FakePrices:
         if not visible:
             raise MissingData(symbol)
         return max(visible, key=lambda bar: bar.available_at)
+
+    def session(self, day) -> TradingSession | None:
+        """A session exists on days where any symbol has a bar."""
+        closes = {bar.observed_at for bars in self.bars.values() for bar in bars}
+        for at in sorted(closes):
+            if at.date() == day:
+                return TradingSession(day=day, open_at=at - timedelta(hours=6, minutes=30),
+                                      close_at=at)  # fmt: skip
+        return None
 
 
 BARS = {
