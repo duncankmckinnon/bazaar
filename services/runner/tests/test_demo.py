@@ -371,7 +371,7 @@ async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfi
     calls = [c[0] for c in agent_market.calls]
     assert calls.count("submit") == 1
     # It read AAPL news once, at the first decision, before it ordered.
-    assert [c for c in agent_market.calls if c[0] == "news"] == [("news", "AAPL")]
+    assert [c[:2] for c in agent_market.calls if c[0] == "news"] == [("news", "AAPL")]
     assert calls.index("news") < calls.index("submit")
     assert {r.manifest.schedule_digest for r in (agent, momentum, cash)} == {
         agent.manifest.schedule_digest
@@ -430,3 +430,39 @@ async def test_demo_agent_news_error_ends_the_decision_and_is_reconciled(tmp_pat
     (error,) = agent.decision_errors
     assert (error.event_sequence, error.reconciled) == (0, "absent")
     assert [c[0] for c in agent_market.calls].count("submit") == 0
+
+
+async def test_demo_agent_still_buys_once_when_the_news_archive_is_large(tmp_path):
+    """T7b: 100 real-size articles must not exhaust the decision's token budget before the buy."""
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_runner.agent import (
+        AGENT_FIXTURE_INSTRUCTIONS,
+        FIXTURE_NEWS_LIMIT,
+        fixture_model_factory,
+        make_agent_decider,
+    )
+    from bazaar_runner.agent_step import AgentStep
+
+    agent_market = InMemoryMarket()
+    step = AgentStep(
+        make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory()),
+        market_url="http://market",
+        transport=delegating_transport(
+            agent_market, approval_id=AGENT.approval_id, news_articles=100
+        ),
+    )
+    (agent,) = await run_demo(
+        [AGENT],
+        {AGENT: agent_market},
+        {AGENT_FIXTURE_REF: lambda prices: step},
+        starting_cash=Decimal(10000),
+        runs_dir=tmp_path,
+        **DEMO,
+    )
+    assert agent.status == "completed" and agent.decision_errors == ()
+    (order,) = agent.orders
+    assert order.result.status == "filled"
+    assert order.result.client_order_id == uuid5(AGENT.experiment_id, "decision:0")
+    assert [c for c in agent_market.calls if c[0] == "news"] == [
+        ("news", "AAPL", str(FIXTURE_NEWS_LIMIT))
+    ]

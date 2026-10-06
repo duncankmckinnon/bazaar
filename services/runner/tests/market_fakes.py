@@ -276,11 +276,39 @@ def route(request: httpx.Request) -> str:
     return f"{request.method} /{request.url.path.split('/')[-1]}"
 
 
+# About 2,000 characters: the size of a real archived article body.
+ARTICLE = (
+    "Shares moved as analysts weighed services growth, handset demand and margin guidance"
+    " ahead of the quarter. "
+) * 19
+
+
+def news_page(symbol: str, available: int, params) -> list[dict]:
+    limit = int(params.get("limit", 100))
+    stamp = "2026-01-30T15:00:00Z"  # public before every demo decision
+    return [
+        {
+            "source": "fixture-news",
+            "data_version": DATA_VERSION,
+            "record_id": f"{symbol}-{i:03d}",
+            "revision": "1",
+            "published_at": stamp,
+            "revised_at": stamp,
+            "available_at": stamp,
+            "symbol": symbol,
+            "headline": f"{symbol} headline {i}",
+            "text": ARTICLE,
+        }
+        for i in range(min(limit, available))
+    ]
+
+
 def delegating_transport(
     fake: InMemoryMarket,
     seen: list[httpx.Request] | None = None,
     *,
     approval_id: UUID = SPEC.approval_id,
+    news_articles: int = 0,
 ) -> httpx.MockTransport:
     """Serves the market routes from the in-memory fake, so the adapter meets the driver."""
 
@@ -365,10 +393,11 @@ def delegating_transport(
                         "source": "fixture-news",
                         "data_version": DATA_VERSION,
                         "coverage": "complete",
-                        "items": [],
+                        # Like the market, at most `limit` articles per page.
+                        "items": news_page(symbol, news_articles, request.url.params),
                         "next_cursor": None,
                     }
-                    fake.calls.append(("news", symbol))
+                    fake.calls.append(("news", symbol, request.url.params.get("limit")))
                     return httpx.Response(200, json=page)
                 case "POST", ["accounts", aid, "close"]:
                     return model_response(200, await fake.close_account(eid, UUID(aid)))
