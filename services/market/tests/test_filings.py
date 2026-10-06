@@ -280,3 +280,12 @@ def test_reimporting_into_a_database_from_before_exclusions_records_them(tmp_pat
         filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
     with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
         assert connection.execute("SELECT COUNT(*) FROM data_filings").fetchone()[0] == 1
+
+
+def test_filings_imported_before_exclusions_existed_are_missing_not_an_error(tmp_path):
+    filings, _ = load(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
+        connection.execute("DROP TABLE data_filings_exclusions")  # as 3c386a8 left a database
+
+    with pytest.raises(MissingCoverage, match="re-importing"):
+        filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
