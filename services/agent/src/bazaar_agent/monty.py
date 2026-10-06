@@ -210,17 +210,29 @@ class MontyCalculator:
                         raise ValueError("Invalid calculation worker response")
                     output = result.get("output_json")
                     error_text = result.get("error_text")
-                    prints = result.get("prints", [])
+                    prints = result.get("prints")
                     if (
                         not isinstance(prints, list)
+                        or any(
+                            not isinstance(parts, list)
+                            or len(parts) != 2
+                            or parts[0] not in ("stdout", "stderr")
+                            or not isinstance(parts[1], str)
+                            for parts in prints
+                        )
                         or (error_text is not None and not isinstance(error_text, str))
                         or (output is not None and not isinstance(output, str))
-                        or (result["status"] == "ok" and output is None)
-                        or (result["status"] != "ok" and output is not None)
+                        or (result["status"] == "ok" and (output is None or error_text is not None))
+                        or (
+                            result["status"] != "ok"
+                            and (output is not None or not isinstance(error_text, str))
+                        )
                     ):
                         raise ValueError("Invalid calculation worker payload")
                     if output is not None:
-                        json.loads(output)
+                        # Python's parser accepts NaN/Infinity and overflowing exponents.
+                        # Re-encoding with allow_nan=False enforces finite JSON recursively.
+                        encode(json.loads(output))
                     prints_json = encode(prints)
                     status = result["status"]
                 else:

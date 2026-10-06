@@ -371,6 +371,38 @@ async def test_invalid_worker_response_is_fatal_boundary(monkeypatch):
     assert result.data.output_json is None
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "ok", "output_json": "NaN", "prints": []},
+        {"status": "ok", "output_json": "[Infinity]", "prints": []},
+        {"status": "ok", "output_json": '{"x": 1e999}', "prints": []},
+        {"status": "runtime"},
+        {"status": "runtime", "prints": []},
+        {"status": "syntax", "error_text": "error"},
+        {"status": "ok", "output_json": "3"},
+        {"status": "ok", "output_json": "3", "prints": [["stdout"]]},
+        {"status": "ok", "output_json": "3", "prints": [], "error_text": "error"},
+        {"status": "serialization", "output_json": "3", "prints": [], "error_text": "error"},
+    ],
+)
+async def test_malformed_worker_payload_stops_public_decision(monkeypatch, response):
+    import sys
+
+    original = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        return await original(sys.executable, "-c", f"print({json.dumps(response)!r})", **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    model, calls = script([ToolCallPart("monty_calculate", {"code": "1+2"})])
+    result, _ = await invoke(model)
+    assert result.error is not None and result.decision is None and len(calls) == 1
+    assert result.calculations[0].status == "worker_error"
+    assert result.calculations[0].output_json is None
+    assert result.calculations[0].error_text
+
+
 async def test_builtin_default_calculator_uses_initial_api_state():
     model, calls = script(
         [ToolCallPart("monty_calculate", {"code": "inputs['portfolio']['portfolio_value']"})],
