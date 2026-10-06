@@ -7,7 +7,7 @@ The app provides two things on `app.state`: `clock`, with `cutoff(experiment_id)
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -23,7 +23,6 @@ from pydantic import ValidationError
 
 from .clock import Clock
 from .prices import FutureDataError, MissingData, SqliteMarketData
-
 
 router = APIRouter()
 
