@@ -347,3 +347,8 @@ def test_cli_errors_that_are_not_source_failures_keep_their_traceback(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         main(["import-bars", "--snapshot", str(snap.dir), "--config", str(tmp_path / "none.toml")])
+
+
+def test_cli_bars_without_keys_names_the_bars_command(tmp_path):
+    with pytest.raises(SystemExit, match="^bars needs ALPACA_API_KEY.*sources bars$"):
+        main(["bars", "--root", str(tmp_path)], env={})

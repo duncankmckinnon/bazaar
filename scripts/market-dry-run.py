@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -86,6 +87,33 @@ class Run:
             )
         return body
 
+    def check_fill(self, fill: dict, cutoff: str) -> None:
+        """The fill is priced at the close the price route shows at this cutoff, never later."""
+        label = f"{fill.get('side')} {fill.get('symbol')}"
+        self.expect(f"{label} filled", fill.get("status") == "filled", str(fill.get("status")))
+        observed = datetime.fromisoformat(fill["price_observed_at"])
+        self.expect(
+            f"{label} price observed by the cutoff",
+            observed <= datetime.fromisoformat(cutoff),
+            f"price_observed_at {fill['price_observed_at']} <= cutoff {cutoff}",
+        )
+        start = (datetime.fromisoformat(cutoff) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        history = self.call(
+            f"close of {fill['symbol']} at {cutoff}",
+            "GET",
+            f"/prices/{fill['symbol']}",
+            200,
+            params={"start_at": start, "end_at": cutoff},
+        )
+        latest = history["observations"][-1]
+        self.expect(
+            f"{label} price is that close",
+            Decimal(fill["unit_price"]) == Decimal(latest["price"])
+            and fill["price_observed_at"] == latest["observed_at"],
+            f"unit_price {fill['unit_price']} vs close {latest['price']} "
+            f"observed {latest['observed_at']}",
+        )
+
     def expect(self, label: str, condition: bool, detail: str) -> None:
         print(f"{'ok ' if condition else 'BAD'}     check {label}: {detail}")
         if not condition:
@@ -145,7 +173,7 @@ def dry_run(run: Run, data_version: str, db: Path) -> None:
         404,
         params={"start_at": close_z(first), "end_at": close_z(first)},
     )
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection:
         rows = connection.execute("SELECT COUNT(*) FROM acct_experiments").fetchone()[0]
     run.expect("denied launch wrote nothing", rows == 0, f"acct_experiments rows={rows}")
 
@@ -183,10 +211,10 @@ def dry_run(run: Run, data_version: str, db: Path) -> None:
     buy_aapl = run.call(
         "BUY 10 AAPL", "POST", f"{account_path}/orders", 200, json=order("buy", "AAPL")
     )
-    run.expect("AAPL buy filled", buy_aapl.get("status") == "filled", str(buy_aapl.get("status")))
+    run.check_fill(buy_aapl, close_z(first))
     ko_order = order("buy", "KO")
     buy_ko = run.call("BUY 10 KO", "POST", f"{account_path}/orders", 200, json=ko_order)
-    run.expect("KO buy filled", buy_ko.get("status") == "filled", str(buy_ko.get("status")))
+    run.check_fill(buy_ko, close_z(first))
 
     for day in SESSIONS:
         if day != first:
@@ -205,7 +233,7 @@ def dry_run(run: Run, data_version: str, db: Path) -> None:
         total = Decimal(portfolio["cash"]) + marked
         run.expect(
             f"value adds up on {day}",
-            abs(total - Decimal(portfolio["portfolio_value"])) <= Decimal("0.01"),
+            total == Decimal(portfolio["portfolio_value"]),
             f"cash + marks = {total}, portfolio_value = {portfolio['portfolio_value']}",
         )
         cutoff = datetime.fromisoformat(close_z(day))
@@ -220,7 +248,7 @@ def dry_run(run: Run, data_version: str, db: Path) -> None:
             sell = run.call(
                 "SELL 10 AAPL", "POST", f"{account_path}/orders", 200, json=order("sell", "AAPL")
             )
-            run.expect("AAPL sell filled", sell.get("status") == "filled", str(sell.get("status")))
+            run.check_fill(sell, close_z(day))
             oversell = run.call(
                 "oversell: SELL 10 AAPL again",
                 "POST",
@@ -282,7 +310,9 @@ def dry_run(run: Run, data_version: str, db: Path) -> None:
 def prepare_db(args: argparse.Namespace, workdir: Path) -> Path:
     db = workdir / "market.sqlite3"
     if args.db:
-        shutil.copyfile(args.db, db)
+        # The market database is WAL, so a file copy can miss commits still in the -wal file.
+        with closing(sqlite3.connect(args.db)) as source, closing(sqlite3.connect(db)) as copy:
+            source.backup(copy)
         print(f"using a copy of {args.db} with data version {args.data_version}")
         return db
     csv_path = workdir / "bars-synthetic-v1.csv"
@@ -299,6 +329,8 @@ def main() -> int:
     parser.add_argument("--db", type=Path, help="an existing market database to copy")
     parser.add_argument("--data-version", default="synthetic-v1")
     args = parser.parse_args()
+    if args.db and not args.db.is_file():
+        parser.error(f"--db {args.db} does not exist")
     if args.db and args.data_version == "synthetic-v1":
         parser.error("with --db, name the imported --data-version, e.g. alpaca-bars-v1")
 
@@ -335,9 +367,9 @@ def main() -> int:
                 raise Unexpected("the server did not answer /health within 10 s")
             print(f"market on port {port}, experiment {experiment}, approval {approval}")
             dry_run(Run(client, experiment, approval), args.data_version, db)
-    except Unexpected as failure:
+    except (Unexpected, httpx.HTTPError, KeyError, ValueError) as failure:
         log.flush()
-        print(f"\nDRY RUN FAILED: {failure}", file=sys.stderr)
+        print(f"\nDRY RUN FAILED: {failure!r}", file=sys.stderr)
         print(f"server log: {workdir / 'server.log'}", file=sys.stderr)
         return 1
     finally:
