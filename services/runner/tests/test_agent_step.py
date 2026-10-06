@@ -206,6 +206,69 @@ async def test_cancellation_reconciles_then_propagates():
     assert reconciled == [0]
 
 
+async def test_cancellation_after_a_fill_records_it_then_propagates():
+    async def fills_then_cancelled(ctx, account, client, client_order_id):
+        await post_order(client, ctx, buy_order(client_order_id))
+        raise asyncio.CancelledError
+
+    fake = InMemoryMarket()
+    orders = []
+    step = agent_step(fake, fills_then_cancelled)
+    ctx = await _first_decision_context(fake)
+    with pytest.raises(asyncio.CancelledError):
+        await step.decide(ctx, fake.accounts[ctx.account_id], fake, orders)
+    (order,) = orders
+    assert order.result.client_order_id == reserved_order_id(ctx) and submits(fake) == 1
+
+
+async def test_cancellation_with_a_failed_reconcile_still_propagates():
+    class NoOrderList(InMemoryMarket):
+        async def orders(self, ctx, start_at):
+            raise httpx.ConnectError("market went away")
+
+    async def cancelled(ctx, account, client, client_order_id):
+        raise asyncio.CancelledError
+
+    fake = NoOrderList()
+    with pytest.raises(asyncio.CancelledError):
+        await run_strategy(SPEC, fake, agent_step(fake, cancelled))
+
+
+async def test_an_order_sent_without_a_result_is_reconciled():
+    async def lost_result(ctx, account, client, client_order_id):
+        if ctx.event_sequence != 0:
+            return AgentDecision(None, None, None)
+        order = buy_order(client_order_id)
+        await post_order(client, ctx, order)
+        return AgentDecision(order, None, None)
+
+    fake = InMemoryMarket()
+    result = await run_strategy(SPEC, fake, agent_step(fake, lost_result))
+    (order,) = result.orders
+    (error,) = result.decision_errors
+    assert error.reconciled == "found" and order.result.client_order_id == reserved_for(0)
+    assert error.error == "the agent sent an order but reported no result"
+    assert submits(fake) == 1
+
+
+async def _first_decision_context(fake: InMemoryMarket):
+    from bazaar_runner.clock import RunManifest, build_schedule
+
+    await fake.set_cutoff(SPEC.experiment_id, SESSIONS[0].open_at, "synthetic-v1", "exec-v1")
+    account = await fake.create_account(
+        SPEC.experiment_id,
+        SPEC.agent_id,
+        SPEC.strategy_version_id,
+        Decimal(10000),
+        request_id=SPEC.run_id,
+    )
+    manifest = RunManifest(
+        **SPEC.model_dump(include=set(RunManifest.model_fields) - {"account_id"}),
+        account_id=account.account_id,
+    )
+    return build_schedule(SPEC.script)[0].context(manifest)
+
+
 def test_the_reserved_id_is_deterministic_per_decision():
     from bazaar_runner.clock import RunManifest, build_schedule
 

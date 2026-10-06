@@ -13,16 +13,18 @@ from bazaar_runner.clock import ClockScript, TradingSession
 from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import Decision, DecisionPolicy, PriceAt
 from bazaar_runner.record import Evaluate, RunRecord, record_run
-from bazaar_runner.run import RunSpec
+from bazaar_runner.run import DecisionStep, RunSpec
 
 DEMO_SYMBOLS = ("AAPL", "MSFT", "KO")
 MOMENTUM_REF = "scripted-momentum-v1"
+AGENT_FIXTURE_REF = "agent-fixture-v1"
 BUY_AND_HOLD_REF = "baseline-buy-and-hold"
 CASH_ONLY_REF = "baseline-cash-only"
 # Agent and strategy ids are derived from the policy name until the demo goes through the registry.
 _IDS = uuid5(NAMESPACE_URL, "https://github.com/duncankmckinnon/bazaar/runner")
 
-PolicyFactory = Callable[[PriceAt], DecisionPolicy]
+# Called once per launch with that launch's own price lookup.
+PolicyFactory = Callable[[PriceAt], DecisionPolicy | DecisionStep]
 
 
 def demo_script() -> ClockScript:
@@ -107,6 +109,20 @@ def demo_spec(
     )
 
 
+def check_one_agent_per_experiment(launches: Sequence[Launch]) -> None:
+    """Approvals are experiment-scoped: no two launches may share an experiment or approval id."""
+    for kind in ("experiment_id", "approval_id"):
+        seen: dict[UUID, str] = {}
+        for launch in launches:
+            value = getattr(launch, kind)
+            if value in seen:
+                raise ValueError(
+                    f"{kind} {value} is used by more than one launch"
+                    f" ({seen[value]} and {launch.policy_ref}); each launch needs its own"
+                )
+            seen[value] = launch.policy_ref
+
+
 async def run_demo(
     launches: Sequence[Launch],
     ports: Mapping[Launch, MarketPort],
@@ -119,6 +135,7 @@ async def run_demo(
     evaluate: Evaluate | None = None,
 ) -> list[RunRecord]:
     """Run each launch in turn on its own port. Every policy reads prices only from that port."""
+    check_one_agent_per_experiment(launches)
     records = []
     for launch in launches:
         port = ports[launch]

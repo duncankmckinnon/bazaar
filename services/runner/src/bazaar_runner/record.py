@@ -18,6 +18,7 @@ from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import DecisionPolicy
 from bazaar_runner.run import (
     DecisionError,
+    DecisionStep,
     FailureCode,
     MarkRecord,
     OrderRecord,
@@ -125,7 +126,7 @@ def _trace_id(span: logfire.LogfireSpan) -> str | None:
 async def record_run(
     spec: RunSpec,
     market: MarketPort,
-    policy: DecisionPolicy,
+    policy: DecisionPolicy | DecisionStep,
     *,
     policy_ref: str,
     runs_dir: Path,

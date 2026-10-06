@@ -7,6 +7,7 @@ account's orders from the market to learn what actually settled.
 """
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import NamedTuple
 from uuid import UUID, uuid5
@@ -24,6 +25,8 @@ from bazaar_runner.run import (
     StepOutcome,
     order_record,
 )
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_HEADER = "X-Bazaar-Account"
 AGENT_TIMEOUT_SECONDS = 60.0
@@ -83,13 +86,22 @@ class AgentStep(DecisionStep):
             ) as client:
                 outcome = await self._decide(ctx, account, client, reserved)
         except asyncio.CancelledError:
-            await self._find(ctx, market, reserved)
+            # Record what settled before propagating; the cancellation always wins.
+            try:
+                found = await self._find(ctx, market, reserved)
+            except ReconcileFailed:
+                logger.warning("reconcile after cancellation failed for %s", reserved)
+            else:
+                if found is not None:
+                    orders.append(order_record(ctx, 0, found))
             raise
         except Exception as exc:  # noqa: BLE001 - an agent failure is reconciled, not trusted
             outcome = AgentDecision(None, None, f"the agent decision raised {type(exc).__name__}")
         result = outcome.order_result
         if outcome.error is None and result is not None and result.client_order_id != reserved:
             outcome = outcome._replace(error="the agent reported an order under another id")
+        if outcome.error is None and result is None and outcome.order_request is not None:
+            outcome = outcome._replace(error="the agent sent an order but reported no result")
 
         if outcome.error is None:
             if outcome.order_result is not None:

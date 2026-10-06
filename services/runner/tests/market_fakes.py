@@ -277,14 +277,17 @@ def route(request: httpx.Request) -> str:
 
 
 def delegating_transport(
-    fake: InMemoryMarket, seen: list[httpx.Request] | None = None
+    fake: InMemoryMarket,
+    seen: list[httpx.Request] | None = None,
+    *,
+    approval_id: UUID = SPEC.approval_id,
 ) -> httpx.MockTransport:
     """Serves the market routes from the in-memory fake, so the adapter meets the driver."""
 
     async def handle(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
-        if request.headers.get(APPROVAL_HEADER) != str(SPEC.approval_id):
+        if request.headers.get(APPROVAL_HEADER) != str(approval_id):
             return api_error(403, ErrorCode.EXPERIMENT_NOT_APPROVED)
         if route(request) in CONTROL_ROUTES and request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
             return api_error(401, ErrorCode.UNAUTHORIZED, "runner token required")

@@ -1,12 +1,13 @@
 import json
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import httpx
 import pytest
 from bazaar_protocol import OrderRequest, OrderSide
 from bazaar_runner import __main__ as cli
 from bazaar_runner.demo import (
+    AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
@@ -194,29 +195,174 @@ async def test_the_runner_token_never_reaches_spans_or_files(capfire, tmp_path):
             assert TOKEN not in path.read_text()
 
 
-def test_cli_stops_at_startup_without_the_token(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "configure_telemetry", lambda: None)
-    monkeypatch.delenv(RUNNER_TOKEN_ENV, raising=False)
-    ids = [
+def cli_ids(*rows) -> list[str]:
+    return [
         arg
-        for n, name in enumerate(cli.APPROVED_RUNS)
-        for arg in (
-            f"--{name}-experiment-id",
-            str(UUID(int=n)),
-            f"--{name}-approval-id",
-            str(UUID(int=n)),
-        )
+        for n, (prefix, _, _) in enumerate(rows or cli.DEMO_LAUNCHES)
+        for kind in cli.KINDS
+        for arg in (f"--{prefix}-{kind}-id", str(UUID(int=0x100 * (n + 1) + len(kind))))
     ]
-    code = cli.main(["--demo", "--data-version", "synthetic-v1", "--runs-dir", str(tmp_path), *ids])
+
+
+@pytest.fixture
+def offline_cli(monkeypatch):
+    """The CLI with telemetry off and policies that need no demo-only packages."""
+    monkeypatch.setattr(cli, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(
+        cli,
+        "load_policies",
+        lambda market_url: {ref: (lambda prices: cash_only) for _, ref, _ in cli.DEMO_LAUNCHES},
+    )
+    for prefix in [p for p, _, _ in cli.DEMO_LAUNCHES] + ["agent"]:
+        for kind in cli.KINDS:
+            monkeypatch.delenv(cli._env_name(prefix, kind), raising=False)
+    return cli
+
+
+def test_cli_stops_at_startup_without_the_token(offline_cli, monkeypatch, capsys, tmp_path):
+    monkeypatch.delenv(RUNNER_TOKEN_ENV, raising=False)
+    code = cli.main(["--demo", "--runs-dir", str(tmp_path), *cli_ids()])
     assert code == 2
     assert RUNNER_TOKEN_ENV in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
 
 
-def test_cli_requires_every_approved_run_id(monkeypatch, capsys):
-    for name in cli.APPROVED_RUNS:
-        for kind in ("EXPERIMENT", "APPROVAL"):
-            monkeypatch.delenv(f"BAZAAR_{name.upper().replace('-', '_')}_{kind}_ID", raising=False)
+def test_cli_refuses_two_launches_in_one_experiment(offline_cli, monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv(RUNNER_TOKEN_ENV, TOKEN)
+    ids = cli_ids()
+    shared = ids[ids.index("--agent-fixture-experiment-id") + 1]
+    ids[ids.index("--cash-only-experiment-id") + 1] = shared
+    code = cli.main(["--demo", "--runs-dir", str(tmp_path), *ids])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert f"experiment_id {shared} is used by more than one launch" in err
+    assert "agent-fixture-v1 and baseline-cash-only" in err
+    assert TOKEN not in err and list(tmp_path.iterdir()) == []
+
+
+def test_cli_refuses_a_shared_approval_too(offline_cli, monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv(RUNNER_TOKEN_ENV, TOKEN)
+    ids = cli_ids()
+    ids[ids.index("--momentum-approval-id") + 1] = ids[ids.index("--buy-and-hold-approval-id") + 1]
+    assert cli.main(["--demo", "--runs-dir", str(tmp_path), *ids]) == 2
+    assert "approval_id" in capsys.readouterr().err
+
+
+async def test_run_demo_itself_refuses_a_shared_experiment(tmp_path):
+    twin = Launch(CASH_ONLY_REF, MOMENTUM.experiment_id, UUID(int=0xAB))
+    with pytest.raises(ValueError, match="more than one launch"):
+        await run_demo(
+            [MOMENTUM, twin],
+            {MOMENTUM: InMemoryMarket(), twin: InMemoryMarket()},
+            POLICIES,
+            starting_cash=Decimal(10000),
+            runs_dir=tmp_path,
+            **DEMO,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
+    args = cli.parse_args(["--demo", *cli_ids()])
+    assert args.data_version == "alpaca-bars-v1"
+    assert [ref for _, ref, _ in cli.demo_launches(args)] == [
+        "agent-fixture-v1",
+        "scripted-momentum-v1",
+        "baseline-buy-and-hold",
+        "baseline-cash-only",
+    ]
+    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_REF]
+    args = cli.parse_args(["--demo", "--no-momentum", *cli_ids(*rows)])
+    assert MOMENTUM_REF not in [ref for _, ref, _ in cli.demo_launches(args)]
+
+
+def test_the_old_agent_flags_still_name_the_momentum_run(offline_cli, monkeypatch):
+    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_REF]
+    by_flag = cli.parse_args(
+        [
+            "--demo",
+            *cli_ids(*rows),
+            "--agent-experiment-id",
+            str(UUID(int=0xBEEF)),
+            "--agent-approval-id",
+            str(UUID(int=0xBEF0)),
+        ]
+    )
+    assert (by_flag.momentum_experiment_id, by_flag.momentum_approval_id) == (
+        UUID(int=0xBEEF),
+        UUID(int=0xBEF0),
+    )
+    monkeypatch.setenv("BAZAAR_AGENT_EXPERIMENT_ID", str(UUID(int=0xCAFE)))
+    monkeypatch.setenv("BAZAAR_AGENT_APPROVAL_ID", str(UUID(int=0xCAFF)))
+    by_env = cli.parse_args(["--demo", *cli_ids(*rows)])
+    assert (by_env.momentum_experiment_id, by_env.momentum_approval_id) == (
+        UUID(int=0xCAFE),
+        UUID(int=0xCAFF),
+    )
+
+
+def test_cli_requires_every_launch_id(offline_cli, capsys):
     with pytest.raises(SystemExit):
-        cli.parse_args(["--demo", "--data-version", "synthetic-v1"])
-    assert "--cash-only-approval-id" in capsys.readouterr().err
+        cli.parse_args(["--demo"])
+    err = capsys.readouterr().err
+    assert "--agent-fixture-experiment-id" in err and "--cash-only-approval-id" in err
+
+
+AGENT = Launch(AGENT_FIXTURE_REF, UUID(int=0xE5), UUID(int=0xA5))
+
+
+async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfire, tmp_path):
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_runner.agent import (
+        AGENT_FIXTURE_INSTRUCTIONS,
+        fixture_model_factory,
+        make_agent_decider,
+    )
+    from bazaar_runner.agent_step import AgentStep
+
+    agent_market = InMemoryMarket()
+    ports = {AGENT: agent_market, MOMENTUM: InMemoryMarket(), CASH: InMemoryMarket()}
+    policies = POLICIES | {
+        AGENT_FIXTURE_REF: lambda prices: AgentStep(
+            make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory()),
+            market_url="http://market",
+            transport=delegating_transport(agent_market, approval_id=AGENT.approval_id),
+        )
+    }
+    agent, momentum, cash = await run_demo(
+        [AGENT, MOMENTUM, CASH],
+        ports,
+        policies,
+        starting_cash=Decimal(10000),
+        runs_dir=tmp_path,
+        **DEMO,
+    )
+
+    assert agent.status == momentum.status == cash.status == "completed", agent.failure
+    (order,) = agent.orders
+    assert order.event_sequence == 0 and order.result.status == "filled"
+    assert (order.request.symbol, order.request.quantity) == ("AAPL", 10)
+    assert order.result.client_order_id == uuid5(AGENT.experiment_id, "decision:0")
+    assert agent.decision_errors == ()
+    assert [c[0] for c in agent_market.calls].count("submit") == 1
+    assert {r.manifest.schedule_digest for r in (agent, momentum, cash)} == {
+        agent.manifest.schedule_digest
+    }
+    assert {o.request.symbol for o in momentum.orders} == set(DEMO_SYMBOLS)
+    assert cash.orders == ()
+
+    spans = capfire.exporter.exported_spans_as_dict()
+    by_id = {s["context"]["span_id"]: s for s in spans}
+    first = next(
+        s
+        for s in spans
+        if s["name"] == "runner.decision"
+        and s["attributes"].get("agent")
+        and s["attributes"]["event_sequence"] == 0
+    )
+    assert first["attributes"]["client_order_id"] == str(order.result.client_order_id)
+    assert first["attributes"]["reconcile"] == "not_needed"
+    trading = [s for s in spans if s["name"] == "trading.decision"]
+    assert len(trading) == len(SESSIONS)
+    assert by_id[trading[0]["parent"]["span_id"]] is first
+    assert TOKEN not in json.dumps(spans, default=str)
