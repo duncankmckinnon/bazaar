@@ -134,6 +134,7 @@ class ErrorCode(StrEnum):
     EXPERIMENT_NOT_APPROVED = "experiment_not_approved"
     EXPERIMENT_NOT_RUNNING = "experiment_not_running"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+    CONFLICT = "conflict"
     NOT_FOUND = "not_found"
     INTERNAL_ERROR = "internal_error"
 

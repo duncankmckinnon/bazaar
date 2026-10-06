@@ -4,13 +4,14 @@ Bazaar's target is historical stock strategy experimentation with fake-money acc
 DB. Agents buy and sell through simulated market execution using point-in-time prices, news,
 prior-cycle company reports and Pydantic Monty. An orchestrator proposes the next strategy/test plan
 for human approval, supported by Logfire + AI Gateway traces, evaluations, datasets and oversight.
-A planned FastAPI management interface registers strategies as new named agents; registration does
-not start an experiment.
+The agent-side FastAPI interface registers strategies as new named agents; registration does not
+start an experiment.
 
-The current scaffold runs a market container and two placeholder agents named `seller` and `buyer`.
+The current scaffold runs an agent-side registry API, a market container and two placeholder agents
+named `seller` and `buyer`.
 
-**Status: scaffolding.** The containers build and run and the agents can reach the market. Market
-data, agent behavior and messaging are not implemented yet. The target design is in
+**Status: registry + scaffolding.** Strategy registration, retrieval and immutable versioning are
+implemented. Market data, trading behavior, experiments and approvals are not implemented yet. The target design is in
 `docs/superpowers/specs/`; `docs/superpowers/plans/` contains an archived skeleton plan.
 
 The [current provisional specification](docs/superpowers/specs/bazaar-evaluation-and-optimization-design.md)
@@ -22,13 +23,34 @@ and skeleton assumptions; the old implementation plan needs revision before use 
 | --- | --- | --- |
 | `market` | `services/market` | FastAPI service (`/health` for now); will own prices, accounts and history |
 | `seller`, `buyer` | `services/agent` | One image run twice; will be Pydantic AI agents with their own directives |
+| `api` | `services/agent` | Named-agent and strategy registry, with its own persistent SQLite volume; independent of the market |
 
 ## Run
 
 ```sh
 docker compose up --build
 curl localhost:8000/health
+curl localhost:8001/health
 ```
+
+## Strategy registration
+
+The registry runs separately from trading agents via `python -m bazaar_agent.api`, listening on
+port 8001. Compose binds it to localhost and persists its own `registry-data` volume. It never calls
+or changes the market, provisions accounts, loads submitted code, or executes a strategy.
+
+For local development:
+
+```sh
+uv run --package bazaar-agent python -m bazaar_agent.api
+```
+
+See the [registration API guide](docs/strategy-registration-api.md) for payloads, idempotency,
+versioning and configuration. **This local API has no authentication; do not expose it publicly.**
+
+Pydantic Logfire monitors API requests, registry operations, database queries and agent HTTP/logging
+activity. Set `LOGFIRE_TOKEN` to enable export; token-free local operation and tests remain supported.
+Sensitive strategy payloads are excluded from traces. See the API guide's monitoring section.
 
 ## Shared API contracts
 
