@@ -157,3 +157,13 @@ async def test_the_clients_filings_accept_the_cycles_from_this_route(market):
     assert result.error is None
     assert [f.record_id for f in result.data.items] == ["k-1", "q-1", "q-2", "k-1a"]
     assert all(f.fiscal_period_end < found[0].start for f in result.data.items)
+
+
+def test_an_unexpected_lookup_bug_is_not_turned_into_an_empty_list(market):
+    def broken(experiment_id, kind):
+        raise KeyError("a bug, not a missing archive")
+
+    market.app.state.component = broken
+
+    with pytest.raises(KeyError):
+        cycles(market, "ACME")

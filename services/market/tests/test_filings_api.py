@@ -11,7 +11,7 @@ from bazaar_market.sources.filings_import import import_filings_snapshot
 from bazaar_protocol import ExperimentContext
 from bazaar_protocol.research import ResearchRequest
 
-from .test_filings import CIK, WINDOW, edgar_snapshot
+from .test_filings import CIK, UNPROCESSED, WINDOW, edgar_snapshot
 from .test_news_api import Market, z
 
 
@@ -107,5 +107,19 @@ def test_a_bundle_with_no_filings_imported_is_missing(tmp_path):
             404,
             "data_unavailable",
         )
+    finally:
+        market.close()
+
+
+async def test_a_window_holding_an_excluded_filing_reaches_the_client_as_missing(tmp_path):
+    market = Market(tmp_path)
+    try:
+        with closing(sqlite3.connect(market.app.state.market_db_path)) as connection:
+            snapshot = edgar_snapshot(tmp_path, extra=[UNPROCESSED])
+            import_filings_snapshot(connection, snapshot, {"ACME": CIK}, WINDOW)
+        research, client = tools(market)
+        async with client:
+            result = await research.filings(request(market, datetime(2024, 7, 1, tzinfo=UTC)))
+        assert (result.data, result.error.code) == (None, "missing_data")
     finally:
         market.close()

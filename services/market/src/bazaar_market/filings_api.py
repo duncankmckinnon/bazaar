@@ -15,6 +15,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import TypeAdapter, ValidationError
 
 from .archive import MissingCoverage
+from .bundles import NoComponent
+from .clock import UnknownExperiment
 from .db import MarketError
 from .filings import FILINGS_SOURCE, SqliteFilingArchive
 from .history import PageScope, build_page, parse_history_request
@@ -68,7 +70,7 @@ def filings(
         raise MarketError(403, ErrorCode.FORBIDDEN, "end_at is after the experiment's current time")
     try:
         version = request.app.state.component(experiment_id, "filings")
-    except LookupError:
+    except (UnknownExperiment, NoComponent):
         raise _missing("This experiment's data has no filings archive") from None
     archive = SqliteFilingArchive(request.app.state.market_db_path, version)
     try:
@@ -130,14 +132,14 @@ def fiscal_cycles(request: Request, experiment_id: UUID, symbols: str) -> list[F
         raise MarketError(422, ErrorCode.INVALID_REQUEST, "Invalid symbol") from None
     try:
         experiment = request.app.state.clock.experiment(experiment_id)
-    except LookupError:
+    except UnknownExperiment:
         raise MarketError(404, ErrorCode.NOT_FOUND, "Unknown experiment") from None
     ends: dict[str, date] = {}
     try:
         version = request.app.state.component(experiment_id, "filings")
         archive = SqliteFilingArchive(request.app.state.market_db_path, version)
         ends = archive.latest_period_ends(wanted, experiment.cutoff_at)
-    except (LookupError, MissingCoverage):
+    except (NoComponent, MissingCoverage):
         pass  # no filings for this experiment: every symbol is omitted
     return [
         FiscalCycleStart(symbol=s, start=ends[s] + timedelta(days=1)) for s in wanted if s in ends
