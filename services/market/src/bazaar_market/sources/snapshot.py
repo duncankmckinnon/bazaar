@@ -81,10 +81,13 @@ class Snapshot:
         """The window recorded for `key` as {"start", "end"}, or None when none was recorded."""
         return self._manifest().get("coverage", {}).get(key)
 
-    def cover(self, key: str, *, start: str, end: str) -> None:
-        """Record the time window `key` was fetched for. A different window is a conflict."""
+    def cover(self, key: str, *, start: str, end: str, **details: str) -> None:
+        """Record the time window `key` was fetched for, and any request details that shape it.
+
+        A different window or different details is a conflict.
+        """
         manifest = self._manifest()
-        window = {"start": start, "end": end}
+        window = {"start": start, "end": end, **details}
         recorded = manifest.setdefault("coverage", {}).get(key)
         if recorded == window:
             return

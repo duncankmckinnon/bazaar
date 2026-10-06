@@ -16,7 +16,14 @@ Reading a snapshot and applying the visibility rules does not, and the tests use
   Ticker, start date, end date.
   The file is hand-maintained from a book and Wikipedia.
 
-Prices, corporate actions and the trading calendar are not fetched yet.
+- **Alpaca daily bars**, `data.alpaca.markets/v2/stocks/bars`, needs `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`.
+  Requested with `adjustment=raw`: split- or dividend-adjusted history rewrites old prices with corporate actions that
+  happened later, which is lookahead.
+  The manifest records the adjustment and feed with each ticker's window.
+  Each ticker is requested with `asof=-` over the days it traded under that name, so Fiserv is fetched as FI until
+  2025-11-10 and as FISV from 2025-11-11.
+
+Corporate actions and the trading calendar are not fetched.
 
 ## Prices
 
@@ -36,6 +43,19 @@ Re-importing the same bars is a no-op, and a changed bar under the same data ver
 uv run python -m bazaar_market.prices synthetic --out data/bars-synthetic-v1.csv
 uv run python -m bazaar_market.prices import data/bars-synthetic-v1.csv --db data/market.sqlite3
 ```
+
+Real bars are fetched into a snapshot and then imported as data version `alpaca-bars-v1`:
+
+```sh
+uv run --env-file .env python -m bazaar_market.sources bars --version <version>
+uv run python -m bazaar_market.sources import-bars --snapshot data/raw/alpaca-bars/<version> --db data/market.sqlite3
+```
+
+`bars` takes `--feed sip` (the default) or `--feed iex`.
+Alpaca answers 200 with no bars where it has no data, so `import-bars` treats missing data as an error and stores
+nothing.
+It fails when a ticker has no bars, when a ticker lacks a session other tickers traded between its first and last bar,
+or when AAPL, MSFT or KO lacks a weekday from 2026-01-30 to 2026-02-13, the runner's demo run.
 
 `synthetic` writes data version `synthetic-v1`: a seeded random walk on every weekday from 2025-07-01 to 2026-09-30
 for the thirteen demo companies.
