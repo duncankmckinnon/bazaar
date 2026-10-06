@@ -30,6 +30,7 @@ uv run --env-file .env python -m bazaar_market.sources capture-news --days 3
 
 `--config` defaults to `config/demo-sources.toml`, `--root` to `data/raw`, and `--version` to the current UTC minute.
 `capture-news` saves the trailing days into a new version, so a later capture can be compared with it.
+Its window ends at the time of the fetch, not at the end of the day.
 `scripts/install-news-capture.sh` schedules `capture-news` daily with launchd on macOS.
 
 Filing text is downloaded only when `SEC_USER_AGENT` contains a contact address.
@@ -46,9 +47,13 @@ Files are written through a temporary file and renamed, and a file left without 
 is written again.
 One process writes a version at a time. There is no lock.
 
+The manifest records the window each symbol's news was fetched for, and `sources.read.news_coverage` returns it.
+Outside that window, an empty result means the news was not fetched, not that there was none.
+
 An interrupted `news` run resumes when rerun with the same `--version`: frozen pages are read back and the fetch
 continues from the last page token.
-Fetching a different date window into that version raises `SnapshotConflict`.
+Fetching a different window into that version raises `SnapshotConflict`.
+Because a `capture-news` window ends at the fetch time, a failed capture is rerun into a new version.
 
 Requests are tried up to three times for dropped connections and for 429, 502, 503 and 504.
 Redirects are never followed, so the Alpaca key headers are sent to `data.alpaca.markets` only.

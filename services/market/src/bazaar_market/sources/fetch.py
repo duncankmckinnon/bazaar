@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -78,13 +78,14 @@ def fetch_news_range(
     start: date,
     end: date,
     headers: dict[str, str] | None = None,
+    until: datetime | None = None,
 ) -> dict[str, int]:
     snap = Snapshot(root, source="alpaca-news", version=version)
     summary = {}
     for company in cfg.companies:
         for symbol in company.news_symbols:
             items = fetch_news(
-                http, symbol=symbol, start=start, end=end, snap=snap, headers=headers
+                http, symbol=symbol, start=start, end=end, snap=snap, headers=headers, until=until
             )
             summary[symbol] = len(items)
     return summary

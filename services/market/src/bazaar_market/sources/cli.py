@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -34,7 +34,7 @@ def main(
     *,
     env: Mapping[str, str] | None = None,
     http: httpx.Client | None = None,
-    today: date | None = None,
+    now: datetime | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="bazaar_market.sources", description=__doc__)
     parser.add_argument("command", choices=["universe", "edgar", "news", "capture-news", "all"])
@@ -47,8 +47,8 @@ def main(
         parser.error("--days must be at least 1")
 
     env = os.environ if env is None else env
-    today = today or datetime.now(UTC).date()
-    version = args.version or datetime.now(UTC).strftime("%Y-%m-%dT%H%MZ")
+    now = now or datetime.now(UTC)
+    version = args.version or now.astimezone(UTC).strftime("%Y-%m-%dT%H%MZ")
     cfg = load_config(Path(args.config))
     root = Path(args.root)
     needs_news = args.command in ("news", "capture-news", "all")
@@ -74,11 +74,19 @@ def main(
             print("edgar: filing text skipped. Set SEC_USER_AGENT to a name and contact address.")
     if needs_news:
         if args.command == "capture-news":
-            start, end = today - timedelta(days=args.days - 1), today
+            today = now.astimezone(UTC).date()
+            start, end, until = today - timedelta(days=args.days - 1), today, now
         else:
-            start, end = cfg.period_start, cfg.period_end
+            start, end, until = cfg.period_start, cfg.period_end, None
         counts = fetch_news_range(
-            cfg, root, http, version=version, start=start, end=end, headers=news_headers
+            cfg,
+            root,
+            http,
+            version=version,
+            start=start,
+            end=end,
+            headers=news_headers,
+            until=until,
         )
         for symbol, count in counts.items():
             print(f"news: {symbol} {count} articles from {start} to {end}")

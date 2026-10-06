@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 from .alpaca_news import parse_news
@@ -23,8 +24,9 @@ class _Frozen:
     def __init__(self, snapshot_dir: Path) -> None:
         self.dir = Path(snapshot_dir)
         manifest = self.dir / "manifest.json"
-        files = json.loads(manifest.read_text())["files"] if manifest.exists() else []
-        self.entries = {e["file"]: e for e in files}
+        payload = json.loads(manifest.read_text()) if manifest.exists() else {}
+        self.entries = {e["file"]: e for e in payload.get("files", [])}
+        self.coverage = payload.get("coverage", {})
 
     def has(self, name: str) -> bool:
         if name in self.entries:
@@ -66,6 +68,14 @@ def load_facts(snapshot_dir: Path, cik: int) -> list[Fact]:
     if not frozen.has(name):
         raise SourceError(f"no reported numbers for company {cik} in {snapshot_dir}")
     return parse_company_facts(frozen.read(name))
+
+
+def news_coverage(snapshot_dir: Path, symbol: str) -> tuple[datetime, datetime]:
+    """The window a symbol's news was fetched for. Outside it, no news means not fetched."""
+    window = _Frozen(snapshot_dir).coverage.get(symbol)
+    if window is None:
+        raise SourceError(f"no news window recorded for {symbol} in {snapshot_dir}")
+    return datetime.fromisoformat(window["start"]), datetime.fromisoformat(window["end"])
 
 
 def load_news(snapshot_dir: Path, symbol: str) -> list[NewsItem]:

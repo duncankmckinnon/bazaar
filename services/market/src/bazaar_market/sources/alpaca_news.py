@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 
@@ -45,30 +45,33 @@ def fetch_news(
     end: date,
     snap: Snapshot,
     headers: dict[str, str] | None = None,
+    until: datetime | None = None,
     min_interval: float = 0.35,
     sleep: Callable[[float], None] = time.sleep,
 ) -> list[NewsItem]:
     """Freeze every article tagged with `symbol` from the start of `start` to the end of `end`.
 
-    `headers` carries the Alpaca keys, so they go to Alpaca and to no other host. Pages are
-    spaced by `min_interval` seconds because the free plan allows 200 requests a minute.
+    `until`, usually the fetch time, ends the window earlier, so the manifest never claims
+    coverage of time that had not happened yet. `headers` carries the Alpaca keys, so they go
+    to Alpaca and to no other host. Pages are spaced by `min_interval` seconds because the free
+    plan allows 200 requests a minute.
     """
+    window_end = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC)
+    if until is not None:
+        window_end = min(window_end, until.astimezone(UTC).replace(microsecond=0))
     params = {
         "symbols": symbol,
         "start": f"{start.isoformat()}T00:00:00Z",
-        "end": f"{end.isoformat()}T23:59:59Z",
+        "end": window_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "include_content": "true",
         "limit": "50",
         "sort": "asc",
     }
-    first = snap.entry(f"{symbol}/page-0001.json")
-    if first is not None:
-        frozen = httpx.URL(first["url"]).params
-        if any(frozen.get(key) != params[key] for key in ("symbols", "start", "end")):
-            raise SnapshotConflict(
-                f"{snap.dir} already holds {symbol} news for {frozen.get('start')} to "
-                f"{frozen.get('end')}. Fetch a different window into a new version."
-            )
+    if snap.entry(f"{symbol}/page-0001.json") is not None and snap.coverage(symbol) is None:
+        raise SnapshotConflict(
+            f"{snap.dir} holds {symbol} news with no recorded window. Fetch into a new version."
+        )
+    snap.cover(symbol, start=params["start"], end=params["end"])
 
     items: list[NewsItem] = []
     tokens: set[str] = set()

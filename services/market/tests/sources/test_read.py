@@ -1,9 +1,9 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from bazaar_market.sources.errors import SourceError
-from bazaar_market.sources.read import load_facts, load_filings, load_news
+from bazaar_market.sources.read import load_facts, load_filings, load_news, news_coverage
 from bazaar_market.sources.snapshot import Snapshot
 
 
@@ -211,3 +211,22 @@ def test_load_facts_refuses_numbers_edited_after_they_were_frozen(tmp_path):
 
     with pytest.raises(SourceError, match="SHA-256"):
         load_facts(snap_dir, 42)
+
+
+def test_news_coverage_is_the_window_recorded_at_fetch_time(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.cover("AAPL", start="2025-07-01T00:00:00Z", end="2025-07-03T10:00:00Z")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1)).encode(), url="u", rows=1)
+
+    assert news_coverage(snap.dir, "AAPL") == (
+        datetime(2025, 7, 1, tzinfo=UTC),
+        datetime(2025, 7, 3, 10, tzinfo=UTC),
+    )
+
+
+def test_news_coverage_fails_when_no_window_was_recorded(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1)).encode(), url="u", rows=1)
+
+    with pytest.raises(SourceError, match="AAPL"):
+        news_coverage(snap.dir, "AAPL")

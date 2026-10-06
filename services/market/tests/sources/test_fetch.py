@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -216,7 +216,7 @@ def test_cli_news_sends_the_alpaca_keys_and_covers_the_configured_period(tmp_pat
     )
 
 
-def test_cli_capture_news_covers_the_trailing_days_up_to_today(tmp_path):
+def test_cli_capture_news_covers_the_trailing_days_up_to_the_fetch_time(tmp_path):
     seen = []
 
     main(
@@ -231,12 +231,12 @@ def test_cli_capture_news_covers_the_trailing_days_up_to_today(tmp_path):
         ],
         env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
         http=web(seen),
-        today=date(2026, 10, 6),
+        now=datetime(2026, 10, 6, 10, 0, tzinfo=UTC),
     )
 
     assert (seen[0].url.params["start"], seen[0].url.params["end"]) == (
         "2026-10-04T00:00:00Z",
-        "2026-10-06T23:59:59Z",
+        "2026-10-06T10:00:00Z",
     )
 
 
@@ -274,7 +274,7 @@ def test_cli_capture_news_honours_a_days_value_other_than_the_default(tmp_path):
         ],
         env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
         http=web(seen),
-        today=date(2026, 10, 6),
+        now=datetime(2026, 10, 6, 10, 0, tzinfo=UTC),
     )
 
     assert seen[0].url.params["start"] == "2026-10-02T00:00:00Z"
@@ -288,7 +288,7 @@ def test_cli_capture_news_refuses_a_window_of_less_than_one_day(tmp_path):
             ["capture-news", "--days", "0", "--config", write_config(tmp_path)],
             env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
             http=web(seen),
-            today=date(2026, 10, 6),
+            now=datetime(2026, 10, 6, 10, 0, tzinfo=UTC),
         )
 
     assert seen == []

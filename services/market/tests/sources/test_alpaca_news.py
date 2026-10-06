@@ -42,6 +42,12 @@ FROZEN_URL = (
 )
 
 
+def freeze_first_page(snap, page):
+    """What an earlier run of the 2024-03-04 to 2024-03-05 window left behind."""
+    snap.cover("AAPL", start="2024-03-04T00:00:00Z", end="2024-03-05T23:59:59Z")
+    snap.write("AAPL/page-0001.json", json.dumps(page).encode(), url=FROZEN_URL, rows=1)
+
+
 def serve(pages, seen, status=200):
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
@@ -128,7 +134,7 @@ def test_news_requests_are_spaced_to_stay_under_the_alpaca_rate_limit(tmp_path):
 
 def test_an_interrupted_fetch_resumes_after_the_pages_already_frozen(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(PAGE_1).encode(), url=FROZEN_URL, rows=2)
+    freeze_first_page(snap, PAGE_1)
     seen = []
 
     items = fetch_news(
@@ -146,7 +152,7 @@ def test_an_interrupted_fetch_resumes_after_the_pages_already_frozen(tmp_path):
 
 def test_a_completed_fetch_makes_no_requests_when_run_again(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url=FROZEN_URL, rows=1)
+    freeze_first_page(snap, PAGE_2)
     seen = []
 
     items = fetch_news(
@@ -159,7 +165,7 @@ def test_a_completed_fetch_makes_no_requests_when_run_again(tmp_path):
 
 def test_pages_frozen_for_another_window_are_not_reused(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url=FROZEN_URL, rows=1)
+    freeze_first_page(snap, PAGE_2)
     seen = []
 
     with pytest.raises(SnapshotConflict, match="2024-03-04"):
@@ -186,3 +192,44 @@ def test_a_page_token_that_repeats_stops_the_fetch(tmp_path):
             snap=Snapshot(tmp_path, source="alpaca-news", version="v1"),
             sleep=lambda _: None,
         )
+
+
+def test_the_fetched_window_is_recorded_in_the_manifest(tmp_path):
+    run(tmp_path, [])
+
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    assert snap.coverage("AAPL") == {"start": "2024-03-04T00:00:00Z", "end": "2024-03-05T23:59:59Z"}
+
+
+def test_until_ends_the_window_at_the_fetch_time(tmp_path):
+    seen = []
+
+    fetch_news(
+        serve([PAGE_2], seen),
+        symbol="AAPL",
+        start=date(2024, 3, 4),
+        end=date(2024, 3, 5),
+        until=datetime(2024, 3, 5, 10, 0, 0, 123456, tzinfo=UTC),
+        snap=Snapshot(tmp_path, source="alpaca-news", version="v1"),
+    )
+
+    assert seen[0].url.params["end"] == "2024-03-05T10:00:00Z"
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    assert snap.coverage("AAPL")["end"] == "2024-03-05T10:00:00Z"
+
+
+def test_pages_frozen_without_a_recorded_window_are_not_reused(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url=FROZEN_URL, rows=1)
+    seen = []
+
+    with pytest.raises(SnapshotConflict, match="no recorded window"):
+        fetch_news(
+            serve([PAGE_2], seen),
+            symbol="AAPL",
+            start=date(2024, 3, 4),
+            end=date(2024, 3, 5),
+            snap=snap,
+        )
+
+    assert seen == []

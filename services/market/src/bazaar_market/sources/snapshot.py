@@ -77,6 +77,26 @@ class Snapshot:
         self._replace(self.dir / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
         return target
 
+    def coverage(self, key: str) -> dict | None:
+        """The window recorded for `key` as {"start", "end"}, or None when none was recorded."""
+        return self._manifest().get("coverage", {}).get(key)
+
+    def cover(self, key: str, *, start: str, end: str) -> None:
+        """Record the time window `key` was fetched for. A different window is a conflict."""
+        manifest = self._manifest()
+        window = {"start": start, "end": end}
+        recorded = manifest.setdefault("coverage", {}).get(key)
+        if recorded == window:
+            return
+        if recorded is not None:
+            raise SnapshotConflict(
+                f"{self.dir} already holds {key} for {recorded['start']} to {recorded['end']}. "
+                "Fetch a different window into a new version."
+            )
+        manifest["coverage"][key] = window
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._replace(self.dir / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
+
     def _manifest(self) -> dict:
         manifest_path = self.dir / "manifest.json"
         if manifest_path.exists():
