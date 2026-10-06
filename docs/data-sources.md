@@ -41,8 +41,9 @@ Filing text is downloaded only when `SEC_USER_AGENT` contains a contact address.
 Each version directory has a `manifest.json` listing every file with its source URL, SHA-256, byte count, row count
 and fetch time.
 A file is frozen once the manifest lists it.
-`Snapshot.write` raises `SnapshotConflict` when a frozen file would get different bytes, and `UnsafePath` when a
-name resolves outside the version directory.
+`Snapshot.write` raises `SnapshotConflict` when a frozen file would get different bytes or is missing from disk, and
+`UnsafePath` when a name resolves outside the version directory.
+Names are normalized first, so `a/./b.json` and `a/b.json` are one file.
 Files are written through a temporary file and renamed, and a file left without a manifest entry by a run that died
 is written again.
 One process writes a version at a time. There is no lock.
@@ -54,6 +55,15 @@ An interrupted `news` run resumes when rerun with the same `--version`: frozen p
 continues from the last page token.
 Fetching a different window into that version raises `SnapshotConflict`.
 Because a `capture-news` window ends at the fetch time, a failed capture is rerun into a new version.
+Resume is meant for an immediate retry.
+Alpaca serves only the latest revision of each article, so resuming much later can freeze pages that reflect two
+different moments: an article revised in between can be kept in its older form or drop out of the window.
+Fetch into a new version instead.
+
+EDGAR has no resume.
+Rerunning `edgar` into an existing version raises `SnapshotConflict` as soon as EDGAR has added a filing for any
+company, because that company's submissions file has changed.
+Fetch into a new version instead.
 
 Requests are tried up to three times for dropped connections and for 429, 502, 503 and 504.
 Redirects are never followed, so the Alpaca key headers are sent to `data.alpaca.markets` only.
