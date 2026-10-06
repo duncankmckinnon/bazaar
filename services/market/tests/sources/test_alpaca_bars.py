@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from bazaar_market.prices import EASTERN, SqliteMarketData, close_at
+from bazaar_market.prices import EASTERN, BarConflict, SqliteMarketData, close_at
 from bazaar_market.sources.alpaca_bars import TickerWindow, fetch_bars, ticker_windows
 from bazaar_market.sources.bars_import import import_bars_snapshot
 from bazaar_market.sources.cli import main
@@ -143,13 +143,14 @@ def test_importing_a_snapshot_twice_stores_each_bar_once(tmp_path):
 
     with closing(sqlite3.connect(db)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM data_bars").fetchone()[0] == 10
-    assert [(c.ticker, c.bars, c.first, c.last) for c in report] == [
+    assert report.left_out == ()
+    assert [(c.ticker, c.bars, c.first, c.last) for c in report.coverage] == [
         ("AAPL", 5, WEEK[0], WEEK[-1]),
         ("KO", 5, WEEK[0], WEEK[-1]),
     ]
     market = SqliteMarketData(db, "alpaca-bars-v1")
     assert market.price_at("KO", close_at(WEEK[2])).observed_at == close_at(WEEK[2])
-    assert market.price_source == "alpaca/sip/raw/v1"
+    assert market.price_source == "alpaca/sip/raw"
 
 
 def test_cli_bars_then_import_bars_end_to_end(tmp_path, capsys):
@@ -170,6 +171,8 @@ def test_cli_bars_then_import_bars_end_to_end(tmp_path, capsys):
         main(
             [
                 "import-bars",
+                "--config",
+                str(config),
                 "--snapshot",
                 str(tmp_path / "raw" / "alpaca-bars" / "v1"),
                 "--db",
@@ -180,3 +183,132 @@ def test_cli_bars_then_import_bars_end_to_end(tmp_path, capsys):
     assert {r.url.host for r in seen} == {"data.alpaca.markets"}
     assert seen[0].headers["apca-api-key-id"] == "id"
     assert "bars: KO 5 daily bars" in capsys.readouterr().out
+
+
+def demo_snapshot(tmp_path, fi_pages):
+    run = sorted({date(2026, 1, 30) + timedelta(days=n) for n in range(15)})
+    run = [d for d in run if d.weekday() < 5]
+    pages = {t: [payload(t, run)] for t in ("AAPL", "MSFT", "KO")}
+    pages["FI"] = fi_pages
+    return freeze(tmp_path, pages, start=run[0], end=run[-1])
+
+
+def test_without_symbols_an_empty_ticker_blocks_the_whole_import(tmp_path):
+    snap = demo_snapshot(tmp_path, [{"bars": {}}])
+
+    with (
+        closing(sqlite3.connect(tmp_path / "m.db")) as connection,
+        pytest.raises(SourceError, match="no bars for FI"),
+    ):
+        import_bars_snapshot(connection, snap.dir)
+
+    with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master")}
+    assert "data_bars" not in tables
+
+
+def test_explicit_symbols_import_only_those_and_record_the_rest_as_left_out(tmp_path):
+    snap = demo_snapshot(tmp_path, [{"bars": {}}])
+    db = tmp_path / "m.db"
+
+    with closing(sqlite3.connect(db)) as connection:
+        report = import_bars_snapshot(connection, snap.dir, symbols=("AAPL", "MSFT", "KO"))
+
+    assert [c.ticker for c in report.coverage] == ["AAPL", "KO", "MSFT"]
+    assert report.left_out == ("FI",)
+    with closing(sqlite3.connect(db)) as connection:
+        symbols = {r[0] for r in connection.execute("SELECT DISTINCT symbol FROM data_bars")}
+        recorded = connection.execute("SELECT imported, left_out FROM data_imports").fetchone()
+    assert symbols == {"AAPL", "MSFT", "KO"}
+    assert recorded == ("AAPL,KO,MSFT", "FI")
+
+
+def test_explicit_symbols_still_get_every_coverage_check(tmp_path):
+    snap = demo_snapshot(tmp_path, [{"bars": {}}])
+
+    with (
+        closing(sqlite3.connect(tmp_path / "m.db")) as connection,
+        pytest.raises(SourceError, match="MSFT is required"),
+    ):
+        import_bars_snapshot(connection, snap.dir, symbols=("AAPL", "KO"))
+
+
+def test_an_explicit_symbol_missing_from_the_snapshot_is_refused(tmp_path):
+    snap = demo_snapshot(tmp_path, [{"bars": {}}])
+
+    with (
+        closing(sqlite3.connect(tmp_path / "m.db")) as connection,
+        pytest.raises(SourceError, match="never fetched XOM"),
+    ):
+        import_bars_snapshot(connection, snap.dir, symbols=("AAPL", "MSFT", "KO", "XOM"))
+
+
+def test_cli_import_bars_with_symbols_prints_what_was_left_out(tmp_path, capsys):
+    snap = demo_snapshot(tmp_path, [{"bars": {}}])
+
+    main(
+        [
+            "import-bars",
+            "--snapshot",
+            str(snap.dir),
+            "--db",
+            str(tmp_path / "m.db"),
+            "--symbols",
+            "AAPL, MSFT,KO",
+            "--data-version",
+            "alpaca-bars-v1-test",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "import-bars: KO 11 bars, 2026-01-30 to 2026-02-13" in out
+    assert "left out, not imported: FI" in out
+    assert "as alpaca-bars-v1-test" in out
+
+
+def test_a_ticker_the_config_expects_but_the_fetch_never_reached_fails(tmp_path):
+    snap = demo_snapshot(tmp_path, [payload("FI", [])])
+
+    with (
+        closing(sqlite3.connect(tmp_path / "m.db")) as connection,
+        pytest.raises(SourceError, match="never fetched FISV"),
+    ):
+        import_bars_snapshot(
+            connection, snap.dir, expected=("AAPL", "MSFT", "KO", "FI", "FISV"), symbols=None
+        )
+
+
+def test_the_same_bars_from_a_later_snapshot_import_cleanly(tmp_path):
+    db = tmp_path / "m.db"
+    first = freeze(tmp_path / "a", {"KO": [payload("KO", WEEK)]})
+    later = freeze(tmp_path / "b", {"KO": [payload("KO", WEEK)]})
+
+    for snap in (first, later):
+        with closing(sqlite3.connect(db)) as connection:
+            import_bars_snapshot(connection, snap.dir, required={})
+
+    with closing(sqlite3.connect(db)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM data_bars").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM data_imports").fetchone()[0] == 2
+
+
+def test_another_feed_needs_its_own_data_version(tmp_path):
+    db = tmp_path / "m.db"
+    sip = freeze(tmp_path / "a", {"KO": [payload("KO", WEEK)]})
+    iex = Snapshot(tmp_path / "b" / "raw", source="alpaca-bars", version="v1")
+    fetch_bars(
+        serve({"KO": [payload("KO", WEEK)]}, []),
+        window=TickerWindow("KO", WEEK[0], WEEK[-1]),
+        snap=iex,
+        feed="iex",
+        sleep=lambda _: None,
+    )
+    with closing(sqlite3.connect(db)) as connection:
+        import_bars_snapshot(connection, sip.dir, required={})
+
+    with closing(sqlite3.connect(db)) as connection, pytest.raises(BarConflict):
+        import_bars_snapshot(connection, iex.dir, required={})
+    with closing(sqlite3.connect(db)) as connection:
+        import_bars_snapshot(connection, iex.dir, required={}, data_version="alpaca-bars-v1-iex")
+
+    assert SqliteMarketData(db, "alpaca-bars-v1-iex").price_source == "alpaca/iex/raw"

@@ -20,7 +20,8 @@ from pathlib import Path
 
 import httpx
 
-from .bars_import import import_bars_snapshot
+from .alpaca_bars import ticker_windows
+from .bars_import import ALPACA_BARS_VERSION, import_bars_snapshot
 from .fetch import fetch_bars_range, fetch_edgar, fetch_news_range, fetch_universe
 from .universe import load_config
 
@@ -53,6 +54,12 @@ def main(
     parser.add_argument("--feed", default="sip", help="bars: Alpaca feed, sip or iex")
     parser.add_argument("--snapshot", type=Path, help="import-bars: the frozen bars version folder")
     parser.add_argument("--db", type=Path, default=Path("data/market.sqlite3"), help="import-bars")
+    parser.add_argument(
+        "--symbols", help="import-bars: comma-separated tickers to import; the rest are left out"
+    )
+    parser.add_argument(
+        "--data-version", default=ALPACA_BARS_VERSION, help="import-bars: data version to store"
+    )
     args = parser.parse_args(argv)
     if args.days < 1:
         parser.error("--days must be at least 1")
@@ -113,13 +120,30 @@ def main(
     return 0
 
 
+def _expected_tickers(config: Path) -> tuple[str, ...]:
+    """Every ticker the bars fetch requests for the config, with FI and FISV split by date."""
+    cfg = load_config(config)
+    tickers = tuple(c.ticker for c in cfg.companies)
+    return tuple(w.ticker for w in ticker_windows(tickers, cfg.period_start, cfg.period_end))
+
+
 def _import_bars(args: argparse.Namespace) -> int:
     if args.snapshot is None:
         raise SystemExit("import-bars needs --snapshot data/raw/alpaca-bars/<version>")
     args.db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(args.db)) as connection:
-        report = import_bars_snapshot(connection, args.snapshot)
-    for c in report:
+        symbols = tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None
+        expected = None if symbols else _expected_tickers(Path(args.config))
+        report = import_bars_snapshot(
+            connection,
+            args.snapshot,
+            data_version=args.data_version,
+            expected=expected,
+            symbols=symbols,
+        )
+    for c in report.coverage:
         print(f"import-bars: {c.ticker} {c.bars} bars, {c.first} to {c.last}")
-    print(f"import-bars: imported {args.snapshot} into {args.db} as alpaca-bars-v1")
+    if report.left_out:
+        print(f"import-bars: left out, not imported: {', '.join(report.left_out)}")
+    print(f"import-bars: imported {args.snapshot} into {args.db} as {args.data_version}")
     return 0
