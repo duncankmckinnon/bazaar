@@ -34,13 +34,14 @@ from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 
 from bazaar_market.db import MarketError
-from bazaar_market.history import build_page, parse_history_request
+from bazaar_market.history import PageScope, build_page, parse_history_request
 from bazaar_market.ledger import Ledger
 
 logger = logging.getLogger(__name__)
 
 ORDER_HISTORY_SOURCE = "market-ledger-v1"
 APPROVAL_HEADER = "X-Bazaar-Approval"
+ACCOUNT_HEADER = "X-Bazaar-Account"
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
 
 
@@ -113,6 +114,27 @@ def approval_check(grants: GrantChecker) -> Callable[..., UUID]:
         return approval_id
 
     return require_approval
+
+
+def research_scope(
+    request: Request,
+    experiment_id: UUID,
+    account: Annotated[str | None, Header(alias=ACCOUNT_HEADER)] = None,
+) -> PageScope:
+    """For routes without an account in the path (news, filings): the account comes from the
+    X-Bazaar-Account header and must belong to the path's experiment. Mount the route behind
+    approval_check too; this dependency does not check the approval.
+    """
+    if account is None:
+        raise MarketError(401, ErrorCode.UNAUTHORIZED, f"{ACCOUNT_HEADER} header is required")
+    try:
+        account_id = UUID(account)
+    except ValueError:
+        raise MarketError(
+            403, ErrorCode.FORBIDDEN, "The account is not in this experiment"
+        ) from None
+    ledger: Ledger = request.app.state.ledger
+    return ledger.page_scope(experiment_id, account_id)
 
 
 def runner_token_check(expected: str | None) -> Callable[..., None]:

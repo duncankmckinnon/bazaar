@@ -348,6 +348,18 @@ class Ledger:
             )
             return self._snapshot(account, experiment.cutoff_at)
 
+    def page_scope(self, experiment_id: UUID, account_id: UUID) -> PageScope:
+        """The research scope for an account named by the caller. A foreign account is 403."""
+        with db.read_connection(self.database_path) as connection:
+            experiment = self._experiment(connection, experiment_id)
+            try:
+                account = self._load(connection, experiment_id, account_id)
+            except db.MarketError:
+                raise db.MarketError(
+                    403, ErrorCode.FORBIDDEN, "The account is not in this experiment"
+                ) from None
+        return self._page_scope(experiment, account)
+
     def order_history(
         self, experiment_id: UUID, account_id: UUID
     ) -> tuple[PageScope, list[FilledOrder | RejectedOrder]]:
@@ -403,7 +415,7 @@ class Ledger:
             ),
             valuation_rule_version=rule.valuation_rule_version,
             source=prices.price_source,
-            data_version=prices.data_version,
+            data_version=experiment.data_version,
         )
 
     def _execute(

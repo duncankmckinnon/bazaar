@@ -40,7 +40,7 @@ def iso(value: datetime) -> str:
 class Run:
     """One experiment and account, driven over HTTP the way the runner and agent would."""
 
-    def __init__(self, tmp_path) -> None:
+    def __init__(self, tmp_path, bars_version="test-v1", data_version="test-v1") -> None:
         path = tmp_path / "market.sqlite3"
         with closing(sqlite3.connect(path)) as connection:
             ensure_schema(connection)
@@ -50,7 +50,8 @@ class Run:
                 for symbol, prices in CLOSES.items()
                 for day, price in zip((D1, D2, D3), prices, strict=True)
             ]  # fmt: skip
-            import_bars(connection, bars, data_version="test-v1", source="synthetic")
+            import_bars(connection, bars, data_version=bars_version, source="synthetic")
+        self.data_version = data_version
         self.approvals = Approvals()
         self.app = create_app(path, self.approvals, runner_token=TOKEN)
         self.http = TestClient(self.app)
@@ -78,7 +79,7 @@ class Run:
     def cutoff(self, day: date, first: bool = False) -> None:
         body = {"cutoff": iso(close_at(day))}
         if first:
-            body |= {"data_version": "test-v1", "execution_rule_version": "exec-v1"}
+            body |= {"data_version": self.data_version, "execution_rule_version": "exec-v1"}
         url = f"/experiments/{self.experiment_id}/cutoff"
         assert self.http.put(url, json=body, headers=self.runner_headers).status_code == 200
         self.now = close_at(day)
@@ -103,7 +104,7 @@ class Run:
             approval_id=self.approval,
             simulated_at=self.now,
             event_sequence=0,
-            data_version="test-v1",
+            data_version=self.data_version,
             execution_rule_version="exec-v1",
         )
         return ResearchTools(client, ResearchContext(experiment=context)), client
@@ -179,3 +180,66 @@ def test_order_history_refuses_future_windows_and_bad_cursors(run):
     assert run.http.get(url, params=bad, headers=headers).status_code == 422
     missing = run.http.get(url, params={"end_at": iso(run.now)}, headers=headers)
     assert (missing.status_code, missing.json()["error"]["code"]) == (422, "invalid_request")
+
+
+async def test_a_bundle_experiment_reports_the_bundle_and_prices_from_its_bars(tmp_path):
+    run = Run(tmp_path, bars_version="alpaca-bars-v1", data_version="demo-bundle-v1")
+    try:
+        filled = run.order("buy", "2")
+        assert (filled["status"], filled["unit_price"]) == ("filled", "100.00")
+        assert filled["data_version"] == "demo-bundle-v1"
+        portfolio = run.http.get(
+            f"{run.base}/portfolio", headers={"X-Bazaar-Approval": str(run.approval)}
+        ).json()
+        assert portfolio["data_version"] == "demo-bundle-v1"
+        assert run.app.state.component(run.experiment_id, "news") == "alpaca-news-v1"
+        assert run.app.state.component(run.experiment_id, "bars") == "alpaca-bars-v1"
+        tools, client = run.tools()
+        async with client:
+            orders = await tools.orders(window(run))
+            current = await tools.portfolio()
+        assert orders.error is None and orders.data.data_version == "demo-bundle-v1"
+        assert current.error is None
+    finally:
+        run.close()
+
+
+def test_a_plain_bars_experiment_has_no_news_component(run):
+    from bazaar_market.bundles import NoComponent
+
+    assert run.app.state.component(run.experiment_id, "bars") == "test-v1"
+    with pytest.raises(NoComponent):
+        run.app.state.component(run.experiment_id, "news")
+
+
+def test_research_scope_reads_the_account_header(run):
+    from typing import Annotated
+
+    from bazaar_market.history import PageScope
+    from bazaar_market.ledger_api import research_scope
+    from fastapi import Depends
+
+    @run.app.get("/experiments/{experiment_id}/probe")
+    def probe(scope: Annotated[PageScope, Depends(research_scope)]) -> dict[str, str]:
+        return {"account_id": str(scope.account_id), "data_version": scope.data_version,
+                "agent_id": str(scope.agent_id), "cutoff_at": iso(scope.cutoff_at)}  # fmt: skip
+
+    url = f"/experiments/{run.experiment_id}/probe"
+    missing = run.http.get(url)
+    assert (missing.status_code, missing.json()["error"]["code"]) == (401, "unauthorized")
+    for account in (str(uuid4()), "not-a-uuid"):
+        foreign = run.http.get(url, headers={"X-Bazaar-Account": account})
+        assert (foreign.status_code, foreign.json()["error"]["code"]) == (403, "forbidden")
+    (other_dir := run.app.state.market_db_path.parent / "other").mkdir()
+    other = Run(other_dir)
+    try:
+        elsewhere = run.http.get(url, headers={"X-Bazaar-Account": str(other.account_id)})
+        assert elsewhere.status_code == 403
+    finally:
+        other.close()
+    unknown = run.http.get(f"/experiments/{uuid4()}/probe",
+                           headers={"X-Bazaar-Account": str(run.account_id)})  # fmt: skip
+    assert unknown.status_code == 404
+    ok = run.http.get(url, headers={"X-Bazaar-Account": str(run.account_id)}).json()
+    assert ok == {"account_id": str(run.account_id), "data_version": "test-v1",
+                  "agent_id": str(run.agent_id), "cutoff_at": iso(run.now)}  # fmt: skip
