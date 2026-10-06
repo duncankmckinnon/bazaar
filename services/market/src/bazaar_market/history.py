@@ -51,7 +51,7 @@ def cursor_secret() -> bytes:
 
 
 def parse_history_request(
-    start_at: str, end_at: str, limit: str = "100", cursor: str | None = None
+    start_at: str | None, end_at: str | None, limit: str = "100", cursor: str | None = None
 ) -> HistoryRequest:
     try:
         return HistoryRequest(start_at=start_at, end_at=end_at, limit=limit, cursor=cursor)

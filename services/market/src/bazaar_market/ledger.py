@@ -34,6 +34,7 @@ from bazaar_protocol import (
 
 from bazaar_market import db
 from bazaar_market.clock import Experiment, SqliteClock, UnknownExperiment, load_experiment
+from bazaar_market.history import PageScope
 from bazaar_market.prices import MissingData
 
 CENT = Decimal("0.01")
@@ -347,6 +348,19 @@ class Ledger:
             )
             return self._snapshot(account, experiment.cutoff_at)
 
+    def order_history(
+        self, experiment_id: UUID, account_id: UUID
+    ) -> tuple[PageScope, list[FilledOrder | RejectedOrder]]:
+        """Every stored order result for the account, exactly as it was first returned."""
+        with db.read_connection(self.database_path) as connection:
+            experiment = self._experiment(connection, experiment_id)
+            account = self._load(connection, experiment_id, account_id)
+            rows = connection.execute(
+                "SELECT result FROM acct_orders WHERE account_id = ?", (str(account_id),)
+            ).fetchall()
+        results = [order_result_adapter.validate_json(row["result"]) for row in rows]
+        return self._page_scope(experiment, account), results
+
     def portfolio(self, experiment_id: UUID, account_id: UUID) -> PortfolioSnapshot:
         with db.read_connection(self.database_path) as connection:
             experiment = self._experiment(connection, experiment_id)
@@ -527,6 +541,17 @@ class Ledger:
             state_version=row["state_version"],
             closed_at=db.parse_time(row["closed_at"]) if row["closed_at"] else None,
             holdings={h["symbol"]: h["quantity"] for h in holdings},
+        )
+
+    @staticmethod
+    def _page_scope(experiment: Experiment, account: _Account) -> PageScope:
+        return PageScope(
+            experiment_id=experiment.experiment_id,
+            account_id=account.account_id,
+            agent_id=account.agent_id,
+            strategy_version_id=account.strategy_version_id,
+            cutoff_at=experiment.cutoff_at,
+            data_version=experiment.data_version,
         )
 
     @staticmethod

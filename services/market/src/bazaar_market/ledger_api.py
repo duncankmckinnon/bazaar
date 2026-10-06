@@ -28,15 +28,18 @@ from bazaar_protocol import (
     Version,
     WireModel,
 )
+from bazaar_protocol.research import OrderHistoryPage
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 
 from bazaar_market.db import MarketError
+from bazaar_market.history import build_page, parse_history_request
 from bazaar_market.ledger import Ledger
 
 logger = logging.getLogger(__name__)
 
+ORDER_HISTORY_SOURCE = "market-ledger-v1"
 APPROVAL_HEADER = "X-Bazaar-Approval"
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
 
@@ -170,6 +173,26 @@ def build_routers(
         experiment_id: UUID, account_id: UUID, body: OrderRequest
     ) -> FilledOrder | RejectedOrder:
         return ledger.submit(experiment_id, account_id, body)
+
+    @router.get("/experiments/{experiment_id}/accounts/{account_id}/orders")
+    def order_history(
+        experiment_id: UUID,
+        account_id: UUID,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        limit: str = "100",
+        cursor: str | None = None,
+    ) -> OrderHistoryPage:
+        request = parse_history_request(start_at, end_at, limit, cursor)
+        scope, results = ledger.order_history(experiment_id, account_id)
+        return build_page(
+            OrderHistoryPage,
+            scope,
+            request,
+            route="orders",
+            source=ORDER_HISTORY_SOURCE,
+            items=[((r.account.simulated_at, str(r.order_id)), r) for r in results],
+        )
 
     @control.post("/experiments/{experiment_id}/accounts/{account_id}/close")
     def close_account(experiment_id: UUID, account_id: UUID) -> AccountSnapshot:
