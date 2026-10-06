@@ -64,6 +64,10 @@ class SqliteClock:
         The first call must name both versions. A later call may repeat them but not change them.
         An equal cutoff is a no-op; an earlier one is refused.
         """
+        if any(v is not None and not v.strip() for v in (data_version, execution_rule_version)):
+            raise db.MarketError(
+                422, ErrorCode.INVALID_REQUEST, "Version strings must not be empty"
+            )
         stored_cutoff = db.format_time(cutoff)
         with db.write_transaction(self.database_path) as connection:
             try:

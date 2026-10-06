@@ -62,3 +62,10 @@ def test_cutoff_survives_reopen(tmp_path):
     SqliteClock(tmp_path / "market.db").set_cutoff(eid, START, "fixture-v1", "exec-v1")
     db.initialize(tmp_path / "market.db")
     assert SqliteClock(tmp_path / "market.db").cutoff(eid) == START
+
+
+@pytest.mark.parametrize("versions", [("", "exec-v1"), ("fixture-v1", " ")])
+def test_empty_versions_are_refused(clock, versions):
+    with pytest.raises(db.MarketError) as error:
+        clock.set_cutoff(uuid4(), START, *versions)
+    assert error.value.status_code == 422
