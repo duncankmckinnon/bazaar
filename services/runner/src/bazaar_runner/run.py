@@ -1,11 +1,13 @@
 """Drive one approved strategy run over the scripted clock against a market port."""
 
+from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from bazaar_protocol import (
     AccountSnapshot,
+    ErrorCode,
     OrderResult,
     PortfolioSnapshot,
     PositiveAmount,
@@ -15,10 +17,12 @@ from bazaar_protocol import (
 from pydantic import Field
 
 from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule
-from bazaar_runner.market import MarketPort
+from bazaar_runner.market import ApprovalDenied, MarketError, MarketPort
 from bazaar_runner.policy import DecisionPolicy
 
 Index = Annotated[int, Field(ge=0, strict=True)]
+# The market's error code, or one of two runner codes. T4, evals and Logfire match on it.
+FailureCode = Literal["approval_denied", "policy_error"] | ErrorCode
 
 
 class RunState(StrEnum):
@@ -59,6 +63,15 @@ class RunResult(WireModel):
     orders: tuple[OrderRecord, ...]
     marks: tuple[MarkRecord, ...]
     failure: str | None = None
+    failure_code: FailureCode | None = None
+
+
+def failure_code(exc: Exception) -> FailureCode:
+    if isinstance(exc, ApprovalDenied):
+        return "approval_denied"
+    if isinstance(exc, MarketError):
+        return exc.detail.code
+    return "policy_error"
 
 
 async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy) -> RunResult:
@@ -67,9 +80,9 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
     account: AccountSnapshot | None = None
     orders: list[OrderRecord] = []
     marks: list[MarkRecord] = []
-    state, failure = RunState.RUNNING, None
+    state, failure, code = RunState.RUNNING, None, None
 
-    async def set_cutoff(cutoff):
+    async def set_cutoff(cutoff: datetime) -> None:
         await market.set_cutoff(
             spec.experiment_id, cutoff, spec.data_version, spec.execution_rule_version
         )
@@ -106,13 +119,13 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
                 account = result.account
         state = RunState.COMPLETED
     except Exception as exc:  # noqa: BLE001 - any policy or market failure ends the run as failed
-        state, failure = RunState.FAILED, f"{type(exc).__name__}: {exc}"
+        state, failure, code = RunState.FAILED, f"{type(exc).__name__}: {exc}", failure_code(exc)
 
     if account is not None:
         try:
             account = await market.close_account(spec.experiment_id, account.account_id)
         except Exception as exc:  # noqa: BLE001 - keep the run's record even if closing fails
-            state = RunState.FAILED
+            state, code = RunState.FAILED, code or failure_code(exc)
             failure = f"{failure}; " if failure else ""
             failure += f"close_account failed, account left open: {type(exc).__name__}: {exc}"
 
@@ -123,4 +136,5 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
         orders=tuple(orders),
         marks=tuple(marks),
         failure=failure,
+        failure_code=code,
     )
