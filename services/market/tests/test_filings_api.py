@@ -123,3 +123,15 @@ async def test_a_window_holding_an_excluded_filing_reaches_the_client_as_missing
         assert (result.data, result.error.code) == (None, "missing_data")
     finally:
         market.close()
+
+
+def test_a_database_without_the_exclusions_table_answers_404_not_500(market):
+    with closing(sqlite3.connect(market.app.state.market_db_path)) as connection:
+        connection.execute("DROP TABLE data_filings_exclusions")
+    params = {"start_at": "2024-07-01T00:00:00Z", "end_at": z(market.now)}
+
+    response = market.http.get(
+        f"/experiments/{market.experiment_id}/filings/ACME", params=params, headers=market.headers()
+    )
+
+    assert (response.status_code, response.json()["error"]["code"]) == (404, "data_unavailable")

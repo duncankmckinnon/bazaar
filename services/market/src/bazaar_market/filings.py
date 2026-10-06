@@ -187,11 +187,19 @@ class SqliteFilingArchive:
         if end_at > cutoff:
             raise FutureDataError(f"end_at {end_at.isoformat()} is after the cutoff")
         with closing(self._connect()) as connection:
-            imported = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_filings_coverage'"
-            ).fetchone()
-            if imported is None:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+                    "('data_filings_coverage', 'data_filings_exclusions')"
+                )
+            }
+            if "data_filings_coverage" not in tables:
                 raise MissingCoverage(f"no filings are imported under {self.data_version}")
+            # An import from before exclusions were recorded cannot show its gaps, so nothing it
+            # stored can be served as complete until it is imported again.
+            if "data_filings_exclusions" not in tables:
+                raise MissingCoverage(f"filings under {self.data_version} need re-importing")
             covered = connection.execute(
                 "SELECT start_at, end_at FROM data_filings_coverage "
                 "WHERE data_version = ? AND symbol = ?",
