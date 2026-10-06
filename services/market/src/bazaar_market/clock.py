@@ -49,8 +49,11 @@ class SqliteClock:
         self.database_path = database_path
 
     def cutoff(self, experiment_id: UUID) -> datetime:
+        return self.experiment(experiment_id).cutoff_at
+
+    def experiment(self, experiment_id: UUID) -> Experiment:
         with db.read_connection(self.database_path) as connection:
-            return load_experiment(connection, experiment_id).cutoff_at
+            return load_experiment(connection, experiment_id)
 
     def set_cutoff(
         self,

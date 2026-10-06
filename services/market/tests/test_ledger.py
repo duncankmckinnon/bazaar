@@ -8,11 +8,11 @@ from bazaar_market import db
 from bazaar_market.ledger import Ledger
 from bazaar_protocol import ErrorCode, FilledOrder, OrderRequest, RejectedOrder
 
-from .ledger_fakes import BARS, DAY1_CLOSE, DAY2_CLOSE, FakePrices, close
+from .ledger_fakes import BARS, DAY1_CLOSE, DAY2_CLOSE, FakePrices, catalog, close
 
 
 def make_ledger(path, prices=None) -> Ledger:
-    ledger = Ledger(path, prices or FakePrices(BARS))
+    ledger = Ledger(path, catalog(prices or FakePrices(BARS)))
     ledger.initialize()
     return ledger
 

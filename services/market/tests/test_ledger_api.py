@@ -8,7 +8,7 @@ from bazaar_market.ledger_api import DenyAllGrants, install
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from .ledger_fakes import BARS, FakePrices
+from .ledger_fakes import BARS, FakePrices, catalog
 
 APPROVED = uuid4()
 
@@ -19,7 +19,7 @@ class AllowOne:
 
 
 def client_for(path, grants) -> TestClient:
-    ledger = Ledger(path, FakePrices(BARS))
+    ledger = Ledger(path, catalog(FakePrices(BARS)))
     ledger.initialize()
     app = FastAPI()
     install(app, ledger, grants)

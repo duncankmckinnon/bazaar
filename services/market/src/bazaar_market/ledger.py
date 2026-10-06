@@ -8,6 +8,7 @@ the write, so concurrent orders cannot spend the same cash or sell the same shar
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
+import logfire
 from bazaar_protocol import (
     AccountSnapshot,
     ErrorCode,
@@ -32,6 +34,7 @@ from bazaar_protocol import (
 
 from bazaar_market import db
 from bazaar_market.clock import Experiment, SqliteClock, UnknownExperiment, load_experiment
+from bazaar_market.prices import MissingData
 
 CENT = Decimal("0.01")
 
@@ -97,12 +100,8 @@ BEGIN SELECT RAISE(ABORT, 'fills are immutable'); END;
 """
 
 
-class MissingPrice(LookupError):
-    """No price for the symbol is available at the cutoff."""
-
-
 class PriceSource(Protocol):
-    """The ledger's view of market data. `price_at` never returns a price available after `cutoff`.
+    """One data version's prices. `price_at` raises MissingData when nothing is available.
 
     exec-v1 and value-v1 both use the close of the latest daily bar available by the cutoff.
     """
@@ -174,9 +173,9 @@ class _Account:
 
 
 class Ledger:
-    def __init__(self, database_path: Path, prices: PriceSource) -> None:
+    def __init__(self, database_path: Path, prices_for: Callable[[str], PriceSource]) -> None:
         self.database_path = database_path
-        self.prices = prices
+        self.prices_for = prices_for
         self.clock = SqliteClock(database_path)
 
     def initialize(self) -> None:
@@ -191,10 +190,13 @@ class Ledger:
     ) -> Experiment:
         if execution_rule_version is not None:
             rule_for(execution_rule_version)
-        if data_version is not None and data_version != self.prices.data_version:
-            raise db.MarketError(
-                422, ErrorCode.INVALID_REQUEST, f"Data version {data_version} is not loaded"
-            )
+        if data_version is not None:
+            try:
+                _ = self.prices_for(data_version).price_source  # raises if not imported
+            except MissingData:
+                raise db.MarketError(
+                    422, ErrorCode.INVALID_REQUEST, f"Data version {data_version} is not loaded"
+                ) from None
         return self.clock.set_cutoff(experiment_id, cutoff, data_version, execution_rule_version)
 
     def create_account(
@@ -267,6 +269,28 @@ class Ledger:
     def submit(
         self, experiment_id: UUID, account_id: UUID, order: OrderRequest
     ) -> FilledOrder | RejectedOrder:
+        with logfire.span(
+            "order {side} {quantity} {symbol}",
+            experiment_id=str(experiment_id),
+            account_id=str(account_id),
+            client_order_id=str(order.client_order_id),
+            symbol=order.symbol,
+            side=order.side.value,
+            quantity=str(order.quantity),
+        ) as span:
+            result = self._submit(experiment_id, account_id, order)
+            span.set_attribute("result", result.status)
+            if isinstance(result, FilledOrder):
+                span.set_attribute("unit_price", str(result.unit_price))
+                span.set_attribute("executed_at", result.executed_at.isoformat())
+                span.set_attribute("cash_after", str(result.account.cash))
+            else:
+                span.set_attribute("error_code", result.error.code.value)
+            return result
+
+    def _submit(
+        self, experiment_id: UUID, account_id: UUID, order: OrderRequest
+    ) -> FilledOrder | RejectedOrder:
         body = fingerprint(
             {
                 "symbol": order.symbol,
@@ -291,10 +315,6 @@ class Ledger:
             if account.closed_at is not None:
                 raise db.MarketError(409, ErrorCode.EXPERIMENT_NOT_RUNNING, "The account is closed")
             rule = rule_for(experiment.execution_rule_version)
-            if experiment.data_version != self.prices.data_version:
-                raise db.MarketError(
-                    409, ErrorCode.INVALID_REQUEST, "The experiment's data version is not loaded"
-                )
             quantity = whole_shares(order.quantity)
             now = experiment.cutoff_at
             result = self._execute(connection, experiment, rule, account, order, quantity, now)
@@ -332,12 +352,13 @@ class Ledger:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
         rule = rule_for(experiment.execution_rule_version)
+        prices = self.prices_for(experiment.data_version)
         at = account.closed_at or experiment.cutoff_at
         marked = []
         for symbol, quantity in sorted(account.holdings.items()):
             try:
-                mark = self.prices.price_at(symbol, at)
-            except MissingPrice:
+                mark = prices.price_at(symbol, at)
+            except MissingData:
                 raise db.MarketError(
                     409, ErrorCode.DATA_UNAVAILABLE, f"No mark for {symbol} at the cutoff"
                 ) from None
@@ -367,8 +388,8 @@ class Ledger:
                 Decimal(0),
             ),
             valuation_rule_version=rule.valuation_rule_version,
-            source=self.prices.price_source,
-            data_version=self.prices.data_version,
+            source=prices.price_source,
+            data_version=prices.data_version,
         )
 
     def _execute(
@@ -393,9 +414,10 @@ class Ledger:
                 account=self._snapshot(account, now),
             )
 
+        prices = self.prices_for(experiment.data_version)
         try:
-            price = self.prices.price_at(order.symbol, now)
-        except MissingPrice:
+            price = prices.price_at(order.symbol, now)
+        except MissingData:
             return reject(ErrorCode.DATA_UNAVAILABLE, f"No price for {order.symbol}")
         if price.available_at > now:
             raise db.MarketError(500, ErrorCode.INTERNAL_ERROR, "Price source returned future data")
@@ -437,7 +459,7 @@ class Ledger:
             executed_at=now,
             price_observed_at=price.observed_at,
             price_available_at=price.available_at,
-            price_source=self.prices.price_source,
+            price_source=prices.price_source,
             data_version=experiment.data_version,
             execution_rule_version=rule.version,
             account=self._snapshot(updated, now),
