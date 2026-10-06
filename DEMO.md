@@ -106,8 +106,32 @@ Fetching Alpaca daily bars needs `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Follo
 unadjusted on purpose (adjusted history bakes in later corporate actions). Downloaded data stays
 under `data/` and is gitignored; the provider terms have not been reviewed, so never commit it.
 
-With news imported too (`alpaca-news-v1`), run step 4 with `--data-version demo-bundle-v1` (the
-default). On 2026-10-06 at `f697d06` that gave: cash-only 0.00%, agent-fixture -0.37% (1 fill: 10 AAPL
+`demo-bundle-v1` maps three imports in one market DB: bars `alpaca-bars-v1`, news `alpaca-news-v1`
+and filings `edgar-filings-v1` (the import commands' defaults). To reproduce it, after the bars in
+`services/market/README.md` section 1:
+
+```sh
+# News (reads ALPACA_API_KEY and ALPACA_SECRET_KEY)
+uv run --env-file .env python -m bazaar_market.sources news --version news-2026-10-06
+uv run python -m bazaar_market.sources import-news \
+    --snapshot data/raw/alpaca-news/news-2026-10-06 --db data/market.sqlite3
+
+# Filings (EDGAR needs SEC_USER_AGENT with a contact address; no API key)
+uv run --env-file .env python -m bazaar_market.sources edgar --version edgar-2026-10-06
+uv run python -m bazaar_market.sources import-filings \
+    --snapshot data/raw/edgar/edgar-2026-10-06 --db data/market.sqlite3   # needs market fb5519c or later
+```
+
+Which imports the bundle needs:
+
+- **Bars are required.** Every launch prices through them.
+- **News is needed for the agent to trade.** Without it the fixture agent's news read is
+  `missing_data`, the decision is recorded under `decision_errors`, and it places no order. The
+  baselines and momentum are unaffected.
+- **Filings are optional.** Without them `GET /fiscal-cycles` returns `[]`, and the agent's
+  `filings()` is unsupported. Nothing else changes.
+
+Then run step 4 with `--data-version demo-bundle-v1` (the default). On 2026-10-06 at `f697d06` that gave: cash-only 0.00%, agent-fixture -0.37% (1 fill: 10 AAPL
 at 259.48, placed by the agent), buy-and-hold -0.98%, scripted momentum -1.36% (15 fills). Every run
 reconciled to the cent. The baselines and momentum match the earlier bars-only run exactly, also
 after the market's fill-rule change in `3d7af80`.
@@ -132,7 +156,7 @@ and tool calls do not appear as spans.
 ## Tests
 
 ```sh
-uv run pytest        # 949 passed at 5d345bc
+uv run pytest        # 964 passed at b923ed6
 uv run ruff check
 ```
 
@@ -140,12 +164,15 @@ uv run ruff check
 
 | Work | Branch | Who |
 | --- | --- | --- |
-| Runner reads `GET /experiments/{eid}/fiscal-cycles` at each decision and passes the cycles to `run_decision`, so `filings()` works (today the agent gets `cycles=()` and filings is unsupported) | `feat/experiment-runner` | runner team |
-| Filings coverage fix (B1) and the filings import; the route (`3c386a8`) and fiscal cycles (`ded3a01`) are merged here | `feat/market-research` | market team |
+| Live run with filings imported, so the agent's `filings()` sees real cycles | `demo/aie-nyc` | runner team |
 
 Done tonight: the agent places its own order (runner `53c0366`, `7ab56c3`, `0a1d121`); order history,
 account and portfolio history, and news routes (market, merged); the leaderboard flags runs with
-decision errors (replay `380ff22`).
+decision errors (replay `380ff22`); the runner reads `GET /fiscal-cycles` at each decision and passes
+the cycles to `run_decision` (runner `4e6dc18`; `--no-fiscal-cycles` turns it off); filings route,
+fiscal cycles and the filings coverage fix (market `3c386a8`, `ded3a01`, `fb5519c`, `6c3c706`). A
+cycle start counts only filings accepted by the experiment's cutoff, using PR #37's acceptance-time
+check.
 
 Research runs will use `data_version=demo-bundle-v1` (prices, news and filings together). For now
 the agent's client sends `X-Bazaar-Account` on news and filings, because those routes have no
@@ -172,6 +199,8 @@ account in the path.
    characters cost 37,461 tokens by the 2nd model request, so no order was placed. `limit=3` cost
    2,860 tokens and the order went through. That is about 950 tokens per article (a `FunctionModel`
    estimate, not a real tokenizer). Raise the defaults, trim article bodies, or page smaller?
+10. Market approvals are bound to the experiment, not the account, so they are safe only with one
+    agent per experiment (the runner enforces that). #18 should issue account-scoped credentials.
 
 ## Rules for agents working on this branch
 
