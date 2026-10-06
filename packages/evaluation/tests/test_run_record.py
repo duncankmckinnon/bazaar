@@ -4,6 +4,7 @@ import subprocess
 import sys
 from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from bazaar_evaluation import (
@@ -188,3 +189,84 @@ def test_sample_evaluation_round_trips_through_json(capfire):
     evaluation = evaluate_and_emit(sample())
 
     assert RunEvaluation.model_validate_json(evaluation.model_dump_json()) == evaluation
+
+
+def refused():
+    record = sample() | {
+        "status": "failed",
+        "failure": "approval refused at cutoff",
+        "final_account": None,
+        "orders": [],
+        "marks": [],
+    }
+    record["manifest"] = record["manifest"] | {"account_id": None}
+    return record
+
+
+def test_refused_launch_evaluates_as_failed_and_unscored(capfire):
+    evaluation = evaluate_and_emit(refused())
+    period = evaluation.period
+
+    assert (evaluation.run_status, evaluation.run_failure) == (
+        "failed",
+        "approval refused at cutoff",
+    )
+    assert evaluation.account_id is None and period.account_id is None
+    assert evaluation.trade_scores == ()
+    assert evaluation.policy_ref == "scripted-momentum-v1"
+    assert evaluation.approval_id == UUID(sample()["manifest"]["approval_id"])
+    assert period.status == ScoreStatus.UNSUPPORTED
+    assert period.reconciled is False
+    assert "launch refused before an account existed: approval refused at cutoff" in [
+        e.reason for e in period.evidence
+    ]
+    money = ("start_value", "end_value", "market_end_value", "realized_pnl", "unrealized_pnl")
+    money += ("fees", "net_pnl", "period_return", "excess_return_vs_cash", "max_drawdown")
+    assert all(getattr(period, name) is None for name in money)
+    denominators = {d.name: d.value for d in period.denominators}
+    assert (denominators["orders"], denominators["marks"]) == (0, 0)
+    assert RunEvaluation.model_validate_json(evaluation.model_dump_json()) == evaluation
+
+    exported = capfire.exporter.exported_spans_as_dict()
+    (parent,) = [s for s in exported if s["name"] == "evaluate run {experiment_id}"]
+    assert [s for s in exported if s["parent"] == parent["context"]] == []
+    assert parent["attributes"]["run_status"] == "failed"
+    assert parent["attributes"]["period_status"] == "unsupported"
+    assert "account_id" not in parent["attributes"]
+    assert "launch refused before an account existed" in parent["attributes"]["period_reasons"]
+
+
+def test_refused_launch_without_a_reason_uses_the_no_reason_wording(capfire):
+    evaluation = evaluate_and_emit(refused() | {"failure": None})
+
+    assert evaluation.run_failure == "run failed; the record gave no failure reason"
+
+
+@pytest.mark.parametrize("missing", ["account_id", "final_account"])
+def test_completed_record_without_an_account_is_rejected(missing):
+    record = sample()
+    if missing == "account_id":
+        record["manifest"] = record["manifest"] | {"account_id": None}
+    else:
+        record["final_account"] = None
+    with pytest.raises(ValidationError, match="completed"):
+        evaluate_and_emit(record)
+
+
+@pytest.mark.parametrize("field", ["orders", "marks"])
+def test_record_without_an_account_but_with_orders_or_marks_is_rejected(field):
+    record = refused() | {field: sample()[field][:1]}
+    with pytest.raises(ValidationError, match="account"):
+        evaluate_and_emit(record)
+
+
+def test_failed_run_with_an_account_but_no_final_snapshot_is_unreconciled(capfire):
+    record = sample() | {"status": "failed", "failure": "runner crashed", "final_account": None}
+    evaluation = evaluate_and_emit(record)
+
+    assert len(evaluation.trade_scores) == 4
+    assert evaluation.period.net_pnl == Decimal("60.11")
+    assert evaluation.period.reconciled is False
+    assert "not reconciled: no final account snapshot" in [
+        e.reason for e in evaluation.period.evidence
+    ]

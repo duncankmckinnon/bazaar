@@ -6,7 +6,7 @@ the nested protocol models stay strict. Moves to bazaar_protocol after the demo.
 
 import json
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -18,13 +18,19 @@ from bazaar_protocol import (
     PortfolioSnapshot,
     Version,
 )
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from bazaar_evaluation.config import DEMO_CONFIG, EvaluatorConfig
 from bazaar_evaluation.emit import emit
-from bazaar_evaluation.evaluate import evaluate_run
+from bazaar_evaluation.evaluate import evaluate_run, period_denominators
 from bazaar_evaluation.inputs import RunEvidence, RunOutcome
-from bazaar_evaluation.results import RunEvaluation, TraceId
+from bazaar_evaluation.results import (
+    Evidence,
+    PeriodSummary,
+    RunEvaluation,
+    ScoreStatus,
+    TraceId,
+)
 
 Sequence = Annotated[int, Field(ge=0, strict=True)]
 
@@ -36,7 +42,7 @@ class _Mirror(BaseModel):
 class Manifest(_Mirror):
     experiment_id: UUID
     agent_id: UUID
-    account_id: UUID
+    account_id: UUID | None  # null when a launch was refused before an account existed
     strategy_version_id: UUID
     approval_id: UUID
     data_version: Version
@@ -69,7 +75,22 @@ class RunRecord(_Mirror):
     trace_id: TraceId | None = None
     orders: tuple[RecordedOrder, ...] = ()
     marks: tuple[RecordedMark, ...] = ()
-    final_account: AccountSnapshot
+    final_account: AccountSnapshot | None
+
+    @model_validator(mode="after")
+    def account_present_unless_failed(self) -> Self:
+        no_account = self.manifest.account_id is None
+        if self.status == "completed" and (no_account or self.final_account is None):
+            raise ValueError("a completed record needs manifest.account_id and final_account")
+        if no_account and (self.orders or self.marks or self.final_account):
+            raise ValueError("orders, marks and final_account need an account")
+        return self
+
+    @property
+    def failure_reason(self) -> str | None:
+        if self.status == "failed" and not (self.failure or "").strip():
+            return "run failed; the record gave no failure reason"  # v1 allows a null failure
+        return self.failure
 
 
 def to_inputs(record: RunRecord) -> tuple[RunEvidence, RunOutcome]:
@@ -96,14 +117,11 @@ def to_inputs(record: RunRecord) -> tuple[RunEvidence, RunOutcome]:
             o.result for o in sorted(record.orders, key=lambda o: (o.event_sequence, o.order_index))
         ),
     )
-    failure = record.failure
-    if record.status == "failed" and not (failure or "").strip():
-        failure = "run failed; the record gave no failure reason"  # v1 allows a null failure
     outcome = RunOutcome(
         marks=tuple(k.snapshot for k in sorted(record.marks, key=lambda k: k.event_sequence)),
         final_account=record.final_account,
         run_status=record.status,
-        run_failure=failure,
+        run_failure=record.failure_reason,
     )
     return evidence, outcome
 
@@ -116,8 +134,11 @@ def evaluate_and_emit(
     if isinstance(record, (str, bytes)):
         record = json.loads(record)
     run = RunRecord.model_validate(record)
-    evaluation = evaluate_run(*to_inputs(run), config)
     m = run.manifest
+    if m.account_id is None:
+        evaluation = _refused_launch(run, config)
+    else:
+        evaluation = evaluate_run(*to_inputs(run), config)
     # Revalidate rather than model_copy, so pass-through labels meet RunEvaluation's rules (UTC).
     evaluation = RunEvaluation.model_validate(
         evaluation.model_dump()
@@ -131,3 +152,33 @@ def evaluate_and_emit(
     )
     emit(evaluation)
     return evaluation
+
+
+def _refused_launch(record: RunRecord, config: EvaluatorConfig) -> RunEvaluation:
+    """No account was ever opened, so there is nothing to score and no account is invented."""
+    m = record.manifest
+    period = PeriodSummary(
+        account_id=None,
+        experiment_id=m.experiment_id,
+        status=ScoreStatus.UNSUPPORTED,
+        evaluator_version=config.evaluator_version,
+        evidence=(
+            Evidence(data_version=m.data_version, execution_rule_version=m.execution_rule_version),
+            Evidence(reason=f"launch refused before an account existed: {record.failure_reason}"),
+        ),
+        denominators=period_denominators((), [], 0),
+    )
+    return RunEvaluation(
+        experiment_id=m.experiment_id,
+        account_id=None,
+        agent_id=m.agent_id,
+        strategy_version_id=m.strategy_version_id,
+        approval_id=m.approval_id,
+        data_version=m.data_version,
+        execution_rule_version=m.execution_rule_version,
+        evaluator_version=config.evaluator_version,
+        run_status=record.status,
+        run_failure=record.failure_reason,
+        trade_scores=(),
+        period=period,
+    )

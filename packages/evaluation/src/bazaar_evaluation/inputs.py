@@ -135,7 +135,7 @@ class RunOutcome(EvaluationModel):
     """How the run ended: closing marks (the last is the end of the run) and final account."""
 
     marks: tuple[PortfolioSnapshot, ...]
-    final_account: AccountSnapshot
+    final_account: AccountSnapshot | None  # a failed run may end without one
     run_status: Literal["completed", "failed"]
     run_failure: str | None = None
 

@@ -59,7 +59,7 @@ class TradeScore(_Result):
 class PeriodSummary(_Result):
     """Whole-run money summary. `fees` are already inside realized and unrealized PnL."""
 
-    account_id: UUID
+    account_id: UUID | None  # None only for a launch refused before an account existed
     experiment_id: UUID
     start_value: ExactAmount | None = None
     end_value: ExactAmount | None = None  # cash + per-holding values under the valuation rule
@@ -77,7 +77,7 @@ class PeriodSummary(_Result):
 
 class RunEvaluation(EvaluationModel):
     experiment_id: UUID
-    account_id: UUID
+    account_id: UUID | None  # None only for a launch refused before an account existed
     agent_id: UUID
     strategy_version_id: UUID
     approval_id: UUID
