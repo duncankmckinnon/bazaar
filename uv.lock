@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "bazaar-agent",
+    "bazaar-evaluation",
     "bazaar-market",
     "bazaar-protocol",
     "bazaar-replay",
@@ -71,6 +72,23 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "logfire", extras = ["fastapi", "httpx", "sqlite3", "system-metrics"], specifier = ">=5.1.1" },
     { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
+name = "bazaar-evaluation"
+version = "0.1.0"
+source = { editable = "packages/evaluation" }
+dependencies = [
+    { name = "bazaar-protocol" },
+    { name = "logfire" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "logfire", specifier = ">=5.1.1" },
+    { name = "pydantic", specifier = ">=2.10" },
 ]
 
 [[package]]
