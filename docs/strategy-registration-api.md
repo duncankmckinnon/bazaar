@@ -66,6 +66,13 @@ described below.
 Runtime model, harness and tool selection is separate from strategy intent. No arbitrary executable
 code, credential, actor or free-form settings fields are accepted.
 
+The public `RegistryStore.register` and `RegistryStore.add_version` methods enforce the same write
+contract independently of HTTP validation. They revalidate concrete serialized inputs before
+fingerprinting, replay lookup, or opening a transaction, rejecting legacy request subclasses and
+invalid `model_copy`/`model_construct` values with a payload-safe `RegistryError` (422,
+`invalid_request`). Rejection writes no records and consumes no idempotency key.
+`replay_legacy_request` is the sole read-only compatibility entry point for historical requests.
+
 `parent_version_id` optionally links a new strategy to an existing version. Parent references must
 exist. Creating a child does not change or share its parent's experiment account.
 
