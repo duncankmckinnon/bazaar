@@ -94,8 +94,9 @@ If `news` is interrupted, run the same command with the same `--version`.
 It continues from the pages already saved.
 A version never changes once written: fetching a different period into an existing version is refused.
 
-Filing text is skipped unless `SEC_USER_AGENT` in `.env` names a contact address, because the SEC's
-document host refuses callers that do not.
+Filing text is skipped unless the EDGAR User-Agent names a contact address, because the SEC's
+document host refuses callers that do not. `config/demo-sources.toml` sets one in `edgar.user_agent`, and
+`SEC_USER_AGENT` in `.env` overrides it.
 Prices, corporate actions and the trading calendar are not downloaded yet.
 
 ### Where it lands

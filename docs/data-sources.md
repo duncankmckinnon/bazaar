@@ -33,7 +33,9 @@ uv run --env-file .env python -m bazaar_market.sources capture-news --days 3
 Its window ends at the time of the fetch, not at the end of the day.
 `scripts/install-news-capture.sh` schedules `capture-news` daily with launchd on macOS.
 
-Filing text is downloaded only when `SEC_USER_AGENT` contains a contact address.
+The EDGAR User-Agent is `SEC_USER_AGENT` from the environment, or else `edgar.user_agent` in the config.
+The demo config names anthony@pydantic.dev.
+Filing text is downloaded only when the User-Agent contains a contact address.
 `www.sec.gov` returns 403 to callers that do not declare one, and `edgar` skips documents and prints a notice.
 
 ## Snapshots

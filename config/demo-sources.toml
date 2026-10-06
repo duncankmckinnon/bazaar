@@ -18,8 +18,10 @@ commit = "a2430f2af0c79ddf0748e91de11bdeb1616ab5a7"
 [edgar]
 forms = ["10-K", "10-K/A", "10-Q", "10-Q/A", "8-K", "8-K/A"]
 # Filing text is downloaded for filings accepted from this date to the end of the period,
-# so reports from before the period starts are on hand. Needs SEC_USER_AGENT with a contact.
+# so reports from before the period starts are on hand. Needs a contact in the User-Agent.
 documents_since = 2024-07-01
+# The SEC asks automated clients to name a contact. SEC_USER_AGENT in the environment overrides it.
+user_agent = "bazaar-market-sources/0.1 anthony@pydantic.dev"
 
 # cik is the SEC's company number, checked against data.sec.gov on 2026-10-06.
 # EDGAR returns no ticker for companies that stopped trading, so the mapping lives here.

@@ -2,8 +2,8 @@
 
     uv run --env-file .env python -m bazaar_market.sources all
 
-Reads ALPACA_API_KEY and ALPACA_SECRET_KEY for news. SEC_USER_AGENT is optional. Give it a
-name and contact address to also download filing text.
+Reads ALPACA_API_KEY and ALPACA_SECRET_KEY for news. The EDGAR User-Agent is SEC_USER_AGENT, or
+else edgar.user_agent in the config. Filing text is downloaded only when it names a contact address.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def main(
         members = fetch_universe(cfg, root, http)
         print(f"universe: {len(members)} membership spells frozen")
     if args.command in ("edgar", "all"):
-        agent = env.get("SEC_USER_AGENT") or DEFAULT_SEC_USER_AGENT
+        agent = env.get("SEC_USER_AGENT") or cfg.edgar_user_agent or DEFAULT_SEC_USER_AGENT
         summary = fetch_edgar(
             cfg,
             root,

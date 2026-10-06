@@ -29,6 +29,7 @@ class SourcesConfig:
     edgar_forms: tuple[str, ...]
     edgar_documents_since: date
     companies: tuple[Company, ...]
+    edgar_user_agent: str | None = None
 
 
 def _section(raw: dict, name: str) -> dict:
@@ -45,7 +46,7 @@ def _date(section: dict, name: str, key: str) -> date:
 
 
 def load_config(path: Path) -> SourcesConfig:
-    """Load a sources config. Every setting is required and type-checked. Nothing has a default."""
+    """Load a sources config. Every setting is type-checked, and only edgar.user_agent is optional."""
     raw = tomllib.loads(Path(path).read_text())
     period, sp500, edgar = _section(raw, "period"), _section(raw, "sp500"), _section(raw, "edgar")
     start, end = _date(period, "period", "start"), _date(period, "period", "end")
@@ -54,6 +55,9 @@ def load_config(path: Path) -> SourcesConfig:
     forms = edgar.get("forms")
     if not isinstance(forms, list) or not all(isinstance(f, str) for f in forms):
         raise ConfigError(f"edgar.forms must be a list of form names, got {forms!r}")
+    user_agent = edgar.get("user_agent")
+    if user_agent is not None and not isinstance(user_agent, str):
+        raise ConfigError(f"edgar.user_agent must be a string, got {user_agent!r}")
     if not isinstance(sp500.get("commit"), str):
         raise ConfigError("sp500.commit must be a commit hash")
 
@@ -77,6 +81,7 @@ def load_config(path: Path) -> SourcesConfig:
         edgar_forms=tuple(forms),
         edgar_documents_since=_date(edgar, "edgar", "documents_since"),
         companies=tuple(companies),
+        edgar_user_agent=user_agent,
     )
 
 

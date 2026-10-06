@@ -317,3 +317,40 @@ def test_fetch_universe_fails_when_the_pinned_file_cannot_be_downloaded(cfg, tmp
 
     with pytest.raises(SourceError, match="404"):
         fetch_universe(cfg, tmp_path / "raw", missing)
+
+
+def config_with_user_agent(tmp_path):
+    path = tmp_path / "sources.toml"
+    path.write_text(
+        CONFIG.replace("[edgar]\n", '[edgar]\nuser_agent = "Bazaar cfg@example.test"\n')
+    )
+    return str(path)
+
+
+def edgar_agents(seen):
+    return {r.headers["user-agent"] for r in seen if r.url.host == "data.sec.gov"}
+
+
+def test_cli_edgar_uses_the_config_user_agent(tmp_path):
+    seen = []
+
+    main(
+        ["edgar", "--config", config_with_user_agent(tmp_path), "--root", str(tmp_path / "raw")],
+        env={"SEC_REQUEST_INTERVAL": "0"},
+        http=web(seen),
+    )
+
+    assert edgar_agents(seen) == {"Bazaar cfg@example.test"}
+    assert any(r.url.host == "www.sec.gov" for r in seen)
+
+
+def test_cli_edgar_user_agent_from_the_environment_overrides_the_config(tmp_path):
+    seen = []
+
+    main(
+        ["edgar", "--config", config_with_user_agent(tmp_path), "--root", str(tmp_path / "raw")],
+        env={"SEC_REQUEST_INTERVAL": "0", "SEC_USER_AGENT": "Bazaar env@example.test"},
+        http=web(seen),
+    )
+
+    assert edgar_agents(seen) == {"Bazaar env@example.test"}
