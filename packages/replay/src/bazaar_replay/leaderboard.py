@@ -277,3 +277,9 @@ def build_board(loaded: list[Run | Entry]) -> Leaderboard:
 def load_board(runs_dir: Path) -> Leaderboard:
     run_dirs = sorted(path for path in runs_dir.iterdir() if path.is_dir())
     return build_board([load_run(path) for path in run_dirs])
+
+
+if __name__ == "__main__":
+    from bazaar_replay.leaderboard_html import main
+
+    raise SystemExit(main())
