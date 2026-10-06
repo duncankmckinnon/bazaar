@@ -12,6 +12,7 @@ from bazaar_runner.demo import (
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
     MOMENTUM_REF,
+    DuplicateLaunch,
     Launch,
     ScriptedMomentum,
     demo_script,
@@ -250,7 +251,7 @@ def test_cli_refuses_a_shared_approval_too(offline_cli, monkeypatch, capsys, tmp
 
 async def test_run_demo_itself_refuses_a_shared_experiment(tmp_path):
     twin = Launch(CASH_ONLY_REF, MOMENTUM.experiment_id, UUID(int=0xAB))
-    with pytest.raises(ValueError, match="more than one launch"):
+    with pytest.raises(DuplicateLaunch, match="more than one launch"):
         await run_demo(
             [MOMENTUM, twin],
             {MOMENTUM: InMemoryMarket(), twin: InMemoryMarket()},
@@ -260,6 +261,17 @@ async def test_run_demo_itself_refuses_a_shared_experiment(tmp_path):
             **DEMO,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_other_value_errors_are_not_swallowed_by_the_cli(offline_cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(RUNNER_TOKEN_ENV, TOKEN)
+
+    async def broken(args):
+        raise ValueError("a bug, not an operator mistake")
+
+    monkeypatch.setattr(cli, "amain", broken)
+    with pytest.raises(ValueError, match="a bug"):
+        cli.main(["--demo", "--runs-dir", str(tmp_path), *cli_ids()])
 
 
 def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):

@@ -29,6 +29,7 @@ from bazaar_runner.demo import (
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
     MOMENTUM_REF,
+    DuplicateLaunch,
     Launch,
     PolicyFactory,
     ScriptedMomentum,
@@ -240,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_telemetry()
     try:
         return asyncio.run(amain(args))
-    except (RunnerConfigError, DemoUnavailable, ValueError) as exc:
+    # By name only: any other ValueError (a pydantic ValidationError, say) keeps its traceback.
+    except (RunnerConfigError, DemoUnavailable, DuplicateLaunch) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
