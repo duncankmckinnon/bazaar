@@ -18,6 +18,30 @@ Reading a snapshot and applying the visibility rules does not, and the tests use
 
 Prices, corporate actions and the trading calendar are not fetched yet.
 
+## Prices
+
+`bazaar_market.prices` stores daily bars in the market database's `data_bars` table, keyed by data version, symbol
+and observation time.
+A bar's close is observed and available at its session's 16:00 Eastern close, stored in UTC, so a read cut off
+during a session gets the previous close.
+`SqliteMarketData.price_at` returns the latest close available at the cutoff and raises `MissingData` when there is
+none.
+A day with no bar for any symbol has no session. Early closes and holidays are not modelled.
+
+Bars are imported from a CSV with the header `symbol,date,open,high,low,close,volume`: the ticker in use that day,
+the session date as `YYYY-MM-DD`, decimal prices and an integer volume.
+Re-importing the same bars is a no-op, and a changed bar under the same data version raises `BarConflict`.
+
+```sh
+uv run python -m bazaar_market.prices synthetic --out data/bars-synthetic-v1.csv
+uv run python -m bazaar_market.prices import data/bars-synthetic-v1.csv --db data/market.sqlite3
+```
+
+`synthetic` writes data version `synthetic-v1`: a seeded random walk on every weekday from 2025-07-01 to 2026-09-30
+for the thirteen demo companies.
+It follows the demo's ticker history (FI until 2025-11-10, then FISV; K ends 2025-12-10; EA ends 2026-08-04).
+The prices are invented.
+
 ## Commands
 
 ```sh
