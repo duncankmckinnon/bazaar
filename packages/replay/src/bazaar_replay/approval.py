@@ -24,6 +24,7 @@ class ScopedApproval(WireModel):
     data_version: Version
     execution_rule_version: Version
     evaluator_version: Version
+    candidates: frozenset[Version]
     baselines: frozenset[Version]
     run_limit: Annotated[int, Field(ge=0, strict=True)]
     runs_consumed: Annotated[int, Field(ge=0, strict=True)] = 0
@@ -49,6 +50,7 @@ class ScopeCode(StrEnum):
     WRONG_KIND = "wrong_kind"
     PERIOD = "period"
     VERSION = "version"
+    CANDIDATES = "candidates"
     BASELINES = "baselines"
     SCOPE_EXCEEDED = "scope_exceeded"
 
@@ -82,6 +84,8 @@ def check_batch_scope(grant: ScopedApproval, spec: ComparisonSpec, *, now: datet
     for field in ("data_version", "execution_rule_version", "evaluator_version"):
         if getattr(run, field) != getattr(grant, field):
             raise ScopeRejected(ScopeCode.VERSION, f"batch {field} differs from the approval")
+    if frozenset(matched.candidates) != grant.candidates:
+        raise ScopeRejected(ScopeCode.CANDIDATES, "batch candidates differ from the approved set")
     if frozenset(matched.baselines) != grant.baselines:
         raise ScopeRejected(ScopeCode.BASELINES, "batch baselines differ from the approved set")
     if len(spec.runs) > grant.runs_remaining:

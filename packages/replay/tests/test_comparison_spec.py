@@ -62,6 +62,7 @@ def grant(**updates):
         "data_version": "fixture-2025q3-v1",
         "execution_rule_version": "immediate-v1",
         "evaluator_version": "evals-v1",
+        "candidates": frozenset({"alpha-trader@v1"}),
         "baselines": frozenset({"cash-only", "buy-and-hold-equal-weight"}),
         "run_limit": 3,
         "expires_at": NOW + timedelta(days=1),
@@ -132,6 +133,25 @@ def test_unequal_repetition_counts_are_rejected():
         spec(*runs).validate_matched()
 
     assert exc.value.code is MismatchCode.REPETITION_COUNT
+
+
+@pytest.mark.parametrize(
+    ("baseline_repetitions", "candidate_repetitions"),
+    [
+        pytest.param((0, 5), (0, 1), id="unpaired-index"),
+        pytest.param((1, 2), (1, 2), id="not-from-zero"),
+    ],
+)
+def test_repetition_indices_must_be_zero_to_n(baseline_repetitions, candidate_repetitions):
+    runs = (
+        *(run(repetition=i, seed=i) for i in candidate_repetitions),
+        *(baseline("cash-only", repetition=i) for i in baseline_repetitions),
+    )
+
+    with pytest.raises(ComparisonMismatch) as exc:
+        spec(*runs).validate_matched()
+
+    assert exc.value.code is MismatchCode.REPETITION_INDEX
 
 
 @pytest.mark.parametrize(
@@ -210,6 +230,8 @@ def test_grant_covering_the_batch_passes():
         ({"data_version": "fixture-2025q3-v2"}, ScopeCode.VERSION),
         ({"execution_rule_version": "immediate-v2"}, ScopeCode.VERSION),
         ({"evaluator_version": "evals-v2"}, ScopeCode.VERSION),
+        ({"candidates": frozenset({"beta-trader@v9"})}, ScopeCode.CANDIDATES),
+        ({"candidates": frozenset({"alpha-trader@v1", "beta-trader@v1"})}, ScopeCode.CANDIDATES),
         ({"baselines": frozenset({"cash-only"})}, ScopeCode.BASELINES),
         ({"expires_at": NOW}, ScopeCode.EXPIRED),
         ({"revoked_at": NOW - timedelta(hours=1)}, ScopeCode.REVOKED),
@@ -228,6 +250,19 @@ def test_expiry_uses_the_clock_passed_in():
     check_batch_scope(approval, spec(), now=NOW - timedelta(seconds=1))
     with pytest.raises(ScopeRejected):
         check_batch_scope(approval, spec(), now=NOW)
+
+
+def test_grant_for_one_candidate_does_not_authorize_another():
+    other = spec(
+        run(policy_ref="beta-trader@v9"),
+        baseline("cash-only"),
+        baseline("buy-and-hold-equal-weight"),
+    )
+
+    with pytest.raises(ScopeRejected) as exc:
+        check_batch_scope(grant(), other, now=NOW)
+
+    assert exc.value.code is ScopeCode.CANDIDATES
 
 
 def test_unmatched_spec_is_rejected_before_scope():

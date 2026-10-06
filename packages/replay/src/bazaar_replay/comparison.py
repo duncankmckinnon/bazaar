@@ -1,6 +1,6 @@
 """Comparison batches: which runs are compared, and whether they are matched."""
 
-from collections import Counter
+from collections import defaultdict
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, ClassVar, Self
@@ -21,7 +21,11 @@ class RunRole(StrEnum):
 
 
 class RunDescriptor(WireModel):
-    """One independently accounted run in a comparison batch."""
+    """One independently accounted run in a comparison batch.
+
+    `budget` is the run's model-spend cap in USD, separate from market `starting_capital`.
+    `seed` is recorded for reproducibility but not matched: repetitions may use different seeds.
+    """
 
     role: RunRole
     policy_ref: Version
@@ -53,6 +57,7 @@ class MismatchCode(StrEnum):
     EVALUATOR_VERSION = "evaluator_version"
     MARK_SCHEDULE = "mark_schedule"
     REPETITION_COUNT = "repetition_count"
+    REPETITION_INDEX = "repetition_index"
     ACCESS = "access"
     BUDGET = "budget"
 
@@ -113,10 +118,19 @@ class ComparisonSpec(WireModel):
             if len(values) > 1:
                 raise ComparisonMismatch(code, f"runs differ in {field}")
 
-        counts = Counter(run.policy_ref for run in self.runs)
+        repetitions = defaultdict(set)
+        for run in self.runs:
+            repetitions[run.policy_ref].add(run.repetition)
+        counts = {policy: len(indices) for policy, indices in repetitions.items()}
         if len(set(counts.values())) > 1:
             raise ComparisonMismatch(
-                MismatchCode.REPETITION_COUNT, f"repetitions per policy differ: {dict(counts)}"
+                MismatchCode.REPETITION_COUNT, f"repetitions per policy differ: {counts}"
+            )
+        # S3 pairs runs by repetition index, so every policy must use exactly 0..n-1.
+        n = len(repetitions[self.runs[0].policy_ref])
+        if any(indices != set(range(n)) for indices in repetitions.values()):
+            raise ComparisonMismatch(
+                MismatchCode.REPETITION_INDEX, f"every policy must use repetitions 0..{n - 1}"
             )
 
         candidates = [run for run in self.runs if run.role is RunRole.CANDIDATE]
@@ -134,7 +148,7 @@ class ComparisonSpec(WireModel):
             )
         }
         return MatchedComparison(
-            repetitions=counts[self.runs[0].policy_ref],
+            repetitions=n,
             candidates=self.policies(RunRole.CANDIDATE),
             baselines=self.policies(RunRole.BASELINE),
             access_budget_exempt=tuple(sorted(exempt)),
