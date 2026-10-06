@@ -21,10 +21,12 @@ from pathlib import Path
 
 import httpx
 
+from ..news import NEWS_VERSION
 from .alpaca_bars import ticker_windows
 from .bars_import import ALPACA_BARS_VERSION, import_bars_snapshot
 from .errors import SourceError
 from .fetch import fetch_bars_range, fetch_edgar, fetch_news_range, fetch_universe
+from .news_import import import_news_snapshot
 from .snapshot import SnapshotConflict
 from .universe import load_config
 
@@ -66,7 +68,16 @@ def _run(
     parser = argparse.ArgumentParser(prog="bazaar_market.sources", description=__doc__)
     parser.add_argument(
         "command",
-        choices=["universe", "edgar", "news", "capture-news", "all", "bars", "import-bars"],
+        choices=[
+            "universe",
+            "edgar",
+            "news",
+            "capture-news",
+            "all",
+            "bars",
+            "import-bars",
+            "import-news",
+        ],
     )
     parser.add_argument("--config", default="config/demo-sources.toml")
     parser.add_argument("--root", default="data/raw")
@@ -78,15 +89,15 @@ def _run(
     parser.add_argument(
         "--symbols", help="import-bars: comma-separated tickers to import; the rest are left out"
     )
-    parser.add_argument(
-        "--data-version", default=ALPACA_BARS_VERSION, help="import-bars: data version to store"
-    )
+    parser.add_argument("--data-version", help="import-bars and import-news: data version to store")
     args = parser.parse_args(argv)
     if args.days < 1:
         parser.error("--days must be at least 1")
 
     if args.command == "import-bars":
         return _import_bars(args)
+    if args.command == "import-news":
+        return _import_news(args)
     env = os.environ if env is None else env
     now = now or datetime.now(UTC)
     version = args.version or now.astimezone(UTC).strftime("%Y-%m-%dT%H%MZ")
@@ -149,24 +160,60 @@ def _expected_tickers(config: Path) -> tuple[str, ...]:
     return tuple(w.ticker for w in ticker_windows(tickers, cfg.period_start, cfg.period_end))
 
 
-def _import_bars(args: argparse.Namespace) -> int:
+def _missing_snapshot(args: argparse.Namespace, fetch_command: str) -> bool:
+    """True, after printing how to fetch one, when --snapshot holds no frozen snapshot."""
     if args.snapshot is None:
-        raise SystemExit("import-bars needs --snapshot data/raw/alpaca-bars/<version>")
-    if not (args.snapshot / "manifest.json").is_file():
-        print(
-            f"No snapshot at {args.snapshot}. Run: uv run --env-file .env python -m "
-            f"bazaar_market.sources bars --version {args.snapshot.name} first.",
-            file=sys.stderr,
-        )
+        raise SystemExit(f"{args.command} needs --snapshot data/raw/<source>/<version>")
+    if (args.snapshot / "manifest.json").is_file():
+        return False
+    print(
+        f"No snapshot at {args.snapshot}. Run: uv run --env-file .env python -m "
+        f"bazaar_market.sources {fetch_command} --version {args.snapshot.name} first.",
+        file=sys.stderr,
+    )
+    return True
+
+
+def _symbols(args: argparse.Namespace) -> tuple[str, ...] | None:
+    return tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None
+
+
+def _import_news(args: argparse.Namespace) -> int:
+    if _missing_snapshot(args, "news"):
         return 1
+    symbols = _symbols(args)
+    expected = None
+    if not symbols:
+        cfg = load_config(Path(args.config))
+        expected = tuple(dict.fromkeys(s for c in cfg.companies for s in c.news_symbols))
+    data_version = args.data_version or NEWS_VERSION
     args.db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(args.db)) as connection:
-        symbols = tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None
-        expected = None if symbols else _expected_tickers(Path(args.config))
+        report = import_news_snapshot(
+            connection, args.snapshot, data_version=data_version, expected=expected, symbols=symbols
+        )
+    for s in report.symbols:
+        dropped = (
+            f", {s.without_headline} without a headline left out" if s.without_headline else ""
+        )
+        print(f"import-news: {s.symbol} {s.articles} articles{dropped}")
+    if report.left_out:
+        print(f"import-news: left out, not imported: {', '.join(report.left_out)}")
+    print(f"import-news: imported {args.snapshot} into {args.db} as {data_version}")
+    return 0
+
+
+def _import_bars(args: argparse.Namespace) -> int:
+    if _missing_snapshot(args, "bars"):
+        return 1
+    symbols = _symbols(args)
+    expected = None if symbols else _expected_tickers(Path(args.config))
+    args.db.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(args.db)) as connection:
         report = import_bars_snapshot(
             connection,
             args.snapshot,
-            data_version=args.data_version,
+            data_version=args.data_version or ALPACA_BARS_VERSION,
             expected=expected,
             symbols=symbols,
         )
@@ -174,5 +221,8 @@ def _import_bars(args: argparse.Namespace) -> int:
         print(f"import-bars: {c.ticker} {c.bars} bars, {c.first} to {c.last}")
     if report.left_out:
         print(f"import-bars: left out, not imported: {', '.join(report.left_out)}")
-    print(f"import-bars: imported {args.snapshot} into {args.db} as {args.data_version}")
+    print(
+        f"import-bars: imported {args.snapshot} into {args.db} as "
+        f"{args.data_version or ALPACA_BARS_VERSION}"
+    )
     return 0

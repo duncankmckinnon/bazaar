@@ -346,7 +346,18 @@ def test_cli_errors_that_are_not_source_failures_keep_their_traceback(tmp_path):
     snap = demo_snapshot(tmp_path, [payload("FI", [])])
 
     with pytest.raises(FileNotFoundError):
-        main(["import-bars", "--snapshot", str(snap.dir), "--config", str(tmp_path / "none.toml")])
+        main(
+            [
+                "import-bars",
+                "--snapshot",
+                str(snap.dir),
+                "--config",
+                str(tmp_path / "none.toml"),
+                "--db",
+                str(tmp_path / "m.db"),
+            ]
+        )
+    assert not (tmp_path / "m.db").exists()
 
 
 def test_cli_bars_without_keys_names_the_bars_command(tmp_path):

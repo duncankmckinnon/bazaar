@@ -28,16 +28,20 @@ from bazaar_protocol import (
     Version,
     WireModel,
 )
+from bazaar_protocol.research import OrderHistoryPage
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
 
 from bazaar_market.db import MarketError
+from bazaar_market.history import PageScope, build_page, parse_history_request
 from bazaar_market.ledger import Ledger
 
 logger = logging.getLogger(__name__)
 
+ORDER_HISTORY_SOURCE = "market-ledger-v1"
 APPROVAL_HEADER = "X-Bazaar-Approval"
+ACCOUNT_HEADER = "X-Bazaar-Account"
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
 
 
@@ -112,6 +116,27 @@ def approval_check(grants: GrantChecker) -> Callable[..., UUID]:
     return require_approval
 
 
+def research_scope(
+    request: Request,
+    experiment_id: UUID,
+    account: Annotated[str | None, Header(alias=ACCOUNT_HEADER)] = None,
+) -> PageScope:
+    """For routes without an account in the path (news, filings): the account comes from the
+    X-Bazaar-Account header and must belong to the path's experiment. Mount the route behind
+    approval_check too; this dependency does not check the approval.
+    """
+    if account is None:
+        raise MarketError(401, ErrorCode.UNAUTHORIZED, f"{ACCOUNT_HEADER} header is required")
+    try:
+        account_id = UUID(account)
+    except ValueError:
+        raise MarketError(
+            403, ErrorCode.FORBIDDEN, "The account is not in this experiment"
+        ) from None
+    ledger: Ledger = request.app.state.ledger
+    return ledger.page_scope(experiment_id, account_id)
+
+
 def runner_token_check(expected: str | None) -> Callable[..., None]:
     """Control routes only. With no token configured, every call is refused."""
     if not expected:
@@ -170,6 +195,26 @@ def build_routers(
         experiment_id: UUID, account_id: UUID, body: OrderRequest
     ) -> FilledOrder | RejectedOrder:
         return ledger.submit(experiment_id, account_id, body)
+
+    @router.get("/experiments/{experiment_id}/accounts/{account_id}/orders")
+    def order_history(
+        experiment_id: UUID,
+        account_id: UUID,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        limit: str = "100",
+        cursor: str | None = None,
+    ) -> OrderHistoryPage:
+        request = parse_history_request(start_at, end_at, limit, cursor)
+        scope, results = ledger.order_history(experiment_id, account_id)
+        return build_page(
+            OrderHistoryPage,
+            scope,
+            request,
+            route="orders",
+            source=ORDER_HISTORY_SOURCE,
+            items=[((r.account.simulated_at, str(r.order_id)), r) for r in results],
+        )
 
     @control.post("/experiments/{experiment_id}/accounts/{account_id}/close")
     def close_account(experiment_id: UUID, account_id: UUID) -> AccountSnapshot:

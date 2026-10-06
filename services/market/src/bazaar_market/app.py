@@ -16,7 +16,7 @@ from uuid import UUID
 import logfire
 from fastapi import Depends, FastAPI
 
-from bazaar_market import ledger_api, prices, prices_api
+from bazaar_market import bundles, db, ledger_api, news_api, prices, prices_api
 from bazaar_market.clock import SqliteClock
 from bazaar_market.dev_grants import DevAllowListGrants
 from bazaar_market.ledger import Ledger
@@ -54,28 +54,49 @@ def create_app(
     token = runner_token if runner_token is not None else os.getenv("BAZAAR_RUNNER_TOKEN")
     grants = grants or DevAllowListGrants.from_env() or DenyAllGrants()
     clock = SqliteClock(path)
-    ledger = Ledger(path, lambda data_version: prices.SqliteMarketData(path, data_version))
+
+    def bars_for(data_version: str) -> prices.SqliteMarketData:
+        """Prices for an experiment data_version: a bundle's bars, or a plain bars version."""
+        with db.read_connection(path) as connection:
+            return prices.SqliteMarketData(
+                path, bundles.component(connection, data_version, "bars")
+            )
+
+    ledger = Ledger(path, bars_for)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        db.initialize(path, bundles.SCHEMA)
         ledger.initialize()
         with closing(prices.sqlite3.connect(path)) as connection:
             prices.ensure_schema(connection)
+        with db.write_transaction(path) as connection:
+            bundles.seed(connection)
         yield
 
     def market_data_for(experiment_id: UUID) -> prices.SqliteMarketData:
-        return prices.SqliteMarketData(path, clock.experiment(experiment_id).data_version)
+        return bars_for(clock.experiment(experiment_id).data_version)
+
+    def component(experiment_id: UUID, kind: bundles.Kind) -> str:
+        """The experiment's version of `kind`. Raises UnknownExperiment or bundles.NoComponent."""
+        data_version = clock.experiment(experiment_id).data_version
+        with db.read_connection(path) as connection:
+            return bundles.component(connection, data_version, kind)
 
     configure_telemetry()
     app = FastAPI(title="Bazaar market", lifespan=lifespan)
     app.state.clock = clock
+    app.state.ledger = ledger
+    app.state.market_db_path = path
     app.state.market_data_for = market_data_for
+    app.state.component = component
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     app.include_router(prices_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
+    app.include_router(news_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
     ledger_api.install(app, ledger, grants, token)
     logfire.instrument_fastapi(
         app,

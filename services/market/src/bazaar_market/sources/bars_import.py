@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..prices import Bar, import_bars
 from .errors import SourceError
-from .read import bar_windows, load_bars
+from .read import load_bars, recorded_windows
 
 ALPACA_BARS_VERSION = "alpaca-bars-v1"
 DEMO_RUN = (date(2026, 1, 30), date(2026, 2, 13))
@@ -73,7 +73,7 @@ def import_bars_snapshot(
     snapshot_dir = Path(snapshot_dir)
     if required is None:
         required = {s: _weekdays(*DEMO_RUN) for s in DEMO_RUN_SYMBOLS}
-    fetched = bar_windows(snapshot_dir)
+    fetched = recorded_windows(snapshot_dir)
     if not fetched:
         raise SourceError(f"{snapshot_dir} records no bar windows")
     feeds = {w["feed"] for w in fetched.values()}

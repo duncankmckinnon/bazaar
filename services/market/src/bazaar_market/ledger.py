@@ -7,6 +7,7 @@ the write, so concurrent orders cannot spend the same cash or sell the same shar
 
 import hashlib
 import json
+import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -34,6 +35,7 @@ from bazaar_protocol import (
 
 from bazaar_market import db
 from bazaar_market.clock import Experiment, SqliteClock, UnknownExperiment, load_experiment
+from bazaar_market.history import PageScope
 from bazaar_market.prices import MissingData
 
 CENT = Decimal("0.01")
@@ -317,7 +319,10 @@ class Ledger:
             rule = rule_for(experiment.execution_rule_version)
             quantity = whole_shares(order.quantity)
             now = experiment.cutoff_at
-            result = self._execute(connection, experiment, rule, account, order, quantity, now)
+            order_id = self._next_order_id(connection)
+            result = self._execute(
+                connection, experiment, rule, account, order, quantity, now, order_id
+            )
             connection.execute(
                 "INSERT INTO acct_orders VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -346,6 +351,31 @@ class Ledger:
                 (db.format_time(experiment.cutoff_at), str(account_id)),
             )
             return self._snapshot(account, experiment.cutoff_at)
+
+    def page_scope(self, experiment_id: UUID, account_id: UUID) -> PageScope:
+        """The research scope for an account named by the caller. A foreign account is 403."""
+        with db.read_connection(self.database_path) as connection:
+            experiment = self._experiment(connection, experiment_id)
+            try:
+                account = self._load(connection, experiment_id, account_id)
+            except db.MarketError:
+                raise db.MarketError(
+                    403, ErrorCode.FORBIDDEN, "The account is not in this experiment"
+                ) from None
+        return self._page_scope(experiment, account)
+
+    def order_history(
+        self, experiment_id: UUID, account_id: UUID
+    ) -> tuple[PageScope, list[FilledOrder | RejectedOrder]]:
+        """Every stored order result for the account, exactly as it was first returned."""
+        with db.read_connection(self.database_path) as connection:
+            experiment = self._experiment(connection, experiment_id)
+            account = self._load(connection, experiment_id, account_id)
+            rows = connection.execute(
+                "SELECT result FROM acct_orders WHERE account_id = ?", (str(account_id),)
+            ).fetchall()
+        results = [order_result_adapter.validate_json(row["result"]) for row in rows]
+        return self._page_scope(experiment, account), results
 
     def portfolio(self, experiment_id: UUID, account_id: UUID) -> PortfolioSnapshot:
         with db.read_connection(self.database_path) as connection:
@@ -389,7 +419,7 @@ class Ledger:
             ),
             valuation_rule_version=rule.valuation_rule_version,
             source=prices.price_source,
-            data_version=prices.data_version,
+            data_version=experiment.data_version,
         )
 
     def _execute(
@@ -401,10 +431,11 @@ class Ledger:
         order: OrderRequest,
         quantity: int,
         now: datetime,
+        order_id: UUID,
     ) -> FilledOrder | RejectedOrder:
         def reject(code: ErrorCode, message: str) -> RejectedOrder:
             return RejectedOrder(
-                order_id=uuid4(),
+                order_id=order_id,
                 client_order_id=order.client_order_id,
                 symbol=order.symbol,
                 side=order.side,
@@ -449,7 +480,7 @@ class Ledger:
         )
         updated = replace(account, cash_cents=cash, state_version=state_version, holdings=holdings)
         return FilledOrder(
-            order_id=uuid4(),
+            order_id=order_id,
             client_order_id=order.client_order_id,
             symbol=order.symbol,
             side=order.side,
@@ -527,6 +558,28 @@ class Ledger:
             state_version=row["state_version"],
             closed_at=db.parse_time(row["closed_at"]) if row["closed_at"] else None,
             holdings={h["symbol"]: h["quantity"] for h in holdings},
+        )
+
+    @staticmethod
+    def _next_order_id(connection: sqlite3.Connection) -> UUID:
+        """A UUID whose string sorts in placement order: the first 16 hex digits are the order's
+        sequence number. Call it inside the order's write transaction, which serializes writers.
+
+        Order history sorts by (simulated_at, order_id), so an order placed while a client is
+        paging always sorts after the orders already returned at that cutoff.
+        """
+        (last,) = connection.execute("SELECT COALESCE(MAX(rowid), 0) FROM acct_orders").fetchone()
+        return UUID(hex=f"{last + 1:016x}{secrets.token_hex(8)}")
+
+    @staticmethod
+    def _page_scope(experiment: Experiment, account: _Account) -> PageScope:
+        return PageScope(
+            experiment_id=experiment.experiment_id,
+            account_id=account.account_id,
+            agent_id=account.agent_id,
+            strategy_version_id=account.strategy_version_id,
+            cutoff_at=experiment.cutoff_at,
+            data_version=experiment.data_version,
         )
 
     @staticmethod
