@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from bazaar_market import ledger_api, prices, prices_api
 from bazaar_market.clock import SqliteClock
+from bazaar_market.dev_grants import DevAllowListGrants
 from bazaar_market.ledger import Ledger
 from bazaar_market.ledger_api import DenyAllGrants, GrantChecker
 
@@ -65,7 +66,7 @@ def create_app(database_path: Path | None = None, grants: GrantChecker | None = 
         return {"status": "ok"}
 
     app.include_router(prices_api.router)
-    ledger_api.install(app, ledger, grants or DenyAllGrants())
+    ledger_api.install(app, ledger, grants or DevAllowListGrants.from_env() or DenyAllGrants())
     logfire.instrument_fastapi(
         app,
         capture_headers=False,
