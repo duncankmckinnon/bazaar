@@ -38,7 +38,8 @@ An old idempotent order result is settlement evidence, not a replacement for a c
 All returned data must match scope, cutoff, version, query window and page limit. Pages must be
 ordered with unique record IDs; continuations must be ordered beyond the previous page and may
 not repeat IDs. Opaque cursors can only be used after issuance for that exact route/window/symbol/
-limit and context. Cursor cycles/reuse as a new continuation are rejected. No automatic page
+limit and context. Repeated reads may reissue a stable cursor only with the same query, source,
+accumulated IDs and boundary. Cursor cycles/incompatible reuse are rejected. No automatic page
 walking or unbounded retrieval. Archive queries select publication timestamps (private history
 selects simulated timestamps), with inclusive UTC start/end. A daily news request uses a UTC day
 window capped at the cutoff; revision/availability filtering still applies to its text/headline.

@@ -511,11 +511,71 @@ def test_no_unrestricted_history_query_or_credentials():
     assert context().experiment.simulated_at == datetime(2020, 4, 1, 12, tzinfo=UTC)
 
 
+@pytest.mark.parametrize(
+    "method,snapshot", [("account_history", account), ("portfolio_history", portfolio)]
+)
+async def test_history_clock_snapshots_can_share_state_version(method, snapshot):
+    result, _ = await invoke(
+        page([snapshot(simulated_at=EARLY), snapshot(simulated_at=NOW)]),
+        method,
+        history_request(),
+    )
+    assert result.error is None
+    assert len(result.data.items) == 2
+
+
 async def test_rejected_order_history_messages_sanitized():
     result, _ = await invoke(page([order("rejected")]), "orders", history_request())
     assert result.error is None
     assert result.data.items[0].error.message == "insufficient_cash"
     assert SECRET not in result.model_dump_json()
+
+
+async def test_stable_cursors_allow_first_and_intermediate_page_replays():
+    def handler(r):
+        cursor = r.url.params.get("cursor")
+        if cursor == "first":
+            return httpx.Response(200, json=page([news(record_id="n2")], next_cursor="second"))
+        if cursor == "second":
+            return httpx.Response(200, json=page([news(record_id="n3")]))
+        return httpx.Response(200, json=page([news()], next_cursor="first"))
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        tools = ResearchTools(client, context())
+        for cursor in (None, None, "first", "first", "second", "second"):
+            assert (await tools.news(request(cursor=cursor))).error is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"record_id": "different"},
+        {"source": "different"},
+    ],
+)
+async def test_stable_cursor_incompatible_reissuance_rejected(mutation):
+    responses = [
+        page([news()], next_cursor="stable"),
+        page([news(**mutation)], source=mutation.get("source", "archive"), next_cursor="stable"),
+    ]
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=responses.pop(0))),
+    ) as client:
+        tools = ResearchTools(client, context())
+        assert (await tools.news(request())).error is None
+        assert (await tools.news(request())).error.code == "invalid_response"
+
+
+async def test_private_stable_cursor_replay():
+    adapter = FakePrivateReader(page([private_record()], next_cursor="private-stable"))
+    async with httpx.AsyncClient(base_url="https://market.invalid") as client:
+        tools = ResearchTools(client, context(), adapter)
+        first = await tools.private_history(history_request())
+        second = await tools.private_history(history_request())
+    assert first.error is None and first == second
 
 
 async def test_cross_page_duplicate_rejected():

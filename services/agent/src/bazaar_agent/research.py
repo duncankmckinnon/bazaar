@@ -187,10 +187,19 @@ class ResearchTools:
             require(not seen.intersection(key for _, key in keys))
         if cursor is not None:
             require(count > 0 and cursor != request.cursor)
-            require((route, cursor) not in self._cursors)
-            self._cursors[(route, cursor)] = self._query_key(request)
-            self._cursor_sources[(route, cursor)] = source
-            self._cursor_rows[(route, cursor)] = (keys[-1], seen.union(key for _, key in keys))
+            token = (route, cursor)
+            boundary = (keys[-1], seen.union(key for _, key in keys))
+            query = self._query_key(request)
+            if token in self._cursors:
+                # Stable cursors may be returned by an identical read/retry. Reuse
+                # for another boundary, scope/query, or source remains fail-closed.
+                require(self._cursors[token] == query)
+                require(self._cursor_sources[token] == source)
+                require(self._cursor_rows[token] == boundary)
+            else:
+                self._cursors[token] = query
+                self._cursor_sources[token] = source
+                self._cursor_rows[token] = boundary
 
     def _provenance(self, value: Provenance) -> None:
         require(value.data_version == self._ctx.data_version)
@@ -227,7 +236,8 @@ class ResearchTools:
             elif isinstance(item, AccountSnapshot | PortfolioSnapshot):
                 self._snapshot(item)
                 timestamp = item.simulated_at
-                key = str(item.state_version)
+                # Marks/clock can advance without an account state change.
+                key = f"{item.simulated_at.isoformat()}:{item.state_version:020d}"
             else:
                 self._order(item)
                 timestamp = item.account.simulated_at
