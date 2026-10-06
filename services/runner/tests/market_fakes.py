@@ -79,6 +79,7 @@ class InMemoryMarket:
         self.versions: tuple[str, str] | None = None
         self.accounts: dict[UUID, AccountSnapshot] = {}
         self.closed: set[UUID] = set()
+        self.results: dict[UUID, list] = {}
         self._ids = 0
 
     def _id(self) -> UUID:
@@ -164,11 +165,14 @@ class InMemoryMarket:
             "quantity": order.quantity,
         }
         if error is not None:
-            return RejectedOrder(
-                **common,
-                rejected_at=self.cutoff,
-                error=ExecutionErrorDetail(code=error, message=error.value),
-                account=before,
+            return self._keep(
+                ctx.account_id,
+                RejectedOrder(
+                    **common,
+                    rejected_at=self.cutoff,
+                    error=ExecutionErrorDetail(code=error, message=error.value),
+                    account=before,
+                ),
             )
         after = before.model_copy(
             update={
@@ -178,17 +182,32 @@ class InMemoryMarket:
             }
         )
         self.accounts[ctx.account_id] = after
-        return FilledOrder(
-            **common,
-            unit_price=price.price,
-            fee="0",
-            executed_at=self.cutoff,
-            price_observed_at=price.observed_at,
-            price_available_at=price.available_at,
-            price_source="fixture",
-            data_version=ctx.data_version,
-            execution_rule_version=ctx.execution_rule_version,
-            account=after,
+        return self._keep(
+            ctx.account_id,
+            FilledOrder(
+                **common,
+                unit_price=price.price,
+                fee="0",
+                executed_at=self.cutoff,
+                price_observed_at=price.observed_at,
+                price_available_at=price.available_at,
+                price_source="fixture",
+                data_version=ctx.data_version,
+                execution_rule_version=ctx.execution_rule_version,
+                account=after,
+            ),
+        )
+
+    def _keep(self, account_id: UUID, result):
+        self.results.setdefault(account_id, []).append(result)
+        return result
+
+    async def orders(self, ctx, start_at):
+        self.calls.append(("orders", ctx.simulated_at))
+        return tuple(
+            r
+            for r in self.results.get(ctx.account_id, [])
+            if start_at <= (r.executed_at if r.status == "filled" else r.rejected_at) <= self.cutoff
         )
 
     async def portfolio(self, ctx):
@@ -308,6 +327,27 @@ def delegating_transport(
                 case "GET", ["accounts", aid, "portfolio"]:
                     view.account_id = UUID(aid)
                     return model_response(200, await fake.portfolio(view))
+                case "GET", ["accounts", aid, "orders"]:
+                    view.account_id = UUID(aid)
+                    start_at = datetime.fromisoformat(request.url.params["start_at"])
+                    found = await fake.orders(view, start_at)
+                    account = fake.accounts[view.account_id]
+                    # The HistoryPage shape the agent's orders tool reads (protocol research).
+                    page = {
+                        "experiment_id": str(eid),
+                        "account_id": aid,
+                        "agent_id": str(account.agent_id),
+                        "strategy_version_id": str(account.strategy_version_id),
+                        "cutoff_at": utc_z(fake.cutoff),
+                        "start_at": request.url.params["start_at"],
+                        "end_at": request.url.params["end_at"],
+                        "source": "fixture",
+                        "data_version": DATA_VERSION,
+                        "coverage": "complete",
+                        "items": [json.loads(r.model_dump_json()) for r in found],
+                        "next_cursor": None,
+                    }
+                    return httpx.Response(200, json=page)
                 case "POST", ["accounts", aid, "close"]:
                     return model_response(200, await fake.close_account(eid, UUID(aid)))
                 case "GET", ["prices", symbol]:
