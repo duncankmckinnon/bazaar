@@ -42,3 +42,52 @@ def test_a_refusal_is_returned_to_the_caller_without_retrying():
     response = get(client, "https://example.test/a", sleep=lambda _: None)
 
     assert (response.status_code, len(seen)) == (403, 1)
+
+
+def scripted(responses, seen):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return responses[min(len(seen), len(responses)) - 1]
+
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
+def test_a_rate_limited_request_is_retried_after_a_pause():
+    seen, naps = [], []
+    client = scripted([httpx.Response(429), httpx.Response(200, text="ok")], seen)
+
+    response = get(client, "https://example.test/a", sleep=naps.append)
+
+    assert (response.status_code, len(seen), naps) == (200, 2, [1.0])
+
+
+def test_the_pause_follows_the_servers_retry_after_header():
+    naps = []
+    client = scripted(
+        [httpx.Response(429, headers={"Retry-After": "7"}), httpx.Response(200, text="ok")], []
+    )
+
+    get(client, "https://example.test/a", sleep=naps.append)
+
+    assert naps == [7.0]
+
+
+def test_a_server_that_stays_unavailable_is_returned_after_three_attempts():
+    seen = []
+    client = scripted([httpx.Response(503)], seen)
+
+    response = get(client, "https://example.test/a", sleep=lambda _: None)
+
+    assert (response.status_code, len(seen)) == (503, 3)
+
+
+def test_a_redirect_is_returned_and_never_followed():
+    seen = []
+    client = scripted([httpx.Response(302, headers={"Location": "https://elsewhere.test/b"})], seen)
+
+    response = get(
+        client, "https://example.test/a", headers={"APCA-API-SECRET-KEY": "s"}, sleep=lambda _: None
+    )
+
+    assert response.status_code == 302
+    assert [r.url.host for r in seen] == ["example.test"]

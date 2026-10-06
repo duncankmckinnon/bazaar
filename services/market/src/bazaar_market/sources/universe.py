@@ -31,28 +31,53 @@ class SourcesConfig:
     companies: tuple[Company, ...]
 
 
+def _section(raw: dict, name: str) -> dict:
+    if not isinstance(raw.get(name), dict):
+        raise ConfigError(f"missing [{name}] section")
+    return raw[name]
+
+
+def _date(section: dict, name: str, key: str) -> date:
+    value = section.get(key)
+    if not isinstance(value, date):
+        raise ConfigError(f"{name}.{key} must be a TOML date such as 2022-06-01, got {value!r}")
+    return value
+
+
 def load_config(path: Path) -> SourcesConfig:
+    """Load a sources config. Every setting is required and type-checked. Nothing has a default."""
     raw = tomllib.loads(Path(path).read_text())
-    companies = []
+    period, sp500, edgar = _section(raw, "period"), _section(raw, "sp500"), _section(raw, "edgar")
+    start, end = _date(period, "period", "start"), _date(period, "period", "end")
+    if end < start:
+        raise ConfigError(f"period.end {end} is before period.start {start}")
+    forms = edgar.get("forms")
+    if not isinstance(forms, list) or not all(isinstance(f, str) for f in forms):
+        raise ConfigError(f"edgar.forms must be a list of form names, got {forms!r}")
+    if not isinstance(sp500.get("commit"), str):
+        raise ConfigError("sp500.commit must be a commit hash")
+
+    companies: list[Company] = []
     for entry in raw.get("company", []):
         ticker = entry.get("ticker")
         if not ticker:
             raise ConfigError("every [[company]] needs a ticker")
-        if "cik" not in entry:
+        if any(c.ticker == ticker for c in companies):
+            raise ConfigError(f"{ticker} is listed twice")
+        if not isinstance(entry.get("cik"), int):
             raise ConfigError(f"{ticker} has no cik. EDGAR cannot be queried by ticker.")
         symbols = tuple(entry.get("news_symbols", [ticker]))
-        companies.append(Company(ticker=ticker, cik=int(entry["cik"]), news_symbols=symbols))
-    try:
-        return SourcesConfig(
-            period_start=raw["period"]["start"],
-            period_end=raw["period"]["end"],
-            sp500_commit=raw["sp500"]["commit"],
-            edgar_forms=tuple(raw["edgar"]["forms"]),
-            edgar_documents_since=raw["edgar"]["documents_since"],
-            companies=tuple(companies),
-        )
-    except KeyError as exc:
-        raise ConfigError(f"missing required setting: {exc}") from exc
+        companies.append(Company(ticker=ticker, cik=entry["cik"], news_symbols=symbols))
+    if not companies:
+        raise ConfigError("the config names no [[company]]")
+    return SourcesConfig(
+        period_start=start,
+        period_end=end,
+        sp500_commit=sp500["commit"],
+        edgar_forms=tuple(forms),
+        edgar_documents_since=_date(edgar, "edgar", "documents_since"),
+        companies=tuple(companies),
+    )
 
 
 def parse_sp500_start_end(text: str) -> list[Membership]:
@@ -67,7 +92,12 @@ def parse_sp500_start_end(text: str) -> list[Membership]:
     ]
 
 
-def tradable(memberships: list[Membership], ticker: str, on: date) -> bool:
+def in_universe(memberships: list[Membership], ticker: str, on: date) -> bool:
+    """Whether `ticker` was a member on `on`. The end date of a spell is already outside.
+
+    This is index membership, not trading status. The membership file can end a spell days
+    after the last trade, and it does not record halts.
+    """
     return any(
         m.ticker == ticker and m.start <= on and (m.end is None or on < m.end) for m in memberships
     )

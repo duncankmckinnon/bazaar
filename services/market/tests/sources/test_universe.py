@@ -3,9 +3,9 @@ from datetime import date
 import pytest
 from bazaar_market.sources.universe import (
     ConfigError,
+    in_universe,
     load_config,
     parse_sp500_start_end,
-    tradable,
 )
 
 CSV = """ticker,start_date,end_date
@@ -46,8 +46,8 @@ def test_parse_keeps_each_spell_of_a_ticker_that_left_and_returned():
         ("ZZZZ", date(2022, 6, 8), False),
     ],
 )
-def test_tradable_only_inside_a_membership_spell(ticker, on, want):
-    assert tradable(parse_sp500_start_end(CSV), ticker, on) is want
+def test_in_universe_only_inside_a_membership_spell(ticker, on, want):
+    assert in_universe(parse_sp500_start_end(CSV), ticker, on) is want
 
 
 CONFIG = """
@@ -94,4 +94,32 @@ def test_load_config_rejects_a_company_without_an_sec_number(tmp_path):
     path.write_text(CONFIG.replace("cik = 719739\n", ""))
 
     with pytest.raises(ConfigError, match="SIVB"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ('forms = ["10-K", "10-K/A", "8-K"]', 'forms = "10-K"', "forms"),
+        ("start = 2022-06-01", 'start = "2022-06-01"', "period.start"),
+        ("end = 2023-06-30", "end = 2021-01-01", "before"),
+        ('ticker = "SIVB"', 'ticker = "META"', "META"),
+        ("[sp500]", "[sp500x]", "sp500"),
+        ("documents_since = 2021-06-01", "documents_since = 20210601", "documents_since"),
+    ],
+)
+def test_load_config_rejects_a_malformed_setting(tmp_path, old, new, message):
+    assert old in CONFIG
+    path = tmp_path / "sources.toml"
+    path.write_text(CONFIG.replace(old, new))
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)
+
+
+def test_load_config_rejects_a_config_with_no_companies(tmp_path):
+    path = tmp_path / "sources.toml"
+    path.write_text(CONFIG.split("[[company]]")[0])
+
+    with pytest.raises(ConfigError, match="company"):
         load_config(path)

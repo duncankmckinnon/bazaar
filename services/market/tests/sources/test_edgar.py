@@ -11,7 +11,7 @@ from bazaar_market.sources.edgar import (
 )
 from bazaar_market.sources.errors import SourceError
 from bazaar_market.sources.models import Filing
-from bazaar_market.sources.snapshot import Snapshot
+from bazaar_market.sources.snapshot import Snapshot, UnsafePath
 
 RECENT = {
     "accessionNumber": ["0000719739-23-000030", "0000719739-23-000021", "0000719739-23-000010"],
@@ -232,3 +232,46 @@ def test_filing_text_is_saved_from_the_archive_path_for_that_filing(tmp_path):
     assert path.relative_to(tmp_path / "edgar" / "v1").as_posix() == (
         "documents/719739/0000719739-23-000021/sivb-20221231.htm"
     )
+
+
+def test_fetch_company_records_each_file_with_its_own_url_and_row_count(tmp_path):
+    client = EdgarClient(serve(ROUTES, []), user_agent="Bazaar test", sleep=lambda _: None)
+    snap = Snapshot(tmp_path, source="edgar", version="v1")
+
+    client.fetch_company(719739, snap)
+
+    manifest = json.loads((tmp_path / "edgar" / "v1" / "manifest.json").read_text())
+    assert [(f["file"], f["url"], f["rows"]) for f in manifest["files"]] == [
+        (
+            "submissions/CIK0000719739.json",
+            "https://data.sec.gov/submissions/CIK0000719739.json",
+            3,
+        ),
+        (
+            "submissions/CIK0000719739-submissions-001.json",
+            "https://data.sec.gov/submissions/CIK0000719739-submissions-001.json",
+            1,
+        ),
+        (
+            "companyfacts/CIK0000719739.json",
+            "https://data.sec.gov/api/xbrl/companyfacts/CIK0000719739.json",
+            3,
+        ),
+    ]
+
+
+def test_an_older_file_name_that_points_outside_the_snapshot_is_refused(tmp_path):
+    hostile = {
+        "cik": "0000719739",
+        "filings": {"recent": RECENT, "files": [{"name": "../../../escape.json"}]},
+    }
+    routes = {
+        "https://data.sec.gov/submissions/CIK0000719739.json": hostile,
+        "https://data.sec.gov/escape.json": OLDER,
+    }
+    client = EdgarClient(serve(routes, []), user_agent="Bazaar test", sleep=lambda _: None)
+
+    with pytest.raises(UnsafePath):
+        client.fetch_company(719739, Snapshot(tmp_path / "raw", source="edgar", version="v1"))
+
+    assert not list(tmp_path.rglob("escape.json"))

@@ -17,7 +17,7 @@ import httpx
 from .errors import SourceError
 from .http import get
 from .models import NewsItem
-from .snapshot import Snapshot
+from .snapshot import Snapshot, SnapshotConflict
 
 NEWS_URL = "https://data.alpaca.markets/v1beta1/news"
 
@@ -61,13 +61,23 @@ def fetch_news(
         "limit": "50",
         "sort": "asc",
     }
+    first = snap.entry(f"{symbol}/page-0001.json")
+    if first is not None:
+        frozen = httpx.URL(first["url"]).params
+        if any(frozen.get(key) != params[key] for key in ("symbols", "start", "end")):
+            raise SnapshotConflict(
+                f"{snap.dir} already holds {symbol} news for {frozen.get('start')} to "
+                f"{frozen.get('end')}. Fetch a different window into a new version."
+            )
+
     items: list[NewsItem] = []
+    tokens: set[str] = set()
     page = 0
     requested = False
     while True:
         page += 1
         name = f"{symbol}/page-{page:04d}.json"
-        if snap.path(name).exists():
+        if snap.entry(name) is not None:
             # Frozen by an earlier run of this version. Continue from its page token.
             raw = snap.path(name).read_bytes()
         else:
@@ -84,4 +94,7 @@ def fetch_news(
         token = payload.get("next_page_token")
         if not token:
             return items
+        if token in tokens:
+            raise SourceError(f"Alpaca news repeated a page token for {symbol} at page {page}")
+        tokens.add(token)
         params = {**params, "page_token": token}

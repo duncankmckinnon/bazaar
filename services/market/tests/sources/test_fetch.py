@@ -36,20 +36,30 @@ SUBMISSIONS = {
         "files": [],
         "recent": {
             "accessionNumber": [
+                "0001326801-24-000012",
+                "0001326801-23-000050",
                 "0001326801-23-000013",
                 "0001326801-22-000082",
                 "0001326801-21-000014",
             ],
-            "form": ["10-K", "10-Q", "10-K"],
-            "reportDate": ["2022-12-31", "2022-06-30", "2020-12-31"],
-            "filingDate": ["2023-02-02", "2022-07-28", "2021-01-28"],
+            "form": ["10-K", "8-K", "10-K", "10-Q", "10-K"],
+            "reportDate": ["2023-12-31", "", "2022-12-31", "2022-06-30", "2020-12-31"],
+            "filingDate": ["2024-02-01", "2023-04-26", "2023-02-02", "2022-07-28", "2021-01-28"],
             "acceptanceDateTime": [
-                "2023-02-02T21:10:00.000Z",
-                "2022-07-28T20:10:00.000Z",
-                "2021-01-28T21:10:00.000Z",
+                "2024-02-01T21:10:00.000Z",  # after the period ends
+                "2023-04-26T20:10:00.000Z",  # in range, but has no primary document
+                "2023-02-02T21:10:00.000Z",  # the only one that qualifies
+                "2022-07-28T20:10:00.000Z",  # a 10-Q, not a configured form
+                "2021-01-28T21:10:00.000Z",  # before documents_since
             ],
-            "primaryDocument": ["meta-20221231.htm", "meta-20220630.htm", "fb-20201231.htm"],
-            "items": ["", "", ""],
+            "primaryDocument": [
+                "meta-20231231.htm",
+                "",
+                "meta-20221231.htm",
+                "meta-20220630.htm",
+                "fb-20201231.htm",
+            ],
+            "items": ["", "2.02", "", "", ""],
         },
     },
 }
@@ -118,7 +128,7 @@ def test_fetch_edgar_without_a_contact_skips_filing_text(cfg, tmp_path):
     )
 
     assert [r.url.host for r in seen] == ["data.sec.gov", "data.sec.gov"]
-    assert summary == {"META": {"filings": 3, "documents": 0}}
+    assert summary == {"META": {"filings": 5, "documents": 0}}
 
 
 def test_fetch_edgar_with_a_contact_downloads_configured_forms_since_the_cutoff(cfg, tmp_path):
@@ -133,11 +143,11 @@ def test_fetch_edgar_with_a_contact_downloads_configured_forms_since_the_cutoff(
         sleep=lambda _: None,
     )
 
-    # The 10-Q is not a configured form and the 2021 10-K predates documents_since.
+    # Only the 2023 10-K qualifies. See the comments on SUBMISSIONS for why each other one does not.
     assert [r.url.path for r in seen if r.url.host == "www.sec.gov"] == [
         "/Archives/edgar/data/1326801/000132680123000013/meta-20221231.htm"
     ]
-    assert summary == {"META": {"filings": 3, "documents": 1}}
+    assert summary == {"META": {"filings": 5, "documents": 1}}
 
 
 def test_fetch_news_range_fetches_each_news_symbol_of_each_company(cfg, tmp_path):
@@ -230,13 +240,80 @@ def test_cli_capture_news_covers_the_trailing_days_up_to_today(tmp_path):
     )
 
 
-def test_cli_does_not_leak_alpaca_keys_to_the_sec(tmp_path):
+def test_cli_all_sends_the_alpaca_keys_to_alpaca_and_to_no_other_host(tmp_path):
     seen = []
 
     main(
-        ["edgar", "--config", write_config(tmp_path), "--root", str(tmp_path / "raw")],
+        ["all", "--config", write_config(tmp_path), "--root", str(tmp_path / "raw")],
         env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret", "SEC_REQUEST_INTERVAL": "0"},
         http=web(seen),
     )
 
-    assert all("apca-api-key-id" not in r.headers for r in seen)
+    assert {r.url.host for r in seen} == {
+        "raw.githubusercontent.com",
+        "data.sec.gov",
+        "data.alpaca.markets",
+    }
+    assert {r.url.host for r in seen if "apca-api-secret-key" in r.headers} == {
+        "data.alpaca.markets"
+    }
+
+
+def test_cli_capture_news_honours_a_days_value_other_than_the_default(tmp_path):
+    seen = []
+
+    main(
+        [
+            "capture-news",
+            "--days",
+            "5",
+            "--config",
+            write_config(tmp_path),
+            "--root",
+            str(tmp_path),
+        ],
+        env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
+        http=web(seen),
+        today=date(2026, 10, 6),
+    )
+
+    assert seen[0].url.params["start"] == "2026-10-02T00:00:00Z"
+
+
+def test_cli_capture_news_refuses_a_window_of_less_than_one_day(tmp_path):
+    seen = []
+
+    with pytest.raises(SystemExit):
+        main(
+            ["capture-news", "--days", "0", "--config", write_config(tmp_path)],
+            env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
+            http=web(seen),
+            today=date(2026, 10, 6),
+        )
+
+    assert seen == []
+
+
+def test_cli_writes_into_the_version_it_is_given(tmp_path):
+    main(
+        [
+            "news",
+            "--version",
+            "frozen-1",
+            "--config",
+            write_config(tmp_path),
+            "--root",
+            str(tmp_path / "raw"),
+        ],
+        env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
+        http=web([]),
+    )
+
+    assert (tmp_path / "raw" / "alpaca-news" / "frozen-1" / "manifest.json").exists()
+
+
+def test_fetch_universe_fails_when_the_pinned_file_cannot_be_downloaded(cfg, tmp_path):
+    missing = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+
+    with pytest.raises(SourceError, match="404"):
+        fetch_universe(cfg, tmp_path / "raw", missing)

@@ -7,7 +7,7 @@ Reading a snapshot and applying the visibility rules does not, and the tests use
 ## What is fetched
 
 - **SEC EDGAR**, `data.sec.gov`, no key.
-  Filing history per company with `acceptanceDateTime` to the second, and XBRL facts with the accession number of
+  Filing history per company with an acceptance time to the second, and XBRL facts with the accession number of
   the filing that reported each value.
   Amendments (`10-K/A`, `10-Q/A`, `8-K/A`) are separate filings.
 - **Alpaca news**, `data.alpaca.markets/v1beta1/news`, needs `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`.
@@ -39,35 +39,61 @@ Filing text is downloaded only when `SEC_USER_AGENT` contains a contact address.
 
 Each version directory has a `manifest.json` listing every file with its source URL, SHA-256, byte count, row count
 and fetch time.
-`Snapshot.write` raises `SnapshotConflict` when a file already exists with different bytes.
-Writing identical bytes again is a no-op, so an interrupted `news` run resumes when rerun with the same `--version`:
-pages already on disk are read back and the fetch continues from the last page token.
+A file is frozen once the manifest lists it.
+`Snapshot.write` raises `SnapshotConflict` when a frozen file would get different bytes, and `UnsafePath` when a
+name resolves outside the version directory.
+Files are written through a temporary file and renamed, and a file left without a manifest entry by a run that died
+is written again.
+One process writes a version at a time. There is no lock.
+
+An interrupted `news` run resumes when rerun with the same `--version`: frozen pages are read back and the fetch
+continues from the last page token.
+Fetching a different date window into that version raises `SnapshotConflict`.
+
+Requests are tried up to three times for dropped connections and for 429, 502, 503 and 504.
+Redirects are never followed, so the Alpaca key headers are sent to `data.alpaca.markets` only.
 
 `data/raw/` is ignored by git.
 
 ## Reading point-in-time
 
 `sources.read` loads a snapshot into `Filing`, `Fact` and `NewsItem` records.
-A company or ticker missing from the snapshot raises `SourceError`.
-It is never returned as an empty list.
+`SourceError` is raised for a company or ticker missing from the snapshot, for a filing history whose older files
+were not all frozen, and for news whose fetch stopped before the last page.
+None of these is returned as a shorter list.
 
 `sources.visibility` filters records by a timezone-aware simulated time:
 
-- A filing is visible from `accepted_at`.
-  EDGAR's `acceptanceDateTime` is UTC.
+- A filing is visible from `accepted_at`, which is EDGAR's `acceptanceDateTime` read as labelled.
+  See the first known limit.
 - A fact is visible when the filing with its accession number is visible.
   If that filing is not loaded, the fact is visible from 00:00 UTC on the day after `filed`.
 - A news article is visible from `updated_at`.
   Alpaca serves only the latest revision of an article, and its date filter matches on `updated_at`.
-- `universe.tradable` is true from a membership's start date up to, and not including, its end date.
+- `universe.in_universe` is true from a membership's start date up to, and not including, its end date.
+  It is index membership, not trading status.
 
 These functions take the trusted clock from the caller.
 They do not authorize anything, and the market server still has to enforce the cutoff.
 
 ## Known limits
 
+- EDGAR labels `acceptanceDateTime` as UTC, and for some filers it is not.
+  In the demo snapshot the value is UTC for eight companies.
+  For AAPL, AMZN, JPM and META it is 4 or 5 hours later than the real acceptance time: 1,501 of 4,741 10-K, 10-Q
+  and 8-K filings since 2005 match EDGAR's 17:30 Eastern filing-date rule only after subtracting the Eastern offset.
+  Read as labelled, no filing is dated before its acceptance, so these filings become visible late and never early.
+  Correcting the value needs the acceptance time on the filing index page, which is on `www.sec.gov`.
+- Membership is keyed by the ticker in use at the time.
+  `in_universe` is false for META before 2022-06-09, when the company traded as FB.
+  Mapping a company across a rename is left to the importer.
+  The membership file also ends a spell after the last trade: TWTR on 2022-11-01, with a last price on 2022-10-27.
+- `news_symbols` has no dates.
+  The demo config fetches FB for the whole period, and 216 of its 300 articles are dated after the rename.
 - No "prior-cycle" rule beyond acceptance time.
-  A `10-K` or `10-Q` accepted before the simulated time always covers a finished period.
+  A `10-K` or `10-Q` is accepted after its period ends, so acceptance time excludes current-period numbers.
+  EDGAR's `reportDate` is not a reliable period end for old filings: 8 of 1,381 periodic reports in the demo snapshot,
+  all from 2012 or earlier, carry the filing date there.
   A stricter fiscal-cycle rule is a spec decision.
 - EDGAR identifies companies by CIK and returns no ticker for delisted companies, so `config/demo-sources.toml`
   maps each ticker to its CIK.

@@ -17,20 +17,24 @@ def visible_filings(filings: list[Filing], as_of: datetime) -> list[Filing]:
     return sorted((f for f in filings if f.accepted_at <= as_of), key=lambda f: f.accepted_at)
 
 
+def _available_at(fact: Fact, accepted: dict[str, datetime]) -> datetime:
+    if fact.accession in accepted:
+        return accepted[fact.accession]
+    return datetime.combine(fact.filed + timedelta(days=1), time.min, tzinfo=UTC)
+
+
 def fact_available_at(fact: Fact, filings: list[Filing]) -> datetime:
     """A fact is readable once its filing was accepted.
 
     When the filing is not in hand, only the filing day is known, so wait for the next day.
     """
-    for filing in filings:
-        if filing.accession == fact.accession:
-            return filing.accepted_at
-    return datetime.combine(fact.filed + timedelta(days=1), time.min, tzinfo=UTC)
+    return _available_at(fact, {f.accession: f.accepted_at for f in filings})
 
 
 def visible_facts(facts: list[Fact], filings: list[Filing], as_of: datetime) -> list[Fact]:
     _require_aware(as_of)
-    return [f for f in facts if fact_available_at(f, filings) <= as_of]
+    accepted = {f.accession: f.accepted_at for f in filings}
+    return [f for f in facts if _available_at(f, accepted) <= as_of]
 
 
 def visible_news(items: list[NewsItem], as_of: datetime) -> list[NewsItem]:

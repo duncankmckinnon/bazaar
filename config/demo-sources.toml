@@ -62,7 +62,8 @@ cik = 104169
 [[company]]
 ticker = "META"
 cik = 1326801
-# Traded as FB until 2022-06-09. The ticker FB now belongs to an unrelated ETF.
+# Traded as FB until 2022-06-09. The ticker FB now belongs to an unrelated ETF, and news_symbols
+# carries no dates, so FB articles from after the rename are fetched too.
 news_symbols = ["META", "FB"]
 
 [[company]]

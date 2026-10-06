@@ -21,7 +21,13 @@ def columns(accession, form, filed):
 
 def edgar_snapshot(tmp_path):
     snap = Snapshot(tmp_path, source="edgar", version="v1")
-    recent = {"cik": "0000000042", "filings": {"recent": columns("a-2", "10-K", "2023-02-24")}}
+    recent = {
+        "cik": "0000000042",
+        "filings": {
+            "recent": columns("a-2", "10-K", "2023-02-24"),
+            "files": [{"name": "CIK0000000042-submissions-001.json"}],
+        },
+    }
     older = columns("a-1", "10-Q", "2014-05-09")
     other = {"cik": "0000000420", "filings": {"recent": columns("b-1", "10-K", "2023-01-01")}}
     facts = {
@@ -90,8 +96,9 @@ def test_load_facts_reads_the_frozen_numbers_for_one_company(tmp_path):
     assert [(f.concept, f.value, f.accession) for f in facts] == [("Assets", 5.0, "a-2")]
 
 
-def page(*ids):
+def page(*ids, token=None):
     return {
+        "next_page_token": token,
         "news": [
             {
                 "id": i,
@@ -102,13 +109,13 @@ def page(*ids):
                 "updated_at": f"2024-03-0{i}T10:00:00Z",
             }
             for i in ids
-        ]
+        ],
     }
 
 
 def test_load_news_reads_every_page_and_drops_articles_repeated_across_pages(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(page(1, 2)).encode(), url="u", rows=2)
+    snap.write("AAPL/page-0001.json", json.dumps(page(1, 2, token="t")).encode(), url="u", rows=2)
     snap.write("AAPL/page-0002.json", json.dumps(page(2, 3)).encode(), url="u", rows=2)
 
     assert [n.id for n in load_news(snap.dir, "AAPL")] == ["1", "2", "3"]
@@ -120,3 +127,41 @@ def test_load_news_fails_for_a_symbol_missing_from_the_snapshot(tmp_path):
 
     with pytest.raises(SourceError, match="MSFT"):
         load_news(snap.dir, "MSFT")
+
+
+def test_load_filings_fails_when_an_older_filings_file_was_never_frozen(tmp_path):
+    snap_dir = edgar_snapshot(tmp_path)
+    (snap_dir / "submissions" / "CIK0000000042-submissions-001.json").unlink()
+
+    with pytest.raises(SourceError, match="submissions-001"):
+        load_filings(snap_dir, 42)
+
+
+def test_load_news_fails_when_the_fetch_stopped_before_the_last_page(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1, token="more")).encode(), url="u", rows=1)
+
+    with pytest.raises(SourceError, match="incomplete"):
+        load_news(snap.dir, "AAPL")
+
+
+def test_load_news_fails_when_a_page_in_the_middle_is_missing(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(1, token="t")).encode(), url="u", rows=1)
+    snap.write("AAPL/page-0003.json", json.dumps(page(3)).encode(), url="u", rows=1)
+
+    with pytest.raises(SourceError, match="page-0002"):
+        load_news(snap.dir, "AAPL")
+
+
+def test_load_news_returns_articles_in_publication_order_whatever_the_page_order(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(page(3, 1, token="t")).encode(), url="u", rows=2)
+    snap.write("AAPL/page-0002.json", json.dumps(page(2)).encode(), url="u", rows=1)
+
+    assert [n.id for n in load_news(snap.dir, "AAPL")] == ["1", "2", "3"]
+
+
+def test_load_facts_fails_for_a_company_missing_from_the_snapshot(tmp_path):
+    with pytest.raises(SourceError, match="99"):
+        load_facts(edgar_snapshot(tmp_path), 99)

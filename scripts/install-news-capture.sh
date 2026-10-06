@@ -9,12 +9,20 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$HOME/Library/Logs/bazaar-news-snapshot.log"
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 if [ "${1:-}" = "uninstall" ]; then
+  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   rm -f "$PLIST"
   echo "removed $LABEL"
   exit 0
 fi
+
+UV_PATH="$(command -v uv || true)"
+if [ -z "$UV_PATH" ]; then
+  echo "uv is not on PATH. Install uv, then run this script again." >&2
+  exit 1
+fi
+UV_DIR="$(dirname "$UV_PATH")"
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,7 +35,7 @@ cat > "$PLIST" <<PLIST_EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>$HOME</string>
-    <key>PATH</key><string>$(dirname "$(command -v uv)"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>$UV_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>15</integer></dict>

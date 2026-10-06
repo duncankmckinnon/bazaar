@@ -8,6 +8,7 @@ from bazaar_market.sources.visibility import (
     visible_filings,
     visible_news,
 )
+from pydantic import ValidationError
 
 
 def filing(accession, form, accepted_at):
@@ -101,3 +102,47 @@ def test_a_revised_article_is_hidden_until_its_last_revision():
 def test_a_simulated_time_without_a_timezone_is_rejected():
     with pytest.raises(ValueError, match="timezone"):
         visible_filings([ORIGINAL], datetime(2023, 3, 1, 0, 0, 0))  # noqa: DTZ001
+
+
+def test_facts_and_news_also_reject_a_simulated_time_without_a_timezone():
+    naive = datetime(2023, 3, 1, 0, 0, 0)  # noqa: DTZ001
+
+    with pytest.raises(ValueError, match="timezone"):
+        visible_facts([], [ORIGINAL], naive)
+    with pytest.raises(ValueError, match="timezone"):
+        visible_news([], naive)
+
+
+def news(id_, updated_at):
+    return NewsItem(
+        source="alpaca",
+        id=id_,
+        symbols=("AAPL",),
+        headline="h",
+        body="b",
+        created_at=datetime(2024, 3, 1, tzinfo=UTC),
+        updated_at=updated_at,
+    )
+
+
+def test_visible_news_is_ordered_by_the_time_each_article_became_readable():
+    late = news("late", datetime(2024, 3, 4, 12, 0, tzinfo=UTC))
+    early = news("early", datetime(2024, 3, 4, 9, 0, tzinfo=UTC))
+
+    result = visible_news([late, early], datetime(2024, 3, 5, tzinfo=UTC))
+
+    assert [n.id for n in result] == ["early", "late"]
+
+
+def test_a_record_cannot_be_built_with_a_timestamp_that_has_no_timezone():
+    with pytest.raises(ValidationError):
+        filing("x", "10-K", datetime(2023, 2, 24, 21, 43, 8))  # noqa: DTZ001
+
+
+def test_visible_facts_handles_many_facts_against_many_filings_quickly():
+    filings = [filing(f"acc-{i}", "8-K", datetime(2023, 1, 1, tzinfo=UTC)) for i in range(4000)]
+    facts = [fact(f"acc-{i}", float(i), date(2023, 1, 1)) for i in range(4000)]
+
+    visible = visible_facts(facts, filings, datetime(2023, 6, 1, tzinfo=UTC))
+
+    assert len(visible) == 4000

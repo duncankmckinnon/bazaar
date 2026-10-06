@@ -43,6 +43,8 @@ def main(
     parser.add_argument("--version", help="snapshot version, default is the current UTC minute")
     parser.add_argument("--days", type=int, default=3, help="capture-news: trailing days to save")
     args = parser.parse_args(argv)
+    if args.days < 1:
+        parser.error("--days must be at least 1")
 
     env = os.environ if env is None else env
     today = today or datetime.now(UTC).date()
@@ -51,7 +53,7 @@ def main(
     root = Path(args.root)
     needs_news = args.command in ("news", "capture-news", "all")
     news_headers = _alpaca_headers(env) if needs_news else None
-    http = http or httpx.Client(timeout=60, follow_redirects=True)
+    http = http or httpx.Client(timeout=60)
 
     if args.command in ("universe", "all"):
         members = fetch_universe(cfg, root, http)

@@ -5,7 +5,7 @@ import httpx
 import pytest
 from bazaar_market.sources.alpaca_news import fetch_news, parse_news
 from bazaar_market.sources.errors import SourceError
-from bazaar_market.sources.snapshot import Snapshot
+from bazaar_market.sources.snapshot import Snapshot, SnapshotConflict
 
 
 def article(id_, created, updated, content="body"):
@@ -35,6 +35,11 @@ PAGE_2 = {
     "news": [article(3, "2024-03-05T10:00:00Z", "2024-03-05T10:00:00Z")],
     "next_page_token": None,
 }
+
+FROZEN_URL = (
+    "https://data.alpaca.markets/v1beta1/news?symbols=AAPL&start=2024-03-04T00%3A00%3A00Z"
+    "&end=2024-03-05T23%3A59%3A59Z&include_content=true&limit=50&sort=asc"
+)
 
 
 def serve(pages, seen, status=200):
@@ -123,7 +128,7 @@ def test_news_requests_are_spaced_to_stay_under_the_alpaca_rate_limit(tmp_path):
 
 def test_an_interrupted_fetch_resumes_after_the_pages_already_frozen(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(PAGE_1).encode(), url="u", rows=2)
+    snap.write("AAPL/page-0001.json", json.dumps(PAGE_1).encode(), url=FROZEN_URL, rows=2)
     seen = []
 
     items = fetch_news(
@@ -141,7 +146,7 @@ def test_an_interrupted_fetch_resumes_after_the_pages_already_frozen(tmp_path):
 
 def test_a_completed_fetch_makes_no_requests_when_run_again(tmp_path):
     snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
-    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url="u", rows=1)
+    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url=FROZEN_URL, rows=1)
     seen = []
 
     items = fetch_news(
@@ -150,3 +155,34 @@ def test_a_completed_fetch_makes_no_requests_when_run_again(tmp_path):
 
     assert seen == []
     assert [i.id for i in items] == ["3"]
+
+
+def test_pages_frozen_for_another_window_are_not_reused(tmp_path):
+    snap = Snapshot(tmp_path, source="alpaca-news", version="v1")
+    snap.write("AAPL/page-0001.json", json.dumps(PAGE_2).encode(), url=FROZEN_URL, rows=1)
+    seen = []
+
+    with pytest.raises(SnapshotConflict, match="2024-03-04"):
+        fetch_news(
+            serve([PAGE_2], seen),
+            symbol="AAPL",
+            start=date(2025, 1, 1),
+            end=date(2025, 1, 31),
+            snap=snap,
+        )
+
+    assert seen == []
+
+
+def test_a_page_token_that_repeats_stops_the_fetch(tmp_path):
+    looping = {**PAGE_1, "next_page_token": "abc"}
+
+    with pytest.raises(SourceError, match="page token"):
+        fetch_news(
+            serve([looping, looping, looping, looping], []),
+            symbol="AAPL",
+            start=date(2024, 3, 4),
+            end=date(2024, 3, 5),
+            snap=Snapshot(tmp_path, source="alpaca-news", version="v1"),
+            sleep=lambda _: None,
+        )

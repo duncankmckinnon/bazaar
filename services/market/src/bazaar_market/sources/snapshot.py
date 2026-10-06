@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,8 +12,15 @@ class SnapshotConflict(Exception):
     """A fetch produced different bytes for a file that is already frozen in this version."""
 
 
+class UnsafePath(ValueError):
+    """A file name, possibly taken from remote data, resolves outside the version directory."""
+
+
 class Snapshot:
-    """One frozen version of one source: `<root>/<source>/<version>/` plus a `manifest.json`."""
+    """One frozen version of one source: `<root>/<source>/<version>/` plus a `manifest.json`.
+
+    A file is frozen once the manifest lists it. One process writes a version at a time.
+    """
 
     def __init__(
         self,
@@ -28,19 +36,28 @@ class Snapshot:
         self._clock = clock
 
     def path(self, name: str) -> Path:
-        return self.dir / name
+        target = (self.dir / name).resolve()
+        if not target.is_relative_to(self.dir.resolve()):
+            raise UnsafePath(f"{name!r} is outside {self.dir}")
+        return target
+
+    def entry(self, name: str) -> dict | None:
+        """The manifest entry for `name`, or None when the file was never recorded."""
+        return next((e for e in self._manifest()["files"] if e["file"] == name), None)
 
     def write(self, name: str, content: bytes, *, url: str, rows: int) -> Path:
         target = self.path(name)
-        if target.exists():
+        if self.entry(name) is not None:
             if target.read_bytes() == content:
                 return target
             raise SnapshotConflict(
                 f"{target} is frozen and the new content differs. Fetch into a new version."
             )
+        # Not in the manifest: either new, or left by a run that died before recording it.
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        self._record(
+        self._replace(target, content)
+        manifest = self._manifest()
+        manifest["files"].append(
             {
                 "file": name,
                 "url": url,
@@ -50,13 +67,18 @@ class Snapshot:
                 "fetched_at": self._clock().isoformat(),
             }
         )
+        self._replace(self.dir / "manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
         return target
 
-    def _record(self, entry: dict[str, object]) -> None:
+    def _manifest(self) -> dict:
         manifest_path = self.dir / "manifest.json"
         if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-        else:
-            manifest = {"source": self.source, "version": self.version, "files": []}
-        manifest["files"].append(entry)
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            return json.loads(manifest_path.read_text())
+        return {"source": self.source, "version": self.version, "files": []}
+
+    @staticmethod
+    def _replace(target: Path, content: bytes) -> None:
+        """Write through a temporary file so a crash never leaves a half-written target."""
+        temporary = target.with_name(target.name + ".part")
+        temporary.write_bytes(content)
+        os.replace(temporary, target)

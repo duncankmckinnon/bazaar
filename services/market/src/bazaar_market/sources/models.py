@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 
 class _Record(BaseModel):
@@ -10,7 +10,10 @@ class _Record(BaseModel):
 
 
 class Membership(_Record):
-    """One spell during which a ticker belonged to the universe. `end` is the first day outside."""
+    """One spell during which a ticker belonged to the universe. `end` is the first day outside.
+
+    A spell is keyed by the ticker in use at the time, so a renamed company has one per ticker.
+    """
 
     ticker: str
     start: date
@@ -25,7 +28,7 @@ class Filing(_Record):
     form: str
     report_date: date | None
     filing_date: date
-    accepted_at: datetime
+    accepted_at: AwareDatetime
     primary_document: str
     items: tuple[str, ...] = ()
 
@@ -53,8 +56,8 @@ class NewsItem(_Record):
     symbols: tuple[str, ...]
     headline: str
     body: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
 
     @property
     def has_body(self) -> bool:
