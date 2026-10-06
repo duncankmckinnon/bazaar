@@ -79,20 +79,20 @@ They do not authorize anything, and the market server still has to enforce the c
 ## Known limits
 
 - EDGAR labels `acceptanceDateTime` as UTC, and for some filers it is not.
-  In the demo snapshot the value is UTC for eight companies.
-  For AAPL, AMZN, JPM and META it is 4 or 5 hours later than the real acceptance time: 1,501 of 4,741 10-K, 10-Q
+  In the demo snapshot the value is UTC for nine of the thirteen companies.
+  For AAPL, AMZN, JPM and META it is 4 or 5 hours later than the real acceptance time: 1,501 of 5,312 10-K, 10-Q
   and 8-K filings since 2005 match EDGAR's 17:30 Eastern filing-date rule only after subtracting the Eastern offset.
   Read as labelled, no filing is dated before its acceptance, so these filings become visible late and never early.
   Correcting the value needs the acceptance time on the filing index page, which is on `www.sec.gov`.
 - Membership is keyed by the ticker in use at the time.
-  `in_universe` is false for META before 2022-06-09, when the company traded as FB.
+  `in_universe` is false for FISV from 2023-06-07 to 2025-11-10, when Fiserv traded as FI.
   Mapping a company across a rename is left to the importer.
-  The membership file also ends a spell after the last trade: TWTR on 2022-11-01, with a last price on 2022-10-27.
+  The membership file also ends a spell after the last trade: K on 2025-12-11, with a last price on 2025-12-10.
 - `news_symbols` has no dates.
-  The demo config fetches FB for the whole period, and 216 of its 300 articles are dated after the rename.
+  The demo config fetches FI for the whole period, and 3 of its 91 articles are dated after the rename.
 - No "prior-cycle" rule beyond acceptance time.
   A `10-K` or `10-Q` is accepted after its period ends, so acceptance time excludes current-period numbers.
-  EDGAR's `reportDate` is not a reliable period end for old filings: 8 of 1,381 periodic reports in the demo snapshot,
+  EDGAR's `reportDate` is not a reliable period end for old filings: 8 of 1,616 periodic reports in the demo snapshot,
   all from 2012 or earlier, carry the filing date there.
   A stricter fiscal-cycle rule is a spec decision.
 - EDGAR identifies companies by CIK and returns no ticker for delisted companies, so `config/demo-sources.toml`
@@ -104,6 +104,8 @@ They do not authorize anything, and the market server still has to enforce the c
 
 ## Demo config
 
-`config/demo-sources.toml` names twelve companies and the period 2022-06-01 to 2023-06-30.
+`config/demo-sources.toml` names thirteen companies and the period 2025-07-01 to 2026-09-30.
 Both are placeholders.
-The period contains the FB to META rename, Twitter's acquisition and SVB's failure.
+The period is recent so that its last months are after the training cutoff of current models.
+It contains the FI to FISV rename (2025-11-11) and two cash acquisitions: Kellanova (2025-12-11) and Electronic Arts
+(2026-08-04).
