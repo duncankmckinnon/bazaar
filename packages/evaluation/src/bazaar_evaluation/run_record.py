@@ -96,11 +96,14 @@ def to_inputs(record: RunRecord) -> tuple[RunEvidence, RunOutcome]:
             o.result for o in sorted(record.orders, key=lambda o: (o.event_sequence, o.order_index))
         ),
     )
+    failure = record.failure
+    if record.status == "failed" and not (failure or "").strip():
+        failure = "run failed; the record gave no failure reason"  # v1 allows a null failure
     outcome = RunOutcome(
         marks=tuple(k.snapshot for k in sorted(record.marks, key=lambda k: k.event_sequence)),
         final_account=record.final_account,
         run_status=record.status,
-        run_failure=record.failure,
+        run_failure=failure,
     )
     return evidence, outcome
 
@@ -115,8 +118,10 @@ def evaluate_and_emit(
     run = RunRecord.model_validate(record)
     evaluation = evaluate_run(*to_inputs(run), config)
     m = run.manifest
-    evaluation = evaluation.model_copy(
-        update={
+    # Revalidate rather than model_copy, so pass-through labels meet RunEvaluation's rules (UTC).
+    evaluation = RunEvaluation.model_validate(
+        evaluation.model_dump()
+        | {
             "period_start": m.period_start,
             "period_end": m.period_end,
             "starting_cash": m.starting_cash,

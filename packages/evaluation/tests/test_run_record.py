@@ -165,3 +165,26 @@ def test_demo_config_registers_the_market_rules():
     ):
         assert rules[version].quantum == Decimal("0.01")
         assert rules[version].rounding == "half_even"
+
+
+@pytest.mark.parametrize("failure", [None, "  "])
+def test_failed_run_without_a_failure_reason_still_evaluates(capfire, failure):
+    # RunRecord v1 allows failure=null even when status is failed.
+    evaluation = evaluate_and_emit(sample() | {"status": "failed", "failure": failure})
+
+    assert evaluation.run_status == "failed"
+    reasons = [e.reason for e in evaluation.period.evidence]
+    assert "run failed: run failed; the record gave no failure reason" in reasons
+
+
+def test_non_utc_period_end_is_a_malformed_record():
+    record = sample()
+    record["manifest"] = record["manifest"] | {"period_end": "2025-07-03T16:00:00-04:00"}
+    with pytest.raises(ValidationError, match="UTC"):
+        evaluate_and_emit(record)
+
+
+def test_sample_evaluation_round_trips_through_json(capfire):
+    evaluation = evaluate_and_emit(sample())
+
+    assert RunEvaluation.model_validate_json(evaluation.model_dump_json()) == evaluation
