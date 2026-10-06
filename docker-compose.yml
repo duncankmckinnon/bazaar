@@ -21,14 +21,42 @@ services:
       timeout: 3s
       retries: 15
 
+  api:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+    command: ["uv", "run", "--no-sync", "--package", "bazaar-agent", "python", "-m", "bazaar_agent.api"]
+    environment:
+      BAZAAR_API_HOST: 0.0.0.0
+      BAZAAR_REGISTRY_DB_PATH: /data/registry.sqlite3
+      BAZAAR_REGISTRY_MODEL_REFS: ${BAZAAR_REGISTRY_MODEL_REFS:-test}
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
+      BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - registry-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   seller:
     <<: *agent
     environment:
       <<: *agent-env
       AGENT_NAME: seller
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
+      BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
 
   buyer:
     <<: *agent
     environment:
       <<: *agent-env
       AGENT_NAME: buyer
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
+      BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
+
+volumes:
+  registry-data:
