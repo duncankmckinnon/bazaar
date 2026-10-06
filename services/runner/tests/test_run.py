@@ -182,3 +182,35 @@ async def test_a_policy_reading_a_future_price_fails_the_run():
     )
     assert result.orders == () and result.marks == ()
     assert result.account.account_id in market.closed
+
+
+async def test_the_driver_never_moves_the_clock_past_period_end(monkeypatch):
+    from datetime import timedelta
+
+    from bazaar_runner import run
+    from bazaar_runner.clock import EventKind, ScheduledEvent, build_schedule
+
+    def one_too_many(script):
+        schedule = build_schedule(script)
+        late = ScheduledEvent(
+            kind=EventKind.MARK,
+            simulated_at=SESSIONS[-1].close_at + timedelta(days=1),
+            event_sequence=len(schedule),
+        )
+        return (*schedule, late)
+
+    monkeypatch.setattr(run, "build_schedule", one_too_many)
+    market = InMemoryMarket()
+    result = await run_strategy(SPEC, market, scripted_policy([]))
+
+    assert result.state is RunState.FAILED
+    assert result.failure_code == "period_overrun"
+    assert result.failure == (
+        "the runner stopped during the mark at 2026-02-14T21:00:00Z (event 20) instead of moving"
+        " the clock past period_end (2026-02-14T21:00:00Z is after 2026-02-13T21:00:00Z)"
+    )
+    cutoffs = [c[1] for c in market.calls if c[0] == "set_cutoff"]
+    assert max(cutoffs) == SESSIONS[-1].close_at
+    # Everything up to the real period_end settled and is kept.
+    assert len(result.marks) == len(SESSIONS)
+    assert result.account.account_id in market.closed

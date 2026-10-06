@@ -37,7 +37,12 @@ Index = Annotated[int, Field(ge=0, strict=True)]
 # The market's error code, or a runner code. T4, evals and Logfire match on it.
 FailureCode = (
     Literal[
-        "approval_denied", "future_data", "runner_unauthorized", "reconcile_failed", "policy_error"
+        "approval_denied",
+        "future_data",
+        "runner_unauthorized",
+        "reconcile_failed",
+        "period_overrun",
+        "policy_error",
     ]
     | ErrorCode
 )
@@ -81,6 +86,10 @@ class DecisionError(WireModel):
     reconciled: Literal["found", "absent"]
 
 
+class PeriodOverrun(Exception):
+    """The driver tried to move the market clock past the run's period_end; never sent."""
+
+
 class ReconcileFailed(Exception):
     """The market's order list could not be read, so the account state is unknown (A9)."""
 
@@ -111,6 +120,8 @@ def failure_code(exc: Exception) -> FailureCode:
         return "runner_unauthorized"
     if isinstance(exc, ReconcileFailed):
         return "reconcile_failed"
+    if isinstance(exc, PeriodOverrun):
+        return "period_overrun"
     if isinstance(exc, MarketError):
         return exc.detail.code
     return "policy_error"
@@ -132,6 +143,8 @@ def describe_failure(
         return sentence
     if isinstance(exc, RunnerUnauthorized):
         return f"the market refused the runner's credential {step}"
+    if isinstance(exc, PeriodOverrun):
+        return f"the runner stopped {step} instead of moving the clock past period_end ({exc})"
     if isinstance(exc, ReconcileFailed):
         return (
             f"the market's order list could not be read {step}, so the account state after"
@@ -236,7 +249,12 @@ async def run_strategy(
     state, failure, code = RunState.RUNNING, None, None
     step = "while opening the run"
 
+    period_end = spec.script.sessions[-1].close_at
+
     async def set_cutoff(cutoff: datetime) -> None:
+        # The schedule ends at period_end; this guards the market clock against any driver bug.
+        if cutoff > period_end:
+            raise PeriodOverrun(f"{utc_z(cutoff)} is after {utc_z(period_end)}")
         await market.set_cutoff(
             spec.experiment_id, cutoff, spec.data_version, spec.execution_rule_version
         )

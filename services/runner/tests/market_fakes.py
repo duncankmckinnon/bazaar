@@ -351,6 +351,25 @@ def delegating_transport(
                         "next_cursor": None,
                     }
                     return httpx.Response(200, json=page)
+                case "GET", ["news", symbol]:
+                    # The HistoryPage the agent's news tool validates; no articles in the fixture.
+                    account = fake.accounts[UUID(request.headers["X-Bazaar-Account"])]
+                    page = {
+                        "experiment_id": str(eid),
+                        "account_id": str(account.account_id),
+                        "agent_id": str(account.agent_id),
+                        "strategy_version_id": str(account.strategy_version_id),
+                        "cutoff_at": utc_z(fake.cutoff),
+                        "start_at": request.url.params["start_at"],
+                        "end_at": request.url.params["end_at"],
+                        "source": "fixture-news",
+                        "data_version": DATA_VERSION,
+                        "coverage": "complete",
+                        "items": [],
+                        "next_cursor": None,
+                    }
+                    fake.calls.append(("news", symbol))
+                    return httpx.Response(200, json=page)
                 case "POST", ["accounts", aid, "close"]:
                     return model_response(200, await fake.close_account(eid, UUID(aid)))
                 case "GET", ["prices", symbol]:
