@@ -256,3 +256,15 @@ def test_a_price_from_after_the_cutoff_is_never_filled(tmp_path):
     with db.read_connection(tmp_path / "market.db") as connection:
         assert connection.execute("SELECT COUNT(*) FROM acct_orders").fetchone()[0] == 0
     assert ledger.account(eid, aid).cash == Decimal("1000.00")
+
+
+def test_order_ids_sort_in_sequence_across_hex_digit_boundaries():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE acct_orders (x)")
+    ids = []
+    for _ in range(300):  # crosses 0xf -> 0x10 and 0xff -> 0x100
+        ids.append(str(Ledger._next_order_id(connection)))
+        connection.execute("INSERT INTO acct_orders VALUES (1)")
+    assert ids == sorted(ids)
+    assert len(set(ids)) == 300
+    assert [int(i.replace("-", "")[:16], 16) for i in ids[14:17]] == [15, 16, 17]
