@@ -49,12 +49,21 @@ class OrderEntry(ReadModel):
     result: OrderOutcome
 
 
+class DecisionError(ReadModel):
+    """A decision the runner reconciled with the market so the run could go on."""
+
+    event_sequence: int
+    decided_at: AwareDatetime
+    error: str
+
+
 class RunRecord(ReadModel):
     manifest: Manifest
     status: Literal["completed", "failed"]
     failure: str | None = None
     failure_code: str | None = None
     orders: tuple[OrderEntry, ...] = ()
+    decision_errors: tuple[DecisionError, ...] = ()
     trace_id: str | None = None
 
 
@@ -99,6 +108,9 @@ class Entry(WireModel):
     period_return: ExactAmount | None = None
     period_status: str | None = None
     not_reconciled: bool = False
+    decision_error_count: int = 0
+    first_decision_error: str | None = None
+    first_decision_error_at: AwareDatetime | None = None
     excess_vs_buy_and_hold: ExactAmount | None = None
     excess_computed: bool = False
     orders_filled: int = 0
@@ -215,6 +227,8 @@ def entry(run: Run, section: Section, **fields: object) -> Entry:
     evaluation = run.evaluation
     scores = Counter(score.status for score in evaluation.trade_scores) if evaluation else Counter()
     period = evaluation.period if evaluation else None
+    errors = run.record.decision_errors
+    first_error = min(errors, key=lambda e: e.event_sequence) if errors else None
     return Entry(
         run_id=run.run_id,
         section=section,
@@ -225,6 +239,9 @@ def entry(run: Run, section: Section, **fields: object) -> Entry:
         period_return=period and period.period_return,
         period_status=period and period.status,
         not_reconciled=period is not None and not period.reconciled,
+        decision_error_count=len(errors),
+        first_decision_error=first_error and first_error.error,
+        first_decision_error_at=first_error and first_error.decided_at,
         orders_filled=orders["filled"],
         orders_rejected=orders["rejected"],
         trade_scores={status: scores[status] for status in (*SCORE_STATUSES, *scores)},

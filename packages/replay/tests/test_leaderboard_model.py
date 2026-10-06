@@ -12,7 +12,7 @@ def test_sections_keep_every_run(tmp_path, demo_runs):
     demo_runs(tmp_path)
     board = load_board(tmp_path)
 
-    assert ids(board.ranked) == ["agent", "bh", "cash", "null-return"]
+    assert ids(board.ranked) == ["agent", "bh", "cash", "flaky", "null-return"]
     assert ids(board.failed) == ["crashed", "refused"]
     assert ids(board.not_comparable) == ["other-period"]
     assert ids(board.invalid) == ["no-eval"]
@@ -233,3 +233,39 @@ def test_refused_buy_and_hold_still_compares_evaluator_versions(tmp_path, write_
     )
     assert board.reference_run_id == "a-bh"
     assert board.ranked[0].excess_vs_buy_and_hold is None
+
+
+def test_record_without_decision_errors_has_none(tmp_path, demo_runs):
+    demo_runs(tmp_path)
+    agent = {e.run_id: e for e in load_board(tmp_path).ranked}["agent"]
+
+    assert agent.decision_error_count == 0
+    assert agent.first_decision_error is None
+
+
+def test_decision_errors_keep_the_run_ranked_and_report_the_first(tmp_path, demo_runs):
+    demo_runs(tmp_path)
+    board = load_board(tmp_path)
+    flaky = {e.run_id: e for e in board.ranked}["flaky"]
+
+    assert flaky.section is Section.RANKED
+    assert flaky.decision_error_count == 2
+    assert flaky.first_decision_error == "order rejected: market_closed"
+    assert flaky.first_decision_error_at.isoformat() == "2026-02-03T14:30:00+00:00"
+
+
+def test_failed_run_with_decision_errors_stays_failed(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "crashed",
+        policy_ref="scripted-momentum-v1",
+        period_return=None,
+        status="failed",
+        failure="policy raised",
+        failure_code="policy_error",
+        decision_errors=((2, "2026-02-03T14:30:00Z", "decide timed out"),),
+    )
+    board = load_board(tmp_path)
+
+    assert ids(board.failed) == ["crashed"]
+    assert board.ranked == ()

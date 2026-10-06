@@ -34,6 +34,7 @@ tr.reference td { background: #eef3fb; }
   margin-left: 4px; font-weight: 400; }
 code { font-size: 13px; user-select: all; -webkit-user-select: all; background: #eee;
   padding: 2px 4px; border-radius: 4px; }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
 section { margin-top: 10px; font-size: 16px; }
 h2 { font-size: 16px; margin: 0 0 2px; }
 ul { margin: 0; padding-left: 22px; }
@@ -56,6 +57,8 @@ def strategy(entry: Entry) -> str:
     cell = f'{name}<span class="sub">{escape(version + reference).lstrip(" ·")}</span>'
     if entry.not_reconciled:
         cell += '<span class="warn">⚠ not reconciled</span>'
+    if entry.decision_error_count:
+        cell += f'<span class="warn">⚠ decision errors: {entry.decision_error_count}</span>'
     return cell
 
 
@@ -101,6 +104,14 @@ def failure(entry: Entry) -> str:
     return f"{entry.failure_code}: {reason}" if entry.failure_code else reason
 
 
+def decision_errors(rank: int, entry: Entry) -> str:
+    n = entry.decision_error_count
+    errors = f"{n} decision error{'s' if n != 1 else ''}"
+    at = f"{entry.first_decision_error_at:%Y-%m-%d %H:%M} UTC"
+    first = escape(entry.first_decision_error or "")
+    return f"#{rank} {escape(entry.policy_ref or entry.run_id)}: {errors}; first at {at}: {first}"
+
+
 def side_list(title: str, items: list[str]) -> str:
     if not items:
         return ""
@@ -133,6 +144,14 @@ def render(board: Leaderboard) -> str:
     body = "".join(row(rank, entry) for rank, entry in enumerate(board.ranked, start=1))
     sides = (
         side_list(
+            "Decision errors",
+            [
+                decision_errors(rank, e)
+                for rank, e in enumerate(board.ranked, start=1)
+                if e.decision_error_count
+            ],
+        )
+        + side_list(
             "Refused / failed",
             [f"{escape(e.policy_ref or e.run_id)}: {escape(failure(e))}" for e in board.failed],
         )
@@ -154,7 +173,7 @@ def render(board: Leaderboard) -> str:
         f"<style>{CSS}</style></head><body>"
         f"<h1>Agent Leaderboard</h1>{header_line(board)}"
         f"<table><thead>{head}</thead><tbody>{body}</tbody></table>"
-        f"{sides}<footer>{FOOTER}</footer></body></html>\n"
+        f'<div class="sides">{sides}</div><footer>{FOOTER}</footer></body></html>\n'
     )
 
 
