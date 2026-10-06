@@ -28,7 +28,7 @@ from bazaar_protocol import (
     Version,
     WireModel,
 )
-from bazaar_protocol.research import OrderHistoryPage
+from bazaar_protocol.research import AccountHistoryPage, OrderHistoryPage, PortfolioHistoryPage
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime
@@ -216,6 +216,47 @@ def build_routers(
             items=[((r.account.simulated_at, str(r.order_id)), r) for r in results],
         )
 
+    @router.get("/experiments/{experiment_id}/accounts/{account_id}/history")
+    def account_history(
+        experiment_id: UUID,
+        account_id: UUID,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        limit: str = "100",
+        cursor: str | None = None,
+    ) -> AccountHistoryPage:
+        request = parse_history_request(start_at, end_at, limit, cursor)
+        scope, states = ledger.account_history(experiment_id, account_id)
+        return build_page(
+            AccountHistoryPage,
+            scope,
+            request,
+            route="account-history",
+            source=ORDER_HISTORY_SOURCE,
+            items=[(_snapshot_key(state), state) for state in states],
+        )
+
+    @router.get("/experiments/{experiment_id}/accounts/{account_id}/portfolio/history")
+    def portfolio_history(
+        experiment_id: UUID,
+        account_id: UUID,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        limit: str = "100",
+        cursor: str | None = None,
+    ) -> PortfolioHistoryPage:
+        request = parse_history_request(start_at, end_at, limit, cursor)
+        scope, valuations = ledger.portfolio_history(experiment_id, account_id)
+        return build_page(
+            PortfolioHistoryPage,
+            scope,
+            request,
+            route="portfolio-history",
+            source=ORDER_HISTORY_SOURCE,
+            items=[(_snapshot_key(v), v) for v in valuations or ()],
+            coverage="complete" if valuations is not None else "missing",
+        )
+
     @control.post("/experiments/{experiment_id}/accounts/{account_id}/close")
     def close_account(experiment_id: UUID, account_id: UUID) -> AccountSnapshot:
         return ledger.close_account(experiment_id, account_id)
@@ -225,6 +266,14 @@ def build_routers(
         return ledger.portfolio(experiment_id, account_id)
 
     return router, control
+
+
+def _snapshot_key(snapshot: AccountSnapshot | PortfolioSnapshot) -> tuple[datetime, str]:
+    """The client's key for snapshots: simulated time plus state version."""
+    return (
+        snapshot.simulated_at,
+        f"{snapshot.simulated_at.isoformat()}:{snapshot.state_version:020d}",
+    )
 
 
 def install(app: FastAPI, ledger: Ledger, grants: GrantChecker, runner_token: str | None) -> None:

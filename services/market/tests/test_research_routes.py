@@ -256,3 +256,76 @@ async def test_an_order_placed_while_paging_is_not_skipped(run):
     assert first.error is None and rest.error is None
     returned = [str(item.order_id) for item in (*first.data.items, *rest.data.items)]
     assert returned == [*(p["order_id"] for p in placed), late["order_id"]]
+
+
+def trade_three_days(run: Run) -> None:
+    run.order("buy", "2")  # D1 at 100: cash 800, state 1
+    run.order("buy", "100")  # rejected: no new state
+    run.cutoff(D2)
+    run.order("sell", "1")  # D2 at 105: cash 905, state 2
+    run.cutoff(D3)
+    run.order("buy", "3", symbol="KO")  # D3 at 62: cash 719, state 3
+
+
+async def test_account_history_is_the_creation_then_each_fill(run):
+    trade_three_days(run)
+    tools, client = run.tools()
+    async with client:
+        first = await tools.account_history(window(run, limit=2))
+        rest = await tools.account_history(window(run, limit=2, cursor=first.data.next_cursor))
+    assert first.error is None and rest.error is None
+    states = [*first.data.items, *rest.data.items]
+    assert [(s.state_version, str(s.cash)) for s in states] == [
+        (0, "1000.00"),
+        (1, "800.00"),
+        (2, "905.00"),
+        (3, "719.00"),
+    ]
+    assert [s.simulated_at for s in states] == [
+        close_at(D1),
+        close_at(D1),
+        close_at(D2),
+        close_at(D3),
+    ]
+    assert {h.symbol: str(h.quantity) for h in states[-1].holdings} == {"AAPL": "1", "KO": "3"}
+
+
+async def test_portfolio_history_values_each_cutoff_with_that_cutoffs_marks(run):
+    trade_three_days(run)
+    tools, client = run.tools()
+    async with client:
+        result = await tools.portfolio_history(window(run))
+        later = await tools.portfolio_history(window(run, start=D2))
+    assert result.error is None and later.error is None
+    values = [(v.simulated_at, v.state_version, str(v.portfolio_value)) for v in result.data.items]
+    assert values == [
+        (close_at(D1), 1, "1000.00"),  # 800 + 2 x 100
+        (close_at(D2), 2, "1010.00"),  # 905 + 1 x 105
+        (close_at(D3), 3, "1015.00"),  # 719 + 1 x 110 + 3 x 62
+    ]
+    for valuation in result.data.items:
+        assert valuation.valuation_rule_version == "value-v1"
+        assert all(h.mark_available_at <= valuation.simulated_at for h in valuation.holdings)
+    assert [v.simulated_at for v in later.data.items] == [close_at(D2), close_at(D3)]
+
+
+async def test_portfolio_history_stops_at_the_close(run):
+    run.order("buy", "2")
+    run.cutoff(D2)
+    run.http.post(f"{run.base}/close", headers=run.runner_headers)
+    run.cutoff(D3)
+    tools, client = run.tools()
+    async with client:
+        result = await tools.portfolio_history(window(run))
+    assert result.error is None
+    assert [v.simulated_at for v in result.data.items] == [close_at(D1), close_at(D2)]
+
+
+async def test_portfolio_history_reports_an_incomplete_cutoff_record_as_missing(run):
+    run.cutoff(D2)
+    with closing(sqlite3.connect(run.app.state.market_db_path)) as connection, connection:
+        connection.execute("UPDATE acct_experiments SET cutoff_seq = cutoff_seq + 1")
+    tools, client = run.tools()
+    async with client:
+        result = await tools.portfolio_history(window(run))
+    assert (result.data, result.error.code) == (None, "missing_data")
