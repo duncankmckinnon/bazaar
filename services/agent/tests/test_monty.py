@@ -351,6 +351,63 @@ async def test_invalid_worker_response_is_fatal_boundary(monkeypatch):
     assert result.data.output_json is None
 
 
+async def test_builtin_default_calculator_uses_initial_api_state():
+    model, calls = script(
+        [ToolCallPart("monty_calculate", {"code": "inputs['portfolio']['portfolio_value']"})],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(model)
+    assert result.error is None and result.decision.action == "hold"
+    assert len(result.calculations) == 1 and len(calls) == 2 and not requests
+    from .test_research import portfolio
+
+    assert json.loads(result.calculations[0].output_json) == portfolio()["portfolio_value"]
+    assert json.loads(result.calculations[0].inputs_json)["prices"] == []
+
+
+async def test_injected_calculation_cash_fails_before_model():
+    from bazaar_protocol import AccountSnapshot
+
+    from .test_research import account
+
+    calc = MontyCalculator(
+        CalculationSnapshot(
+            context=context().experiment,
+            account=AccountSnapshot.model_validate(account(cash="99999999")),
+        )
+    )
+    model, calls = script(lambda info: [output(info)])
+    result, requests = await invoke(model, overrides={"calculator": calc})
+    assert result.error.code == "invalid_request" and not calls and not requests
+    assert not calc.records
+
+
+async def test_fixed_snapshot_does_not_ingest_model_or_research_arrays():
+    from .test_trading import query
+
+    model, _ = script(
+        [ToolCallPart("prices", query())],
+        [ToolCallPart("monty_calculate", {"code": "len(inputs['prices'])"})],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(model, payload=prices())
+    assert result.error is None and len(requests) == 1
+    assert json.loads(result.calculations[0].output_json) == 0
+
+
+async def test_calculator_context_failure_stops_before_model():
+    from uuid import UUID
+
+    calc = MontyCalculator(
+        CalculationSnapshot(
+            context=context().experiment.model_copy(update={"account_id": UUID(int=999)}),
+        )
+    )
+    model, calls = script(lambda info: [output(info)])
+    result, _ = await invoke(model, overrides={"calculator": calc})
+    assert result.error.code == "invalid_request" and not calls and not calc.records
+
+
 async def test_invalid_unicode_code_is_recorded_privately(capfire):
     calc = calculator()
     result = await calc.monty_calculate("'\ud800'")

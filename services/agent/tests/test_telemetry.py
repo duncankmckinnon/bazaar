@@ -11,9 +11,7 @@ def test_registry_traces_operations_database_and_http_without_payloads(tmp_path,
         payload = {
             "name": "Monitored Agent",
             "definition": {
-                "model_ref": "test",
                 "instructions": "PRIVATE-INSTRUCTIONS-12345",
-                "artifact_ref": "https://example.invalid/PRIVATE-ARTIFACT-12345",
             },
         }
         headers = {"Idempotency-Key": key, "Authorization": "Bearer PRIVATE-TOKEN-12345"}
@@ -27,6 +25,19 @@ def test_registry_traces_operations_database_and_http_without_payloads(tmp_path,
             headers={"Idempotency-Key": str(uuid4())},
         )
         assert version.status_code == 201
+        # Rejected runtime fields must remain payload-safe too.
+        rejected = client.post(
+            "/strategies",
+            json={
+                **payload,
+                "definition": {
+                    **payload["definition"],
+                    "artifact_ref": "https://example.invalid/PRIVATE-ARTIFACT-12345",
+                },
+            },
+            headers={"Idempotency-Key": str(uuid4())},
+        )
+        assert rejected.status_code == 422
         assert client.get("/agents").status_code == 200
     spans = capfire.exporter.exported_spans_as_dict()
     names = {span["name"] for span in spans}
@@ -60,7 +71,7 @@ def test_validation_and_conflict_events_are_monitored(tmp_path, capfire):
     with TestClient(create_app(database_path=tmp_path / "registry.db")) as client:
         invalid = client.post("/strategies", json={"credentials": "PRIVATE-BAD-PAYLOAD"})
         assert invalid.status_code == 422
-        body = {"name": "one", "definition": {"model_ref": "test", "instructions": "Trade"}}
+        body = {"name": "one", "definition": {"instructions": "Trade"}}
         assert (
             client.post(
                 "/strategies", json=body, headers={"Idempotency-Key": str(uuid4())}

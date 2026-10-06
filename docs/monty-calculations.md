@@ -7,7 +7,10 @@ The harness exposes two built-in model-callable tools, independently of strategy
   expression is the result, which must be JSON-serializable.
 
 The model supplies **code only**, not a dataset, account identity, clock, filesystem
-path, URL or host callback. The runner supplies a `MontyCalculator` to `run_decision`.
+path, URL or host callback. By default `run_decision` creates a fresh `MontyCalculator`
+from its protected market account/portfolio reads. A runner may supply a calculator
+with additional trusted historical prices; financial snapshots must match the initial
+API reads exactly (missing snapshots are filled from those reads).
 There is no Monty strategy flag or Monty-specific harness. Trusted harness/runner
 configuration owns the model and eligible data. Models remain local injected
 PydanticAI fixtures; Gateway binding is separate work.
@@ -28,7 +31,8 @@ calculator = MontyCalculator(CalculationSnapshot(
 ```
 
 `inputs` is a JSON-compatible dictionary containing `context`, `prices`, `account`
-and `portfolio`. Optional account/portfolio values can be null. Histories contain
+and `portfolio`. In standalone calculator use optional account/portfolio values can
+be null; the decision harness binds both from API state. Histories contain
 ordered `observations`; prices, cash, quantities and marks retain the wire contract's
 Decimal strings. Dates retain their historical UTC timestamps. The model can convert
 strings to numbers for analytics; market accounting never uses these calculations.
@@ -58,7 +62,10 @@ Snapshots are revalidated, including objects constructed with Pydantic validatio
 bypasses. Experiment/account/agent/version identity, data version and historical
 cutoffs must agree; account and portfolio state must agree when both are supplied.
 The entire context must match the trading decision. Each decision requires a fresh
-calculator, so audit trails cannot accidentally combine separate decisions.
+calculator, so audit trails cannot accidentally combine separate decisions. The
+`CalculationSnapshot` DTO is the trusted fixed-data seam; newly fetched research is
+not automatically ingested. Dynamic research-to-calculator binding remains a runner
+integration gap. No model-supplied arrays are accepted as authoritative data.
 
 ## Execution and failures
 
