@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -17,7 +17,7 @@ from bazaar_protocol import (
 from pydantic import AwareDatetime
 
 from bazaar_evaluation._base import EvaluationModel
-from bazaar_evaluation.config import EvaluatorConfig
+from bazaar_evaluation.config import CashRoundingRule, EvaluatorConfig
 from bazaar_evaluation.inputs import RunEvidence
 from bazaar_evaluation.results import Evidence, ScoreStatus, TradeScore
 
@@ -49,7 +49,8 @@ class _Lot:
 
 
 class _Book:
-    def __init__(self, account: AccountSnapshot) -> None:
+    def __init__(self, account: AccountSnapshot, rule: CashRoundingRule) -> None:
+        self.rule = rule
         self.cash = account.cash
         self.lots: dict[str, list[_Lot]] = {}
         self.resync(account)
@@ -58,16 +59,25 @@ class _Book:
         held = {s: sum((lot.quantity for lot in lots), Decimal(0)) for s, lots in self.lots.items()}
         return {s: q for s, q in held.items() if q}
 
+    def cash_delta(self, amount: Decimal) -> Decimal:
+        """Round one fill's cash movement under the run's execution rule."""
+        quantum = self.rule.quantum
+        if quantum is None:
+            return amount
+        mode = ROUND_HALF_EVEN if self.rule.rounding == "half_even" else ROUND_HALF_UP
+        return (amount / quantum).quantize(Decimal(1), rounding=mode) * quantum
+
     def buy(self, fill: FilledOrder) -> None:
-        cost = fill.quantity * fill.unit_price + fill.fee
+        cost = self.cash_delta(fill.quantity * fill.unit_price + fill.fee)
         self.cash -= cost
         self.lots.setdefault(fill.symbol, []).append(
             _Lot(fill.quantity, cost, fill.order_id, fill.executed_at)
         )
 
-    def sell(self, fill: FilledOrder) -> tuple[Decimal | None, Decimal]:
-        """Close lots FIFO; return (closed cost basis or None if unknown, shares not covered)."""
-        self.cash += fill.quantity * fill.unit_price - fill.fee
+    def sell(self, fill: FilledOrder) -> tuple[Decimal, Decimal | None, Decimal]:
+        """Close lots FIFO; return (net proceeds, closed basis or None if unknown, uncovered)."""
+        proceeds = self.cash_delta(fill.quantity * fill.unit_price - fill.fee)
+        self.cash += proceeds
         lots = self.lots.get(fill.symbol, [])
         remaining = fill.quantity
         basis: Decimal | None = Decimal(0)
@@ -89,7 +99,7 @@ class _Book:
             remaining -= closed
             if not lot.quantity:
                 lots.pop(0)
-        return basis, remaining
+        return proceeds, basis, remaining
 
     def resync(self, account: AccountSnapshot) -> None:
         """Adopt the ledger's state; shares the replay cannot explain get an unknown basis."""
@@ -164,34 +174,43 @@ def replay_ledger(evidence: RunEvidence, config: EvaluatorConfig) -> LedgerRepla
 
     if config.lot_method != "fifo":
         reason = f"lot_method {config.lot_method} needs lot ids, which fills do not carry"
-        return LedgerReplay(
-            trade_scores=tuple(score(o, ScoreStatus.UNSUPPORTED, reason) for o in evidence.orders),
-            open_lots=(),
-        )
+        return _all_unsupported(evidence, reason, score)
+    context = evidence.context
+    rule = config.execution_rules.get(context.execution_rule_version)
+    if rule is None:
+        reason = f"unknown execution rule {context.execution_rule_version}"
+        return _all_unsupported(evidence, reason, score)
 
-    book = _Book(evidence.opening_account)
+    book = _Book(evidence.opening_account, rule)
     scores = []
     for order in evidence.orders:
         if isinstance(order, RejectedOrder):
-            scores.append(
-                score(order, ScoreStatus.UNSUPPORTED, f"order rejected: {order.error.code}")
-            )
+            if drift := book.mismatch(order.account):
+                book.resync(order.account)
+                scores.append(score(order, ScoreStatus.FAILED, f"rejection snapshot {drift}"))
+            else:
+                reason = f"order rejected: {order.error.code}"
+                scores.append(score(order, ScoreStatus.UNSUPPORTED, reason))
             continue
+        problems = [
+            f"fill {field} {getattr(order, field)} differs from context {getattr(context, field)}"
+            for field in ("data_version", "execution_rule_version")
+            if getattr(order, field) != getattr(context, field)
+        ]
         if order.side == OrderSide.BUY:
             book.buy(order)
             uncovered, realized, closed = Decimal(0), Decimal(0), Decimal(0)
         else:
-            basis, uncovered = book.sell(order)
+            proceeds, basis, uncovered = book.sell(order)
             closed = order.quantity
-            proceeds = order.quantity * order.unit_price - order.fee
             realized = None if basis is None else proceeds - basis
         if mismatch := book.mismatch(order.account):
+            problems.append(mismatch)
+        if uncovered:
+            problems.append(f"sold {uncovered} more shares than held")
+        if problems:
             book.resync(order.account)
-            scores.append(score(order, ScoreStatus.FAILED, mismatch, fee=order.fee))
-        elif uncovered:
-            scores.append(
-                score(order, ScoreStatus.FAILED, f"sold {uncovered} more shares than held")
-            )
+            scores.append(score(order, ScoreStatus.FAILED, "; ".join(problems), fee=order.fee))
         elif realized is None:
             reason = "cost basis unknown for shares from the opening account or a ledger resync"
             scores.append(score(order, ScoreStatus.UNSUPPORTED, reason, fee=order.fee))
@@ -206,3 +225,8 @@ def replay_ledger(evidence: RunEvidence, config: EvaluatorConfig) -> LedgerRepla
                 )
             )
     return LedgerReplay(trade_scores=tuple(scores), open_lots=book.open_lots())
+
+
+def _all_unsupported(evidence: RunEvidence, reason: str, score) -> LedgerReplay:
+    trade_scores = tuple(score(o, ScoreStatus.UNSUPPORTED, reason) for o in evidence.orders)
+    return LedgerReplay(trade_scores=trade_scores, open_lots=())

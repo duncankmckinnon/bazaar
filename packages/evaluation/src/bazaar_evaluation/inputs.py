@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Self
 
 from bazaar_protocol import (
     AccountSnapshot,
+    ExperimentContext,
     NonNegativeAmount,
     OrderResult,
     PositiveAmount,
@@ -103,8 +104,9 @@ class InferenceSpend(EvaluationModel):
 
 
 class RunEvidence(EvaluationModel):
-    """One run's ledger evidence; run ids come from the opening account."""
+    """One run's ledger evidence under its trusted experiment context."""
 
+    context: ExperimentContext
     opening_account: AccountSnapshot
     orders: tuple[OrderResult, ...] = ()
     corporate_actions: tuple[CorporateAction, ...] = ()
@@ -113,6 +115,9 @@ class RunEvidence(EvaluationModel):
     @model_validator(mode="after")
     def orders_belong_to_run_in_time_order(self) -> Self:
         opening = self.opening_account
+        for field in ("experiment_id", "account_id", "agent_id", "strategy_version_id"):
+            if getattr(self.context, field) != getattr(opening, field):
+                raise ValueError(f"context {field} must match the opening account")
         for order in self.orders:
             if (order.account.account_id, order.account.experiment_id) != (
                 opening.account_id,

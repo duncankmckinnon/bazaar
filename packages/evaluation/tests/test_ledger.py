@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 from bazaar_evaluation import (
+    CashRoundingRule,
     EvaluatorConfig,
     OpenLot,
     RunEvidence,
@@ -16,6 +17,7 @@ from bazaar_protocol import (
     AccountSnapshot,
     ErrorCode,
     ExecutionErrorDetail,
+    ExperimentContext,
     FilledOrder,
     Holding,
     RejectedOrder,
@@ -27,7 +29,8 @@ AGENT = UUID("00000000-0000-0000-0000-000000000002")
 EXPERIMENT = UUID("00000000-0000-0000-0000-000000000003")
 STRATEGY = UUID("00000000-0000-0000-0000-000000000004")
 OPEN = datetime(2025, 7, 1, 13, 30, tzinfo=UTC)
-CONFIG = EvaluatorConfig(evaluator_version="evals-v1")
+EXACT = {"immediate-v1": CashRoundingRule(quantum=None)}
+CONFIG = EvaluatorConfig(evaluator_version="evals-v1", execution_rules=EXACT)
 
 
 def order_id(n):
@@ -59,7 +62,18 @@ class Run:
         self.orders = []
         self.ids = count(1)
 
-    def fill(self, side, quantity, price, cash, holdings, fee="0", symbol="AAPL"):
+    def fill(
+        self,
+        side,
+        quantity,
+        price,
+        cash,
+        holdings,
+        fee="0",
+        symbol="AAPL",
+        data_version="fixture-v1",
+        execution_rule_version="immediate-v1",
+    ):
         n = next(self.ids)
         self.orders.append(
             FilledOrder(
@@ -74,8 +88,8 @@ class Run:
                 price_observed_at=at(n),
                 price_available_at=at(n),
                 price_source="fixture",
-                data_version="fixture-v1",
-                execution_rule_version="immediate-v1",
+                data_version=data_version,
+                execution_rule_version=execution_rule_version,
                 account=snapshot(at(n), cash, holdings, n),
             )
         )
@@ -98,7 +112,18 @@ class Run:
         return self
 
     def evidence(self):
-        return RunEvidence(opening_account=self.opening, orders=tuple(self.orders))
+        context = ExperimentContext(
+            experiment_id=EXPERIMENT,
+            agent_id=AGENT,
+            account_id=ACCOUNT,
+            strategy_version_id=STRATEGY,
+            approval_id=UUID(int=99),
+            simulated_at=OPEN,
+            event_sequence=0,
+            data_version="fixture-v1",
+            execution_rule_version="immediate-v1",
+        )
+        return RunEvidence(context=context, opening_account=self.opening, orders=tuple(self.orders))
 
 
 def scores(run, config=CONFIG):
@@ -258,7 +283,9 @@ def test_opening_holdings_without_basis_make_their_sale_unsupported():
 def test_specific_lot_config_marks_every_order_unsupported():
     run = Run().fill("buy", "10", "200", "8000", [("AAPL", "10")])
     run.fill("sell", "10", "220", "10200", [])
-    config = EvaluatorConfig(evaluator_version="evals-v1", lot_method="specific_lot")
+    config = EvaluatorConfig(
+        evaluator_version="evals-v1", lot_method="specific_lot", execution_rules=EXACT
+    )
     replay = scores(run, config)
 
     assert [s.status for s in replay.trade_scores] == [ScoreStatus.UNSUPPORTED] * 2
@@ -294,3 +321,91 @@ def test_ledger_that_allows_overselling_fails_the_sell():
 
     assert sell.status == ScoreStatus.FAILED
     assert "more shares than held" in sell.evidence[0].reason
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("data_version", "fixture-v2"), ("execution_rule_version", "next-open-v1")],
+)
+def test_version_mismatch_fails_that_fill_and_later_fills_score(field, value):
+    # Buy 10 @ 200 fee 1 -> 10000 - 2001 = 7999, under a version the context did not declare.
+    # Sell 10 @ 220 -> 7999 + 2200 = 10199 under the declared versions.
+    run = Run().fill("buy", "10", "200", "7999", [("AAPL", "10")], fee="1", **{field: value})
+    run.fill("sell", "10", "220", "10199", [])
+    buy, sell = scores(run).trade_scores
+
+    assert buy.status == ScoreStatus.FAILED
+    assert buy.fee == 1
+    assert value in buy.evidence[0].reason and field in buy.evidence[0].reason
+    assert sell.status == ScoreStatus.SCORED
+    assert sell.realized_pnl == 199  # 2200 - (2000 + 1 buy fee)
+
+
+def test_rejected_order_with_drifted_snapshot_fails_with_both_states():
+    # Buy 10 @ 200 -> 8000, but the rejection then reports cash 7500: drift, so failed.
+    # Replay adopts 7500. Sell 10 @ 220 -> 7500 + 2200 = 9700; realized 200.
+    run = Run().fill("buy", "10", "200", "8000", [("AAPL", "10")])
+    run.reject("buy", "1000", "7500", [("AAPL", "10")], symbol="MSFT")
+    run.fill("sell", "10", "220", "9700", [])
+    _, rejected, sell = scores(run).trade_scores
+
+    assert rejected.status == ScoreStatus.FAILED
+    assert "8000" in rejected.evidence[0].reason and "7500" in rejected.evidence[0].reason
+    assert rejected.fee is None
+    assert sell.status == ScoreStatus.SCORED
+    assert sell.realized_pnl == 200
+
+
+def test_mismatch_and_oversell_failures_both_carry_the_fee():
+    mismatch = Run().fill("buy", "10", "200", "7990", [("AAPL", "10")], fee="3")
+    oversell = Run().fill("buy", "5", "200", "9000", [("AAPL", "5")])
+    oversell.fill("sell", "10", "220", "11198", [], fee="2")
+
+    assert scores(mismatch).trade_scores[0].fee == 3
+    failed = scores(oversell).trade_scores[1]
+    assert failed.status == ScoreStatus.FAILED
+    assert failed.fee == 2
+
+
+@pytest.mark.parametrize(
+    ("rule", "status"),
+    [
+        (CashRoundingRule(quantum=None), ScoreStatus.FAILED),
+        (CashRoundingRule(quantum="0.01", rounding="half_even"), ScoreStatus.SCORED),
+        (CashRoundingRule(quantum="0.01", rounding="half_up"), ScoreStatus.FAILED),
+    ],
+)
+def test_execution_rule_rounds_each_fill_cash_delta(rule, status):
+    # Buy 0.5 @ 200.01 = 100.005. Half-even to the cent gives 100.00 -> cash 9900.00, which the
+    # ledger reports. Exact (9899.995) and half-up (100.01 -> 9899.99) both disagree.
+    run = Run().fill("buy", "0.5", "200.01", "9900.00", [("AAPL", "0.5")])
+    config = EvaluatorConfig(evaluator_version="v1", execution_rules={"immediate-v1": rule})
+    (buy,) = scores(run, config).trade_scores
+
+    assert buy.status == status
+
+
+def test_rounded_cost_is_the_lot_basis_so_realized_matches_cash():
+    # Half-even cents. Buy 0.5 @ 200.01: cost 100.005 -> 100.00, cash 9900.00, basis 100.00.
+    # Sell 0.5 @ 210.03: proceeds 105.015 -> 105.02 (half-even: 1 is odd, rounds up),
+    # cash 10005.02. Realized = 105.02 - 100.00 = 5.02 = cash change 10005.02 - 10000.
+    run = Run().fill("buy", "0.5", "200.01", "9900.00", [("AAPL", "0.5")])
+    run.fill("sell", "0.5", "210.03", "10005.02", [])
+    rule = CashRoundingRule(quantum="0.01", rounding="half_even")
+    config = EvaluatorConfig(evaluator_version="v1", execution_rules={"immediate-v1": rule})
+    _, sell = scores(run, config).trade_scores
+
+    assert sell.status == ScoreStatus.SCORED
+    assert sell.realized_pnl == Decimal("5.02")
+
+
+def test_unknown_execution_rule_makes_every_order_unsupported():
+    run = Run().fill("buy", "10", "200", "8000", [("AAPL", "10")])
+    run.reject("buy", "1000", "8000", [("AAPL", "10")], symbol="MSFT")
+    config = EvaluatorConfig(evaluator_version="v1", execution_rules={})
+    replay = scores(run, config)
+
+    assert [s.status for s in replay.trade_scores] == [ScoreStatus.UNSUPPORTED] * 2
+    assert all(
+        s.evidence[0].reason == "unknown execution rule immediate-v1" for s in replay.trade_scores
+    )

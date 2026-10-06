@@ -5,6 +5,7 @@ import pytest
 from bazaar_evaluation import (
     CashAcquisition,
     CashDividend,
+    CashRoundingRule,
     Denominator,
     EvaluationTimeline,
     EvaluatorConfig,
@@ -23,6 +24,7 @@ from bazaar_protocol import (
     AccountSnapshot,
     ErrorCode,
     ExecutionErrorDetail,
+    ExperimentContext,
     FilledOrder,
     Holding,
     PriceObservation,
@@ -52,6 +54,21 @@ def account(**updates):
         "cash": "10000",
     }
     return AccountSnapshot(**(values | updates))
+
+
+def context(**updates):
+    values = {
+        "experiment_id": EXPERIMENT,
+        "agent_id": AGENT,
+        "account_id": ACCOUNT,
+        "strategy_version_id": STRATEGY,
+        "approval_id": UUID("00000000-0000-0000-0000-00000000000a"),
+        "simulated_at": OPEN,
+        "event_sequence": 0,
+        "data_version": "fixture-v1",
+        "execution_rule_version": "immediate-v1",
+    }
+    return ExperimentContext(**(values | updates))
 
 
 def filled():
@@ -114,7 +131,9 @@ def timeline(observations, **updates):
 
 
 def test_run_evidence_accepts_mixed_filled_and_rejected_orders():
-    evidence = RunEvidence(opening_account=account(), orders=(filled(), rejected()))
+    evidence = RunEvidence(
+        context=context(), opening_account=account(), orders=(filled(), rejected())
+    )
 
     assert [o.status for o in evidence.orders] == ["filled", "rejected"]
     assert evidence.corporate_actions == ()
@@ -124,13 +143,26 @@ def test_run_evidence_accepts_mixed_filled_and_rejected_orders():
 
 def test_run_evidence_rejects_orders_out_of_time_order():
     with pytest.raises(ValidationError, match="ordered"):
-        RunEvidence(opening_account=account(), orders=(rejected(), filled()))
+        RunEvidence(context=context(), opening_account=account(), orders=(rejected(), filled()))
 
 
 def test_run_evidence_rejects_an_order_from_another_account():
-    other = account(account_id=UUID("00000000-0000-0000-0000-000000000009"))
+    other = UUID("00000000-0000-0000-0000-000000000009")
     with pytest.raises(ValidationError, match="account"):
-        RunEvidence(opening_account=other, orders=(filled(),))
+        RunEvidence(
+            context=context(account_id=other),
+            opening_account=account(account_id=other),
+            orders=(filled(),),
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["experiment_id", "account_id", "agent_id", "strategy_version_id"]
+)
+def test_run_evidence_rejects_context_that_disagrees_with_opening_account(field):
+    other = UUID("00000000-0000-0000-0000-000000000009")
+    with pytest.raises(ValidationError, match=field):
+        RunEvidence(context=context(**{field: other}), opening_account=account())
 
 
 def test_inference_spend_rejects_float_usd_and_non_utc_time():
@@ -227,7 +259,7 @@ def test_config_requires_evaluator_version():
     config = EvaluatorConfig(evaluator_version="evals-v1")
     assert config.lot_method == "fifo"
     assert config.horizons == ()
-    assert config.baseline_symbols == ()
+    assert config.execution_rules == {}
 
 
 def test_config_rejects_unknown_lot_method():
@@ -242,11 +274,35 @@ def test_config_rejects_non_positive_horizons(horizon):
         EvaluatorConfig(evaluator_version="evals-v1", horizons=(timedelta(days=1), horizon))
 
 
+def test_config_rejects_duplicate_horizons():
+    with pytest.raises(ValidationError, match="unique"):
+        EvaluatorConfig(evaluator_version="v1", horizons=(timedelta(days=1), timedelta(hours=24)))
+
+
+def test_config_has_no_baseline_symbols():
+    with pytest.raises(ValidationError, match="baseline_symbols"):
+        EvaluatorConfig(evaluator_version="v1", baseline_symbols=("AAPL",))
+
+
+def test_cash_rounding_rule_validates_quantum_and_mode():
+    assert CashRoundingRule(quantum=None).rounding == "half_even"
+    for quantum in ("0", "-0.01"):
+        with pytest.raises(ValidationError):
+            CashRoundingRule(quantum=quantum)
+    with pytest.raises(ValidationError, match="decimal strings"):
+        CashRoundingRule(quantum=0.01)
+    with pytest.raises(ValidationError, match="rounding"):
+        CashRoundingRule(quantum="0.01", rounding="down")
+
+
 def test_config_round_trips_through_json():
     config = EvaluatorConfig(
         evaluator_version="evals-v1",
         horizons=(timedelta(days=1), timedelta(days=5)),
-        baseline_symbols=("AAPL", "MSFT"),
+        execution_rules={
+            "immediate-v1": CashRoundingRule(quantum=None),
+            "rounded-v1": CashRoundingRule(quantum="0.01", rounding="half_up"),
+        },
     )
 
     assert EvaluatorConfig.model_validate_json(config.model_dump_json()) == config

@@ -1,6 +1,6 @@
 """Deterministic trade and portfolio evaluators. Evaluator-only: never an agent dependency."""
 
-from bazaar_evaluation.config import EvaluatorConfig
+from bazaar_evaluation.config import CashRoundingRule, EvaluatorConfig
 from bazaar_evaluation.inputs import (
     CashAcquisition,
     CashDividend,
@@ -25,6 +25,7 @@ from bazaar_evaluation.results import (
 __all__ = [
     "CashAcquisition",
     "CashDividend",
+    "CashRoundingRule",
     "CorporateAction",
     "Denominator",
     "EvaluationTimeline",
