@@ -15,6 +15,14 @@ Tool = Literal["account", "market_history", "orders", "news", "reports", "monty"
 
 
 class StrategyDefinition(WireModel):
+    """Immutable strategy intent; execution settings belong to the runtime."""
+
+    instructions: Text
+
+
+class LegacyStrategyDefinition(WireModel):
+    """Read compatibility for persisted definitions, never a new submission contract."""
+
     harness: Harness = "single_shot"
     model_ref: Reference
     instructions: Text
@@ -73,7 +81,7 @@ class StrategyVersion(WireModel):
     version_id: UUID
     strategy_id: UUID
     version: Annotated[int, Field(ge=1)]
-    definition: StrategyDefinition
+    definition: StrategyDefinition | LegacyStrategyDefinition
     parent_version_id: UUID | None
     hypothesis: str
     definition_digest: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]

@@ -2,31 +2,44 @@
 
 `bazaar_agent.trading.run_decision` implements one PydanticAI invocation with a bounded
 model/tool loop, not a period runner. Registration remains nonexecuting. The caller supplies a
-registered `AgentRecord`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
-client, a runner-reserved `client_order_id`, and optionally `DecisionBudget`, `ModelFactory`
-and the existing `PrivateHistoryReader`. Identity/version/context must agree; inputs are
+trusted `MarketIdentity`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
+client, a runner-reserved `client_order_id`, and optionally `RuntimeConfig`, `DecisionBudget`,
+`ModelFactory` and the existing `PrivateHistoryReader`. Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
 
 ## Fixture usage
 
 The only accepted models today are explicitly injected local `TestModel`/`FunctionModel`
-instances (from **pydantic-ai-slim 1.70.0**, no provider extras). Missing factories, non-fixture
-models, artifact references, `orchestrated`/`monty` harnesses or the `monty` capability return
-structured `unsupported` errors before model execution. Model references are passed to a
-trusted factory, never parsed as gateway routes, URLs or credentials. No API key is needed.
+instances (from **pydantic-ai-slim 1.70.0**, no provider extras). Missing factories and non-fixture
+models return structured `unsupported` errors before model execution. `RuntimeConfig` accepts
+only `harness="builtin"`, with `model_ref="fixture"` by default. Its supported model settings
+are `temperature` (default 0, range 0–2), `max_tokens` (default 4,000, range 1–100,000), and
+optional integer `seed`. These are converted to SDK `ModelSettings` and passed to `Agent`,
+independently of strategy text. Unknown runtime/settings fields are rejected. Model references
+are passed to an explicitly trusted factory, never parsed as gateway routes, URLs or credentials.
+No API key is needed.
 
 ```python
 from pydantic_ai.models.test import TestModel
-from bazaar_agent.trading import DecisionBudget, run_decision
+from bazaar_agent.trading import DecisionBudget, MarketIdentity, RuntimeConfig, run_decision
 
-# identity/version/context/client/order_id are runner-owned synthetic fixture inputs.
+# The trusted runner supplies a market binding, not a local registration record.
+identity = MarketIdentity(
+    agent_id=context.experiment.agent_id,
+    account_id=context.experiment.account_id,
+    experiment_id=context.experiment.experiment_id,
+    strategy_version_id=context.experiment.strategy_version_id,
+)
+# version/context/client/order_id are runner-owned synthetic fixture inputs.
+# MockTransport must serve valid, coherent account and portfolio snapshots first.
 result = await run_decision(
     identity=identity,
     version=version,
     context=context,
     client=client,  # fixed MockTransport base URL, bounded timeout, no logging hooks
     client_order_id=order_id,  # reserve once; preserve across recovery
+    runtime=RuntimeConfig(model_settings={"temperature": 0, "max_tokens": 4_000}),
     budget=DecisionBudget(model_requests=4, tool_calls=12, total_tokens=16_000),
     model_factory=lambda ref: TestModel(
         call_tools=[], custom_output_args={"action": "hold"}
@@ -41,31 +54,66 @@ Immutable sample definitions (proposals, **not approved experiments**):
 ```python
 from bazaar_protocol.registry import StrategyDefinition
 baseline = StrategyDefinition(
-    model_ref="fixture", instructions="Inspect account and eligible prices; hold or trade once."
+    instructions="Inspect account and eligible prices; hold or trade once."
 )
 research = StrategyDefinition(
-    harness="research", model_ref="fixture",
-    instructions="Compare eligible archived news and prior-cycle filings; hold or trade once.",
-    tools=("account", "market_history", "news", "reports", "private_history", "orders"),
+    instructions="Compare eligible archived news and prior-cycle filings; hold or trade once."
 )
 ```
 
-Both variants use the same bounded baseline; research composes capabilities, not nested planners.
-`definition.instructions` influences the model but cannot change runtime scope, budgets, tools,
-factory, simulated time or order identity. News, filings and private text are explicitly marked
-untrusted evidence; prompt-injection resistance is enforced by available capabilities and scoped
-DTO validation, not a claim that models ignore malicious prose.
+Both variants use the same fixed builtin tool surface, runtime settings and bounded loop, not
+nested planners. New `StrategyDefinition` accepts **only instructions**; harness, model reference,
+tools, artifacts and model settings are rejected. Persisted `StrategyVersion` definitions may
+still contain `LegacyStrategyDefinition`, but execution reads only its instructions and ignores
+all legacy runtime fields, including unsupported harnesses and artifact references.
+
+The fixed `TRADING_ROLE` tells the agent to act as a simulated stock trader maximizing
+market-authoritative portfolio value **NET of all trading fees**, within the supplied strategy.
+Strategy instructions are labeled **user input**, never appended to agent instructions. The
+initial validated market snapshots are also labeled JSON user input, including `portfolio_value`.
+Strategy text cannot change scope, budgets, tool admission, factory, settings, simulated time or
+order identity. News, filings and private text are explicitly marked untrusted evidence;
+prompt-injection resistance is enforced by fixed capabilities and scoped DTO validation, not a
+claim that models ignore malicious prose.
+
+## Market binding and initial protected reads
+
+`MarketIdentity` is a strict wire DTO containing UUID `agent_id`, `account_id`, `experiment_id`
+and `strategy_version_id`, plus `status="active"` (or `"inactive"`). Execution requires the exact
+DTO type: `AgentRecord`, mappings, subclasses/local metadata and inactive bindings are rejected.
+There is no local strategy ID or agent name in this binding. All four IDs must agree with the
+trusted experiment context, and the version ID must agree with `StrategyVersion.version_id`.
+
+Before invoking the factory or model, the harness uses `ResearchTools` to make exactly these
+protected reads in order:
+
+1. `GET /experiments/{experiment_id}/accounts/{account_id}`
+2. `GET /experiments/{experiment_id}/accounts/{account_id}/portfolio`
+
+Existing scope, simulated-time and data-version checks apply. The pair must also agree on
+state version, currency, cash, holding symbols/quantities and snapshot time. Failures stop before
+factory/model dispatch or any order. There is **no provisioning request**. These two reads do
+not consume the model-tool budget, but share the decision's wall-time timeout.
+
+The current account schema has no status field and the portfolio schema uses `portfolio_value`,
+not `total_value`. Active eligibility therefore means an **active trusted binding plus successful
+protected reads**, not an invented account-status response or fabricated status endpoint. This
+client corroboration does not replace market-side authorization, approval or settlement.
 
 ## Public tool mapping and failure semantics
 
-| Definition capability | Exposed tools |
+All ten tools are always registered, independent of the strategy definition:
+
+| Purpose | Exposed tools |
 | --- | --- |
-| `account` | `account`, `portfolio`, `account_history`, `portfolio_history` |
-| `market_history` | `prices` |
-| `news` | `news` |
-| `reports` | `filings` (requires trusted `FiscalCycle`) |
-| `private_history` | `private_history` (default unsupported adapter) |
-| `orders` | `orders` (own order history), `market_order` (structured buy/sell) |
+| Protected state/history | `account`, `portfolio`, `account_history`, `portfolio_history` |
+| Market history | `prices` |
+| Archived news | `news` |
+| Reports | `filings` (requires trusted `FiscalCycle`) |
+| Private evidence | `private_history` (default unsupported adapter) |
+| Own orders | `orders` (own order history), `market_order` (structured buy/sell) |
+
+Registration does not bypass fiscal-cycle, private-adapter, authorization or budget requirements.
 
 Tools reuse #21/shared DTO signatures and `ToolResult`/`ToolError`. PydanticAI flattens a single
 Pydantic argument into the tool's top-level JSON object: `market_order` accepts the exact
@@ -117,7 +165,7 @@ response capture false; do not add independently logging hooks. Payload-marker t
 monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata and actual
 AI Gateway/private SDK binding are **#23**, not implemented or gateway-ready here.
 
-For **#22**, extend capability admission and the same per-decision budget boundary only after
+For **#22**, extend the trusted runtime and the same per-decision budget boundary only after
 real Monty integration has verified resource limits and host/network/file denial. Existing
 `ResearchContext`/`FiscalCycle`, `ResearchTools`, `PrivateHistoryReader`, shared DTOs and the
 `DecisionBudget`/`DecisionResult` interface are reusable. There is deliberately no fake forecast
