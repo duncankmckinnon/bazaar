@@ -236,3 +236,27 @@ def test_content_that_strips_to_nothing_falls_back_to_the_summary(tmp_path):
 
     [record] = news.visible("AAPL", T, T, cutoff=T)
     assert record.text == "Short summary."
+
+
+def test_a_cutoff_after_the_fetched_window_is_missing_even_for_an_earlier_window(tmp_path):
+    # An article published inside the window but revised after it ended is not in the snapshot.
+    news, _ = load(tmp_path, {"AAPL": [article(1, T)]})
+    window_end = datetime(2026, 2, 13, 23, 59, 59, tzinfo=UTC)
+
+    assert ids(news.visible("AAPL", T, T, cutoff=window_end)) == ["1"]
+    with pytest.raises(MissingCoverage):
+        news.visible("AAPL", T, T, cutoff=window_end + timedelta(seconds=1))
+
+
+def test_the_reviewers_repro_a_cutoff_two_days_past_the_window_is_missing(tmp_path):
+    snap_end = "2026-09-30T23:59:59Z"
+    db = tmp_path / "m.db"
+    with closing(sqlite3.connect(db)) as connection:
+        import_news_snapshot(
+            connection, freeze(tmp_path, {"AAPL": [article(1, T)]}, start=START, end=snap_end)
+        )
+    news = SqliteNewsArchive(db)
+    end_at = datetime(2026, 9, 30, tzinfo=UTC)
+
+    with pytest.raises(MissingCoverage):
+        news.visible("AAPL", T, end_at, cutoff=datetime(2026, 10, 2, tzinfo=UTC))

@@ -141,8 +141,8 @@ class SqliteNewsArchive:
     ) -> list[NewsRecord]:
         """Every article published in [start_at, end_at] and available by the cutoff.
 
-        Raises `MissingCoverage` unless the fetched window covers the whole request, and
-        `FutureDataError` when end_at is after the cutoff. Paging is the caller's job.
+        Raises `MissingCoverage` unless the fetched window covers the whole request and the
+        cutoff, and `FutureDataError` when end_at is after the cutoff. Paging is the caller's job.
         """
         if end_at > cutoff:
             raise FutureDataError(f"end_at {end_at.isoformat()} is after the cutoff")
@@ -154,9 +154,12 @@ class SqliteNewsArchive:
                 "WHERE data_version = ? AND symbol = ?",
                 (self.data_version, symbol),
             ).fetchone()
+            # The fetch selects by revision time, so it is complete only up to its window's end:
+            # with a cutoff past that end, an article revised after it is missing, not absent.
             if window is None or not (
                 window["start_at"] <= stored_time(start_at)
                 and stored_time(end_at) <= window["end_at"]
+                and stored_time(cutoff) <= window["end_at"]
             ):
                 raise MissingCoverage(f"news for {symbol} was not fetched for the whole window")
             rows = connection.execute(
