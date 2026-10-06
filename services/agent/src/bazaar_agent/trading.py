@@ -13,9 +13,12 @@ from bazaar_protocol.registry import AgentRecord, StrategyDefinition, StrategyVe
 from pydantic import Field, ValidationError
 from pydantic_ai import Agent, ModelRetry, RunContext, Tool
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.models import Model
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.models import Model, ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.models.wrapper import WrapperModel
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from bazaar_agent.research import PrivateHistoryReader, ResearchContext, ResearchTools, ToolError
@@ -55,8 +58,33 @@ class _StopDecision(Exception):
         self.error = error
 
 
-def _stop(code: Literal["unsupported", "invalid_request", "conflict"], message: str) -> NoReturn:
+def _stop(
+    code: Literal["unsupported", "invalid_request", "invalid_response", "conflict"], message: str
+) -> NoReturn:
     raise _StopDecision(ToolError(code=code, message=message))
+
+
+class _CheckedFixtureModel(WrapperModel):
+    """Reject dispatch-key collisions before the SDK caches/executes any tools."""
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        ids: set[str] = set()
+        for part in response.parts:
+            if isinstance(part, ToolCallPart):
+                if (
+                    not isinstance(part.tool_call_id, str)
+                    or not part.tool_call_id
+                    or part.tool_call_id in ids
+                ):
+                    _stop("invalid_response", "Model returned invalid or duplicate tool-call IDs")
+                ids.add(part.tool_call_id)
+        return response
 
 
 async def run_decision(
@@ -176,7 +204,7 @@ async def run_decision(
                             "Only local fixture models are supported until gateway binding",
                         )
                     agent = Agent(
-                        model,
+                        _CheckedFixtureModel(model),
                         name=identity.name,
                         output_type=Decision,
                         instructions=(

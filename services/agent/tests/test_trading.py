@@ -433,6 +433,69 @@ async def test_payload_safe_with_production_httpx_and_global_genai_instrumentati
         Agent.instrument_all(False)
 
 
+@pytest.mark.parametrize(
+    "batch",
+    [
+        [
+            ToolCallPart("news", query(cursor="unknown"), tool_call_id="same"),
+            ToolCallPart(
+                "market_order", order_request().model_dump(mode="json"), tool_call_id="same"
+            ),
+        ],
+        [
+            ToolCallPart(
+                "market_order", order_request().model_dump(mode="json"), tool_call_id="same"
+            ),
+            ToolCallPart(
+                "market_order",
+                {**order_request().model_dump(mode="json"), "quantity": "2"},
+                tool_call_id="same",
+            ),
+        ],
+        [ToolCallPart("account", {}, tool_call_id="")],
+    ],
+)
+async def test_invalid_dispatch_ids_rejected_before_any_tools(batch):
+    model, calls = script(batch)
+    result, requests = await invoke(model, tools=("news", "orders", "account"))
+    assert result.error.code == "invalid_response" and len(calls) == 1
+    assert not requests and result.order_request is None and result.usage.tool_calls == 0
+
+
+async def test_output_and_order_id_collision_rejected():
+    def batch(info):
+        return [
+            ToolCallPart(info.output_tools[0].name, {"action": "hold"}, tool_call_id="same"),
+            ToolCallPart(
+                "market_order", order_request().model_dump(mode="json"), tool_call_id="same"
+            ),
+        ]
+
+    model, _ = script(batch)
+    result, requests = await invoke(model)
+    assert result.error.code == "invalid_response" and not requests
+
+
+async def test_cancelled_order_payload_not_in_monitored_spans(capfire):
+    def handler(request):
+        raise asyncio.CancelledError(SECRET)
+
+    model, _ = script([ToolCallPart("market_order", order_request().model_dump(mode="json"))])
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        logfire.instrument_httpx(
+            client,
+            capture_all=False,
+            capture_headers=False,
+            capture_request_body=False,
+            capture_response_body=False,
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await run_decision(client=client, model_factory=lambda ref: model, **inputs())
+    assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+
+
 async def test_nonfixture_factory_result_rejected():
     result, calls = await invoke(overrides={"model_factory": lambda ref: object()})
     assert result.error.code == "unsupported" and not calls

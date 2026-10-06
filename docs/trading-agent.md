@@ -82,6 +82,10 @@ calling the model again with invalid evidence. Invalid tool arguments/unknown to
 final outputs can use **one** SDK validation retry, within the model-request budget. The final
 `Decision.action` is only `hold` or `ordered` and must agree with actual tool settlement evidence;
 model text cannot manufacture a fill. Market rejections are terminal evidence, not harness failures.
+A public SDK `WrapperModel` response guard rejects empty or duplicate tool-call IDs (including
+output-tool collisions) before SDK dispatch: dispatch-key collisions must never substitute an
+order for an earlier scoped read. IDs may repeat across separate responses; order replay still
+returns only the existing evidence.
 
 At most one distinct order is submitted. Its ID must equal the runner-reserved ID. Repeating the
 identical order within a decision returns existing evidence without another POST; a changed body
