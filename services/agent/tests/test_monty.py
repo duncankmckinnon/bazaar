@@ -105,6 +105,46 @@ async def test_cancellation_reaps_process(monkeypatch, during_spawn):
     assert all(process.returncode is not None for process in processes)
 
 
+async def test_repeated_cancel_with_full_output_pipe_completes(monkeypatch):
+    import sys
+
+    original = asyncio.create_subprocess_exec
+    gate = asyncio.Event()
+    processes = []
+
+    async def spawn(*args, **kwargs):
+        process = await original(
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdout.write('x'*2000000); sys.stdout.flush(); time.sleep(30)",
+            **kwargs,
+        )
+        processes.append(process)
+        communicate = process.communicate
+
+        async def delayed(payload):
+            await gate.wait()
+            return await communicate(payload)
+
+        process.communicate = delayed
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    calc = calculator()
+    task = asyncio.create_task(calc.monty_calculate("1+2"))
+    async with asyncio.timeout(5):
+        while not processes or processes[0].stdout._transport.is_reading():
+            await asyncio.sleep(0.001)
+    task.cancel("PRIVATE-CANCEL-MESSAGE")
+    await asyncio.sleep(0)
+    task.cancel("PRIVATE-CANCEL-MESSAGE")
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert processes[0].returncode is not None
+    assert calc.records[-1].status == "cancelled"
+
+
 async def test_model_tool_integration_and_overall_budget():
     model, calls = script(
         [ToolCallPart("monty_calculate", {"code": "1+2"})], lambda info: [output(info)]

@@ -99,7 +99,7 @@ def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-async def _reap(creation, process) -> None:
+async def _reap(creation, process, communication) -> None:
     try:
         if creation is not None and process is None:
             process = await creation
@@ -110,6 +110,13 @@ async def _reap(creation, process) -> None:
             try:
                 process.kill()
             except ProcessLookupError:
+                pass
+        if communication is not None:
+            try:
+                # Keep pipe readers alive through kill: wait() alone can deadlock
+                # when an abandoned reader has paused a full output transport.
+                await communication
+            except Exception:  # noqa: BLE001, S110 -- private failure already handled by caller
                 pass
         await process.wait()
 
@@ -143,6 +150,7 @@ class MontyCalculator:
         """
         process: asyncio.subprocess.Process | None = None
         creation: asyncio.Task[asyncio.subprocess.Process] | None = None
+        communication: asyncio.Task[tuple[bytes, bytes]] | None = None
         cancelled = False
         started = time.monotonic()
         status: Status = "worker_error"
@@ -169,7 +177,8 @@ class MontyCalculator:
                     )
                 )
                 process = await asyncio.shield(creation)
-                raw, stderr = await process.communicate(payload)
+                communication = asyncio.create_task(process.communicate(payload))
+                raw, stderr = await asyncio.shield(communication)
                 if process.returncode == 0:
                     result = json.loads(raw)
                     status = result["status"]
@@ -183,7 +192,7 @@ class MontyCalculator:
             except Exception as exc:  # noqa: BLE001 -- private record, never span exception text
                 error_text = str(exc)
             finally:
-                cleanup = asyncio.create_task(_reap(creation, process))
+                cleanup = asyncio.create_task(_reap(creation, process, communication))
                 while True:
                     try:
                         await asyncio.shield(cleanup)
