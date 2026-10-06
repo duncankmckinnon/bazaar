@@ -39,6 +39,10 @@ def configure_telemetry() -> None:
     market_logger = logging.getLogger("bazaar_market")
     market_logger.setLevel(logging.INFO)
     market_logger.addHandler(logfire.LogfireLoggingHandler())
+    # Approval allows and denials must also be visible in the server's own terminal.
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    market_logger.addHandler(console)
 
 
 def create_app(
