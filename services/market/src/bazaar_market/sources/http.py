@@ -16,7 +16,7 @@ def _pause(response: httpx.Response | None, attempt: int) -> float:
     """Seconds to wait before the next attempt: the server's Retry-After, or 1 s then 2 s."""
     if response is not None:
         try:
-            return min(float(response.headers["Retry-After"]), MAX_PAUSE)
+            return max(0.0, min(float(response.headers["Retry-After"]), MAX_PAUSE))
         except (KeyError, ValueError):
             pass
     return float(2 ** (attempt - 1))

@@ -74,8 +74,10 @@ does not list or whose SHA-256 no longer matches.
 - A filing is visible from `accepted_at`, which is EDGAR's `acceptanceDateTime` read as labelled.
   See the first known limit.
 - A fact is visible when the filing with its accession number is visible.
-  If that filing is not loaded, the fact is visible from 00:00 UTC on the day after `filed`.
-- A news article is visible from `updated_at`.
+  If that filing is not loaded, the fact is visible from midnight Eastern on the day after `filed`.
+  This relies on XBRL forms being under EDGAR's 17:30 Eastern filing-date cutoff.
+  Forms that keep a same-day date until 22:00 Eastern, such as Section 16 forms, carry no XBRL facts.
+- A news article is visible from `updated_at`, or from `created_at` if that is later.
   Alpaca serves only the latest revision of an article, and its date filter matches on `updated_at`.
 - `universe.in_universe` is true from a membership's start date up to, and not including, its end date.
   It is index membership, not trading status.

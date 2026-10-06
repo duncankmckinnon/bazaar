@@ -72,6 +72,17 @@ def test_the_pause_follows_the_servers_retry_after_header():
     assert naps == [7.0]
 
 
+def test_a_negative_retry_after_is_treated_as_no_pause():
+    naps = []
+    client = scripted(
+        [httpx.Response(429, headers={"Retry-After": "-5"}), httpx.Response(200, text="ok")], []
+    )
+
+    response = get(client, "https://example.test/a", sleep=naps.append)
+
+    assert (response.status_code, naps) == (200, [0.0])
+
+
 def test_a_server_that_stays_unavailable_is_returned_after_three_attempts():
     seen = []
     client = scripted([httpx.Response(503)], seen)

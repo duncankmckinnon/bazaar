@@ -70,10 +70,11 @@ def test_a_fact_becomes_available_when_its_filing_was_accepted():
     assert fact_available_at(f, [ORIGINAL]) == datetime(2023, 2, 24, 21, 43, 8, tzinfo=UTC)
 
 
-def test_a_fact_from_an_unknown_filing_waits_until_the_day_after_it_was_filed():
+def test_a_fact_from_an_unknown_filing_waits_until_midnight_eastern_after_it_was_filed():
     f = fact("0000000000-00-000000", 1.0, date(2023, 2, 24))
 
-    assert fact_available_at(f, [ORIGINAL]) == datetime(2023, 2, 25, 0, 0, 0, tzinfo=UTC)
+    # 00:00 EST on 2023-02-25.
+    assert fact_available_at(f, [ORIGINAL]) == datetime(2023, 2, 25, 5, 0, 0, tzinfo=UTC)
 
 
 def test_a_restated_value_is_hidden_until_the_amendment_is_accepted():
@@ -146,3 +147,18 @@ def test_visible_facts_handles_many_facts_against_many_filings_quickly():
     visible = visible_facts(facts, filings, datetime(2023, 6, 1, tzinfo=UTC))
 
     assert len(visible) == 4000
+
+
+def test_an_article_revised_before_it_was_created_waits_for_its_creation():
+    item = NewsItem(
+        source="alpaca",
+        id="1",
+        symbols=("AAPL",),
+        headline="h",
+        body="b",
+        created_at=datetime(2024, 3, 4, 10, 0, tzinfo=UTC),
+        updated_at=datetime(2024, 3, 4, 9, 0, tzinfo=UTC),
+    )
+
+    assert visible_news([item], datetime(2024, 3, 4, 9, 30, tzinfo=UTC)) == []
+    assert visible_news([item], datetime(2024, 3, 4, 10, 0, tzinfo=UTC)) == [item]
