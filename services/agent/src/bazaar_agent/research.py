@@ -441,7 +441,9 @@ class ResearchTools:
             request = HistoryRequest.model_validate_json(request.model_dump_json())
             self._window(request, "private")
             prepared = True
-            value = await self._private.read(self._ctx, request)
+            # SDK/HTTP child spans can expose cursors or exceptions before we catch them.
+            with logfire.suppress_instrumentation():
+                value = await self._private.read(self._ctx, request)
             value = PrivateHistoryPage.model_validate_json(value.model_dump_json())
             if value.coverage != "complete":
                 return ToolResult(

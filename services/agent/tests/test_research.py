@@ -495,6 +495,66 @@ async def test_private_malicious_scope_and_errors(payload, capfire):
     assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
 
 
+@pytest.mark.parametrize("failure", [None, "sdk", "http"])
+async def test_private_instrumented_sdk_http_cannot_leak_markers(failure, capfire, caplog):
+    cursor_marker = "SECRET-PRIVATE-CURSOR-TOKEN"
+    calls = []
+
+    def handler(r):
+        calls.append(r)
+        cursor = r.url.params.get("cursor")
+        if cursor and failure == "http":
+            raise httpx.ReadTimeout(SECRET, request=r)
+        return httpx.Response(
+            200,
+            json=page(
+                [private_record(record_id="n2" if cursor else "n1")],
+                next_cursor=None if cursor else cursor_marker,
+            ),
+        )
+
+    class InstrumentedPrivateReader:
+        @logfire.instrument("private SDK read")
+        async def read(self, ctx, req):
+            response = await client.get("/private", params={"cursor": req.cursor or ""})
+            if req.cursor and failure == "sdk":
+                raise RuntimeError(SECRET)
+            return PrivateHistoryPage.model_validate(response.json())
+
+    async with httpx.AsyncClient(
+        base_url="https://private.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        logfire.instrument_httpx(
+            client, capture_headers=False, capture_request_body=False, capture_response_body=False
+        )
+        tools = ResearchTools(client, context(), InstrumentedPrivateReader())
+        first = await tools.private_history(history_request())
+        assert first.error is None
+        assert first.data.next_cursor == cursor_marker
+        assert first.data.items[0].text == SECRET
+        second = await tools.private_history(history_request(cursor=first.data.next_cursor))
+
+    assert len(calls) == 2
+    assert calls[1].url.params["cursor"] == cursor_marker
+    if failure is None:
+        assert second.error is None
+        assert second.data.items[0].record_id == "n2"
+    else:
+        assert second.error.code == "invalid_response"
+        assert second.data is None
+        assert SECRET not in second.model_dump_json()
+        assert cursor_marker not in second.model_dump_json()
+    spans = capfire.exporter.exported_spans_as_dict()
+    assert "private history tool" in {s["name"] for s in spans}
+    assert "private SDK read" not in {s["name"] for s in spans}
+    assert not any(
+        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
+    )
+    for marker in (SECRET, cursor_marker):
+        assert marker not in json.dumps(spans, default=str)
+        assert marker not in caplog.text
+
+
 async def test_payloads_not_in_spans(capfire):
     result, _ = await invoke(page([news()]), req=request())
     assert result.data.items[0].text == SECRET
