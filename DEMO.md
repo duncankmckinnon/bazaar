@@ -9,15 +9,22 @@ Status as of 2026-10-06 evening (US Eastern).
 ## What runs today
 
 Each agent gets a funded account and trades autonomously, deciding for itself, until the run ends
-or it runs out of money. Its objective is to maximize its portfolio balance. One command runs three
+or it runs out of money. Its objective is to maximize its portfolio balance. One command runs four
 launches over the same simulated period (AAPL, MSFT and KO, 2026-02-02 to 2026-02-13, $10,000
-each):
+each), every one in its own experiment with its own approval:
 
-| Launch | Policy |
-| --- | --- |
-| agent | `scripted-momentum-v1` (no LLM; the slot the LLM agent plugs into) |
-| baseline | `baseline-buy-and-hold` |
-| baseline | `baseline-cash-only` |
+| Launch | Policy | How it trades |
+| --- | --- | --- |
+| agent | `agent-fixture-v1` | Duncan's `run_decision` with a scripted `FunctionModel` (no LLM yet). At the first decision it reads 3 AAPL news items, then places its own order (buy 10 AAPL) under a runner-reserved `client_order_id`; afterwards it holds. |
+| agent | `scripted-momentum-v1` | a scripted policy; the runner submits its orders. Drop it with `--no-momentum`. |
+| baseline | `baseline-buy-and-hold` | the runner submits an equal-weight basket at the first decision |
+| baseline | `baseline-cash-only` | never trades |
+
+The agent's HTTP client carries only `X-Bazaar-Approval` and `X-Bazaar-Account`, never the runner
+token. If a decision errors, the runner looks the reserved id up in the account's order history, so
+an order is recorded once or not at all, and the run continues. The runner refuses to start if two
+launches share an experiment or approval id. All launches use one `--data-version` (default
+`demo-bundle-v1`: prices, news and filings), so the leaderboard can compare them.
 
 Each launch writes `runs/<run>/record.json` (what happened) and `evaluation.json` (scores), and the
 leaderboard ranks them. The runner also has a `--refused-demo` flag that launches with an
@@ -56,7 +63,7 @@ never changes a balance except by placing an order, and never sees its scores.
 
 ## Quickstart (synthetic prices, no keys)
 
-Run from the repository root. Tested on this branch at `3caff3c`.
+Run from the repository root. Tested on this branch at `5d345bc`.
 
 ```sh
 uv sync --all-packages
@@ -67,10 +74,10 @@ uv run python -m bazaar_market.prices import data/bars-synthetic-v1.csv --db dat
 
 # 2. Credentials: a runner token, and one approved experiment per launch.
 export BAZAAR_RUNNER_TOKEN="$(openssl rand -hex 32)"
-for run in AGENT BUY_AND_HOLD CASH_ONLY; do
+for run in AGENT_FIXTURE MOMENTUM BUY_AND_HOLD CASH_ONLY; do
   export "BAZAAR_${run}_EXPERIMENT_ID=$(uuidgen)" "BAZAAR_${run}_APPROVAL_ID=$(uuidgen)"
 done
-export BAZAAR_DEV_APPROVAL_IDS="$BAZAAR_AGENT_APPROVAL_ID:$BAZAAR_AGENT_EXPERIMENT_ID,$BAZAAR_BUY_AND_HOLD_APPROVAL_ID:$BAZAAR_BUY_AND_HOLD_EXPERIMENT_ID,$BAZAAR_CASH_ONLY_APPROVAL_ID:$BAZAAR_CASH_ONLY_EXPERIMENT_ID"
+export BAZAAR_DEV_APPROVAL_IDS="$BAZAAR_AGENT_FIXTURE_APPROVAL_ID:$BAZAAR_AGENT_FIXTURE_EXPERIMENT_ID,$BAZAAR_MOMENTUM_APPROVAL_ID:$BAZAAR_MOMENTUM_EXPERIMENT_ID,$BAZAAR_BUY_AND_HOLD_APPROVAL_ID:$BAZAAR_BUY_AND_HOLD_EXPERIMENT_ID,$BAZAAR_CASH_ONLY_APPROVAL_ID:$BAZAAR_CASH_ONLY_EXPERIMENT_ID"
 
 # 3. Market, in the background.
 BAZAAR_MARKET_DB=data/market.sqlite3 uv run uvicorn bazaar_market.app:app --port 8000 > market.log 2>&1 &
@@ -83,8 +90,14 @@ uv run python -m bazaar_replay.leaderboard runs -o leaderboard.html
 
 The runner prints one line per launch, for example
 `baseline-cash-only <experiment_id>: completed, final value 10000.00`.
-It reads the six `BAZAAR_*_ID` variables; each also has a flag (`--agent-experiment-id` and so
-on).
+It reads the eight `BAZAAR_*_ID` variables; each also has a flag (`--agent-fixture-experiment-id`,
+`--momentum-experiment-id` and so on). The old `BAZAAR_AGENT_*` and `--agent-*` names still set the
+momentum launch, with a deprecation warning. Every approval must be on `BAZAAR_DEV_APPROVAL_IDS`, or
+the market refuses that launch at its first clock call.
+
+Synthetic prices have no news, so on `synthetic-v1` the fixture agent's news read fails
+(`missing_data`), the decision is recorded under `decision_errors`, and the agent does not trade.
+Use real data (below) to see it place its order.
 
 ## Real prices
 
@@ -93,8 +106,11 @@ Fetching Alpaca daily bars needs `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. Follo
 unadjusted on purpose (adjusted history bakes in later corporate actions). Downloaded data stays
 under `data/` and is gitignored; the provider terms have not been reviewed, so never commit it.
 
-On 2026-10-06 the real-price run gave: cash-only 0.00%, buy-and-hold -0.98%, scripted momentum
--1.36% (15 fills). Every run reconciled to the cent.
+With news imported too (`alpaca-news-v1`), run step 4 with `--data-version demo-bundle-v1` (the
+default). On 2026-10-06 at `f697d06` that gave: cash-only 0.00%, agent-fixture -0.37% (1 fill: 10 AAPL
+at 259.48, placed by the agent), buy-and-hold -0.98%, scripted momentum -1.36% (15 fills). Every run
+reconciled to the cent. The baselines and momentum match the earlier bars-only run exactly, also
+after the market's fill-rule change in `3d7af80`.
 
 ## Logfire
 
@@ -116,7 +132,7 @@ and tool calls do not appear as spans.
 ## Tests
 
 ```sh
-uv run pytest        # 804 passed at 3caff3c
+uv run pytest        # 949 passed at 5d345bc
 uv run ruff check
 ```
 
@@ -124,8 +140,12 @@ uv run ruff check
 
 | Work | Branch | Who |
 | --- | --- | --- |
-| The agent places its own order with a runner-reserved `client_order_id`; the runner reconciles through order history | `demo/aie-nyc` | runner team |
-| Market routes for the research tools: account orders, account history, portfolio history, news, filings | `feat/market-research` | market team |
+| Runner reads `GET /experiments/{eid}/fiscal-cycles` at each decision and passes the cycles to `run_decision`, so `filings()` works (today the agent gets `cycles=()` and filings is unsupported) | `feat/experiment-runner` | runner team |
+| Filings coverage fix (B1) and the filings import; the route (`3c386a8`) and fiscal cycles (`ded3a01`) are merged here | `feat/market-research` | market team |
+
+Done tonight: the agent places its own order (runner `53c0366`, `7ab56c3`, `0a1d121`); order history,
+account and portfolio history, and news routes (market, merged); the leaderboard flags runs with
+decision errors (replay `380ff22`).
 
 Research runs will use `data_version=demo-bundle-v1` (prices, news and filings together). For now
 the agent's client sends `X-Bazaar-Account` on news and filings, because those routes have no
@@ -137,12 +157,21 @@ account in the path.
    reconciliation by order history)?
 2. Data version: one bundle id per experiment, with the archive version in each item's `source`?
 3. Account on news and filings: keep the header, or add the account to the route?
-4. Fiscal cycles: the market derives a cycle start as the day after the period end of the latest
-   10-K or 10-Q accepted by the cutoff (quarterly). Did you mean the fiscal year instead?
+4. Fiscal cycles: start = the day after the latest visible 10-K/10-Q period end, so in effect a
+   filing is visible from its acceptance. "Prior fiscal year only" would be a stricter rule that you
+   would define. Which do you want?
 5. `trading.py`: which side wins between #39 and #40?
 6. Logfire: can `run_decision` opt in to model and tool spans with payloads redacted (#23)?
 7. A real model: today `run_decision` accepts only `TestModel` and `FunctionModel`. What should
    the Gateway model factory look like?
+8. `ResearchTools` pins identical queries, so `orders()` after `market_order()` in one decision
+   fails with `invalid_response` (the history legitimately changed). The runner reconciles it, but
+   should the pins be cleared after an order?
+9. The default `DecisionBudget` (4 model requests, 12 tool calls, 16,000 total tokens, 30 s) is used
+   up by one real news page before an order: `news(limit=100)` with 100 articles of about 2k
+   characters cost 37,461 tokens by the 2nd model request, so no order was placed. `limit=3` cost
+   2,860 tokens and the order went through. That is about 950 tokens per article (a `FunctionModel`
+   estimate, not a real tokenizer). Raise the defaults, trim article bodies, or page smaller?
 
 ## Rules for agents working on this branch
 
