@@ -37,6 +37,11 @@ immediate fill or rejection, with market-owned accounts and point-in-time data. 
 [market–agent API agreement](docs/market-agent-api.md) for routes, examples and safety rules.
 The trading endpoints are specified, not implemented yet.
 
+## Data sources
+
+`bazaar_market.sources` freezes SEC EDGAR filings, Alpaca news and S&P 500 membership to `data/raw/` and provides
+the point-in-time visibility rules for reading them. See [data sources](docs/data-sources.md).
+
 ## Develop
 
 ```sh

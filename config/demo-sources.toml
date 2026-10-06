@@ -1,0 +1,74 @@
+# Source selection for the demo data snapshot.
+#
+# Every value here is an explicit choice. Nothing falls back to current data when a value is
+# missing. The period and company list are placeholders picked to exercise hard cases: a ticker
+# rename (FB to META, June 2022), an acquisition (Twitter, October 2022) and a failure
+# (SVB, March 2023). Change them before running real experiments.
+
+[period]
+start = 2022-06-01
+end = 2023-06-30
+
+[sp500]
+# Commit of github.com/fja05680/sp500 to read membership history from. MIT licence,
+# hand-maintained from a book and Wikipedia. Demo-grade, not authoritative.
+commit = "a2430f2af0c79ddf0748e91de11bdeb1616ab5a7"
+
+[edgar]
+forms = ["10-K", "10-K/A", "10-Q", "10-Q/A", "8-K", "8-K/A"]
+# Filing text is downloaded for filings accepted from this date to the end of the period,
+# so reports from before the period starts are on hand. Needs SEC_USER_AGENT with a contact.
+documents_since = 2021-06-01
+
+# cik is the SEC's company number, checked against data.sec.gov on 2026-10-06.
+# EDGAR returns no ticker for companies that stopped trading, so the mapping lives here.
+
+[[company]]
+ticker = "AAPL"
+cik = 320193
+
+[[company]]
+ticker = "MSFT"
+cik = 789019
+
+[[company]]
+ticker = "NVDA"
+cik = 1045810
+
+[[company]]
+ticker = "AMZN"
+cik = 1018724
+
+[[company]]
+ticker = "JPM"
+cik = 19617
+
+[[company]]
+ticker = "XOM"
+cik = 34088
+
+[[company]]
+ticker = "KO"
+cik = 21344
+
+[[company]]
+ticker = "JNJ"
+cik = 200406
+
+[[company]]
+ticker = "WMT"
+cik = 104169
+
+[[company]]
+ticker = "META"
+cik = 1326801
+# Traded as FB until 2022-06-09. The ticker FB now belongs to an unrelated ETF.
+news_symbols = ["META", "FB"]
+
+[[company]]
+ticker = "TWTR"
+cik = 1418091
+
+[[company]]
+ticker = "SIVB"
+cik = 719739

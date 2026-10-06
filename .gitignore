@@ -9,3 +9,6 @@ dist/
 data/*.db
 skills-lock.json
 .claude/
+
+# Frozen source snapshots written by bazaar_market.sources
+data/raw/
