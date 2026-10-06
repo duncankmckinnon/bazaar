@@ -7,7 +7,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from bazaar_agent.api import create_app
-from bazaar_agent.registry_store import RegistryStore, digest
+from bazaar_agent.registry_store import (
+    RegistryError,
+    RegistryStore,
+    _LegacyCreateStrategyRequest,
+    _LegacyCreateVersionRequest,
+    digest,
+)
 from bazaar_protocol.registry import (
     CreateStrategyRequest,
     CreateVersionRequest,
@@ -373,6 +379,88 @@ def test_definition_contract_is_frozen_and_instructions_only(client):
     assert schemas["CreateVersionRequest"]["properties"]["definition"] == {
         "$ref": "#/components/schemas/StrategyDefinition"
     }
+
+
+@pytest.mark.parametrize("method", ["register", "add_version"])
+@pytest.mark.parametrize(
+    "kind",
+    ["legacy_subclass", "copy_legacy", "construct_legacy", "copy_invalid", "construct_invalid"],
+)
+def test_public_write_methods_revalidate_before_transactions(
+    client, monkeypatch, capfire, method, kind
+):
+    store = client.app.state.registry
+    initial = register(client).json()
+    strategy_id = UUID(initial["strategy"]["strategy_id"])
+    key = uuid4()
+    request_type = CreateStrategyRequest if method == "register" else CreateVersionRequest
+    legacy_type = (
+        _LegacyCreateStrategyRequest if method == "register" else _LegacyCreateVersionRequest
+    )
+    values = {"name": "direct-write"} if method == "register" else {}
+    valid = request_type(**values, definition=StrategyDefinition(instructions="Trade"))
+    legacy = LegacyStrategyDefinition(
+        instructions="PRIVATE-WRITE-STRATEGY",
+        model_ref="retired-model",
+        harness="research",
+        tools=("news",),
+    )
+    if kind == "legacy_subclass":
+        request = legacy_type(**values, definition=legacy)
+    else:
+        definition = (
+            legacy
+            if kind.endswith("legacy")
+            else StrategyDefinition.model_construct(instructions=" ")
+        )
+        request = (
+            valid.model_copy(update={"definition": definition})
+            if kind.startswith("copy")
+            else request_type.model_construct(**values, definition=definition)
+        )
+
+    with sqlite3.connect(store.database_path) as connection:
+        before = list(connection.iterdump())
+
+    def unexpected_connection():
+        pytest.fail("Invalid public write input opened a database transaction")
+
+    # Invalid DTOs must fail before fingerprinting/replay lookup or opening any connection.
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "connect", unexpected_connection)
+        with pytest.raises(RegistryError) as error:
+            if method == "register":
+                store.register(request, key)
+            else:
+                store.add_version(strategy_id, request, key)
+        assert error.value.status_code == 422
+        assert error.value.code.value == "invalid_request"
+        assert str(error.value) == "Invalid request"
+    assert "PRIVATE-WRITE-STRATEGY" not in json.dumps(
+        capfire.exporter.exported_spans_as_dict(), default=str
+    )
+
+    with sqlite3.connect(store.database_path) as connection:
+        assert list(connection.iterdump()) == before
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM registry_requests WHERE request_key = ?", (str(key),)
+            ).fetchone()[0]
+            == 0
+        )
+
+    # The failed call must not consume its key: a valid call with that key succeeds and replays.
+    if method == "register":
+        result = store.register(valid, key)
+        assert store.register(valid, key) == result
+        assert store.list_agents(100, 0).total == 2
+    else:
+        result = store.add_version(strategy_id, valid, key)
+        assert store.add_version(strategy_id, valid, key) == result
+        assert store.get_strategy(strategy_id).version_count == 2
+    version = result.version if isinstance(result, StrategyRegistration) else result
+    assert type(version.definition) is StrategyDefinition
+    assert version.definition.model_dump() == {"instructions": "Trade"}
 
 
 @pytest.mark.parametrize("custom_runtime", [False, True])

@@ -222,6 +222,17 @@ class RegistryStore:
 
     @logfire.instrument("registry.create", extract_args=False)
     def register(self, request: CreateStrategyRequest, key: UUID) -> StrategyRegistration:
+        # Public method callers can supply subclasses or bypass frozen DTO validation.
+        # Only replay_legacy_request may interpret historical runtime-bearing inputs.
+        # Preserve nested concrete fields during serialization so forged legacy values
+        # cannot be silently narrowed to instructions-only by the declared field schema.
+        try:
+            request = CreateStrategyRequest.model_validate_json(
+                request.model_dump_json(serialize_as_any=True)
+            )
+        except ValidationError:
+            # Validation details may contain private strategy text; keep telemetry safe.
+            raise RegistryError(422, ErrorCode.INVALID_REQUEST, "Invalid request") from None
         fingerprint = digest(request.model_dump(mode="json"))
         with self.connect() as connection:
             connection.cursor().execute("BEGIN IMMEDIATE")
@@ -294,6 +305,12 @@ class RegistryStore:
     def add_version(
         self, strategy_id: UUID, request: CreateVersionRequest, key: UUID
     ) -> StrategyVersion:
+        try:
+            request = CreateVersionRequest.model_validate_json(
+                request.model_dump_json(serialize_as_any=True)
+            )
+        except ValidationError:
+            raise RegistryError(422, ErrorCode.INVALID_REQUEST, "Invalid request") from None
         fingerprint = digest(request.model_dump(mode="json"))
         with self.connect() as connection:
             connection.cursor().execute("BEGIN IMMEDIATE")
