@@ -41,3 +41,13 @@ class EvaluatorConfig(EvaluationModel):
         if len(set(value)) != len(value):
             raise ValueError("horizons must be unique")
         return value
+
+
+_CENTS = CashRoundingRule(quantum=Decimal("0.01"), rounding="half_even")
+
+# The market's binding demo rules: exec-v1 rounds each fill's notional, value-v1 each holding.
+DEMO_CONFIG = EvaluatorConfig(
+    evaluator_version="evals-demo-v1",
+    execution_rules={"exec-v1": _CENTS},
+    valuation_rules={"value-v1": _CENTS},
+)

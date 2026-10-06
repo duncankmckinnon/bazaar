@@ -58,6 +58,7 @@ def emit(evaluation: RunEvaluation) -> None:
         account_id=evaluation.account_id,
         strategy_version_id=evaluation.strategy_version_id,
         approval_id=evaluation.approval_id,
+        policy_ref=evaluation.policy_ref,
         data_version=evaluation.data_version,
         execution_rule_version=evaluation.execution_rule_version,
         evaluator_version=evaluation.evaluator_version,

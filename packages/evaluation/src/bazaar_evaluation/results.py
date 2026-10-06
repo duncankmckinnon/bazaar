@@ -3,7 +3,9 @@ from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from bazaar_protocol import ExactAmount, NonNegativeAmount, OrderSide, Symbol, Version
-from pydantic import Field, model_validator
+from pydantic import AwareDatetime, Field, model_validator
+
+TraceId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 
 from bazaar_evaluation._base import EvaluationModel
 
@@ -86,3 +88,9 @@ class RunEvaluation(EvaluationModel):
     run_failure: str | None = None
     trade_scores: tuple[TradeScore, ...]
     period: PeriodSummary
+    # Run labels passed through from the RunRecord manifest, so evaluation.json stands alone.
+    period_start: AwareDatetime | None = None
+    period_end: AwareDatetime | None = None
+    starting_cash: NonNegativeAmount | None = None
+    policy_ref: str | None = None
+    trace_id: TraceId | None = None

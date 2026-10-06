@@ -1,6 +1,6 @@
 """Deterministic trade and portfolio evaluators. Evaluator-only: never an agent dependency."""
 
-from bazaar_evaluation.config import CashRoundingRule, EvaluatorConfig
+from bazaar_evaluation.config import DEMO_CONFIG, CashRoundingRule, EvaluatorConfig
 from bazaar_evaluation.evaluate import evaluate_run
 from bazaar_evaluation.inputs import (
     CashAcquisition,
@@ -24,8 +24,10 @@ from bazaar_evaluation.results import (
     ScoreStatus,
     TradeScore,
 )
+from bazaar_evaluation.run_record import evaluate_and_emit
 
 __all__ = [
+    "DEMO_CONFIG",
     "CashAcquisition",
     "CashDividend",
     "CashRoundingRule",
@@ -47,6 +49,7 @@ __all__ = [
     "SymbolChange",
     "TradeScore",
     "corporate_action_adapter",
+    "evaluate_and_emit",
     "evaluate_run",
     "replay_ledger",
 ]
