@@ -14,6 +14,7 @@ from bazaar_protocol import (
     FilledOrder,
     Holding,
     OrderRequest,
+    OrderResult,
     PortfolioSnapshot,
     PriceObservation,
     RejectedOrder,
@@ -98,6 +99,10 @@ class MarketPort(Protocol):
 
     async def portfolio(self, ctx: ExperimentContext) -> PortfolioSnapshot:
         """Only at the current cutoff; the market keeps no mark history."""
+        ...
+
+    async def orders(self, ctx: ExperimentContext, start_at: datetime) -> tuple[OrderResult, ...]:
+        """The account's order results from start_at to ctx's cutoff, for reconciliation."""
         ...
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:

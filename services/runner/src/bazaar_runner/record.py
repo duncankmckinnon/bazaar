@@ -17,6 +17,7 @@ from bazaar_runner.clock import build_schedule, schedule_digest
 from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import DecisionPolicy
 from bazaar_runner.run import (
+    DecisionError,
     FailureCode,
     MarkRecord,
     OrderRecord,
@@ -59,6 +60,9 @@ class RunRecord(WireModel):
     orders: tuple[OrderRecord, ...] = ()
     marks: tuple[MarkRecord, ...] = ()
     final_account: AccountSnapshot | None
+    # A runner addition (evals and replay ignore unknown fields): agent decisions that erred
+    # but were reconciled with the market, so the run continued.
+    decision_errors: tuple[DecisionError, ...] = ()
 
     @model_validator(mode="after")
     def consistent_outcome(self) -> Self:
@@ -108,6 +112,7 @@ def build_record(
         orders=result.orders,
         marks=result.marks,
         final_account=account,
+        decision_errors=result.decision_errors,
     )
 
 

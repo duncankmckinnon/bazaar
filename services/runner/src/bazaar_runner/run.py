@@ -1,5 +1,8 @@
 """Drive one approved strategy run over the scripted clock against a market port."""
 
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -33,7 +36,10 @@ from bazaar_runner.policy import DecisionPolicy
 Index = Annotated[int, Field(ge=0, strict=True)]
 # The market's error code, or a runner code. T4, evals and Logfire match on it.
 FailureCode = (
-    Literal["approval_denied", "future_data", "runner_unauthorized", "policy_error"] | ErrorCode
+    Literal[
+        "approval_denied", "future_data", "runner_unauthorized", "reconcile_failed", "policy_error"
+    ]
+    | ErrorCode
 )
 
 
@@ -64,6 +70,21 @@ class OrderRecord(WireModel):
     result: OrderResult
 
 
+class DecisionError(WireModel):
+    """A decision that went wrong but was reconciled with the market, so the run went on."""
+
+    event_sequence: Index
+    decided_at: AwareDatetime
+    client_order_id: UUID
+    error: Annotated[str, Field(min_length=1)]
+    # What the market's order list showed for the reserved id.
+    reconciled: Literal["found", "absent"]
+
+
+class ReconcileFailed(Exception):
+    """The market's order list could not be read, so the account state is unknown (A9)."""
+
+
 class MarkRecord(WireModel):
     event_sequence: Index
     snapshot: PortfolioSnapshot
@@ -78,6 +99,7 @@ class RunResult(WireModel):
     marks: tuple[MarkRecord, ...]
     failure: str | None = None
     failure_code: FailureCode | None = None
+    decision_errors: tuple[DecisionError, ...] = ()
 
 
 def failure_code(exc: Exception) -> FailureCode:
@@ -87,6 +109,8 @@ def failure_code(exc: Exception) -> FailureCode:
         return "future_data"
     if isinstance(exc, RunnerUnauthorized):
         return "runner_unauthorized"
+    if isinstance(exc, ReconcileFailed):
+        return "reconcile_failed"
     if isinstance(exc, MarketError):
         return exc.detail.code
     return "policy_error"
@@ -108,6 +132,11 @@ def describe_failure(
         return sentence
     if isinstance(exc, RunnerUnauthorized):
         return f"the market refused the runner's credential {step}"
+    if isinstance(exc, ReconcileFailed):
+        return (
+            f"the market's order list could not be read {step}, so the account state after"
+            " the agent's decision is unknown"
+        )
     if isinstance(exc, FutureData):
         return f"a read past the experiment's clock was refused {step}"
     if isinstance(exc, MarketError):
@@ -120,13 +149,62 @@ def _at(kind: str, event_sequence: int, simulated_at: datetime) -> str:
     return f"during the {kind} at {utc_z(simulated_at)} (event {event_sequence})"
 
 
-async def _submit(
+@dataclass(frozen=True)
+class StepOutcome:
+    error: DecisionError | None = None
+    # Added to the runner.decision span; never a credential.
+    attributes: Mapping[str, str | bool] = field(default_factory=dict)
+
+
+class DecisionStep(ABC):
+    """How one DECISION event turns into orders. The driver owns the clock, cutoffs and marks."""
+
+    @abstractmethod
+    async def decide(
+        self,
+        ctx: ExperimentContext,
+        account: AccountSnapshot,
+        market: MarketPort,
+        orders: list[OrderRecord],
+    ) -> StepOutcome:
+        """Append each settled order to `orders` as soon as it settles, so a failure keeps it."""
+
+
+class OrdersStep(DecisionStep):
+    """A policy returns orders and the runner submits them: the scripted agent and baselines."""
+
+    def __init__(self, policy: DecisionPolicy) -> None:
+        self.policy = policy
+
+    async def decide(self, ctx, account, market, orders) -> StepOutcome:
+        for index, order in enumerate(await self.policy(ctx, account)):
+            await submit_order(market, ctx, index, order, orders)
+        return StepOutcome()
+
+
+def order_record(ctx: ExperimentContext, index: int, result: OrderResult) -> OrderRecord:
+    request = OrderRequest(
+        client_order_id=result.client_order_id,
+        symbol=result.symbol,
+        side=result.side,
+        quantity=result.quantity,
+    )
+    return OrderRecord(
+        event_sequence=ctx.event_sequence,
+        order_index=index,
+        decided_at=ctx.simulated_at,
+        request=request,
+        result=result,
+    )
+
+
+async def submit_order(
     market: MarketPort,
     ctx: ExperimentContext,
     index: int,
     order: OrderRequest,
     orders: list[OrderRecord],
-) -> AccountSnapshot:
+) -> None:
     with logfire.span(
         "runner.order", symbol=order.symbol, side=order.side.value, quantity=str(order.quantity)
     ) as span:
@@ -143,12 +221,15 @@ async def _submit(
             result=result,
         )
     )
-    return result.account
 
 
-async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy) -> RunResult:
+async def run_strategy(
+    spec: RunSpec, market: MarketPort, decide: DecisionPolicy | DecisionStep
+) -> RunResult:
     """Run every scheduled event once. A failure stops the run but keeps what already settled."""
+    stepper = decide if isinstance(decide, DecisionStep) else OrdersStep(decide)
     schedule = build_schedule(spec.script)
+    decision_errors: list[DecisionError] = []
     account: AccountSnapshot | None = None
     orders: list[OrderRecord] = []
     marks: list[MarkRecord] = []
@@ -184,12 +265,20 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
                     span.set_attribute("portfolio_value", str(snapshot.portfolio_value))
                 marks.append(MarkRecord(event_sequence=event.event_sequence, snapshot=snapshot))
                 continue
-            with logfire.span("runner.decision", **at):
+            with logfire.span("runner.decision", **at) as span:
                 await set_cutoff(event.simulated_at)
                 account = await market.account(ctx)
-                decision = await policy(ctx, account)
-                for index, order in enumerate(decision):
-                    account = await _submit(market, ctx, index, order, orders)
+                settled = len(orders)
+                try:
+                    outcome = await stepper.decide(ctx, account, market, orders)
+                finally:
+                    if len(orders) > settled:
+                        account = orders[-1].result.account
+                for name, value in outcome.attributes.items():
+                    span.set_attribute(name, value)
+                if outcome.error is not None:
+                    decision_errors.append(outcome.error)
+                    span.set_attribute("decision_error", outcome.error.error)
         state = RunState.COMPLETED
     except Exception as exc:  # noqa: BLE001 - any policy or market failure ends the run as failed
         state, code = RunState.FAILED, failure_code(exc)
@@ -212,4 +301,5 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
         marks=tuple(marks),
         failure=failure,
         failure_code=code,
+        decision_errors=tuple(decision_errors),
     )

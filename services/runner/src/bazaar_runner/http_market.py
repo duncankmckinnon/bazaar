@@ -21,6 +21,7 @@ from bazaar_protocol import (
     FilledOrder,
     Holding,
     OrderRequest,
+    OrderResult,
     PortfolioSnapshot,
     PriceHistory,
     PriceObservation,
@@ -47,6 +48,21 @@ DEFAULT_BASE_URL = "http://localhost:8000"
 PRICE_LOOKBACK = timedelta(days=10)
 # The market does not page today; this bounds a server that keeps returning a cursor.
 MAX_PRICE_PAGES = 10
+
+
+def parse_order_page(content: bytes) -> tuple[tuple[OrderResult, ...], str | None]:
+    """The one place that knows the GET orders shape; the market route is not live yet.
+
+    Accepts a HistoryPage ({"items": [...], "next_cursor": ...}, the shape the agent's orders
+    tool reads), {"orders": [...]}, or a bare JSON array of FilledOrder | RejectedOrder.
+    """
+    body = json.loads(content)
+    if isinstance(body, list):
+        items, cursor = body, None
+    else:
+        items = body["items"] if "items" in body else body["orders"]
+        cursor = body.get("next_cursor")
+    return tuple(order_result_adapter.validate_python(item) for item in items), cursor
 
 
 class RunnerConfigError(Exception):
@@ -178,6 +194,26 @@ class HttpMarketPort:
         self._check(ctx.experiment_id)
         content = await self._request("GET", f"/accounts/{ctx.account_id}/portfolio")
         return PortfolioSnapshot.model_validate_json(content)
+
+    async def orders(self, ctx: ExperimentContext, start_at: datetime) -> tuple[OrderResult, ...]:
+        self._check(ctx.experiment_id)
+        params = {"start_at": utc_z(start_at), "end_at": utc_z(ctx.simulated_at), "limit": "100"}
+        results: list[OrderResult] = []
+        for _ in range(MAX_PRICE_PAGES):
+            content = await self._request(
+                "GET", f"/accounts/{ctx.account_id}/orders", params=params
+            )
+            page, cursor = parse_order_page(content)
+            results.extend(page)
+            if cursor is None:
+                return tuple(results)
+            params = params | {"cursor": cursor}
+        raise MarketError(
+            ErrorDetail(
+                code=ErrorCode.INTERNAL_ERROR,
+                message=f"order history did not end after {MAX_PRICE_PAGES} pages",
+            )
+        )
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
         params = {
