@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import UUID
 
 import logfire
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from bazaar_market import ledger_api, prices, prices_api
 from bazaar_market.clock import SqliteClock
@@ -40,8 +40,14 @@ def configure_telemetry() -> None:
     market_logger.addHandler(logfire.LogfireLoggingHandler())
 
 
-def create_app(database_path: Path | None = None, grants: GrantChecker | None = None) -> FastAPI:
+def create_app(
+    database_path: Path | None = None,
+    grants: GrantChecker | None = None,
+    runner_token: str | None = None,
+) -> FastAPI:
     path = database_path or Path(os.getenv("BAZAAR_MARKET_DB", DEFAULT_DB))
+    token = runner_token if runner_token is not None else os.getenv("BAZAAR_RUNNER_TOKEN")
+    grants = grants or DenyAllGrants()
     clock = SqliteClock(path)
     ledger = Ledger(path, lambda data_version: prices.SqliteMarketData(path, data_version))
 
@@ -64,8 +70,8 @@ def create_app(database_path: Path | None = None, grants: GrantChecker | None = 
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    app.include_router(prices_api.router)
-    ledger_api.install(app, ledger, grants or DenyAllGrants())
+    app.include_router(prices_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
+    ledger_api.install(app, ledger, grants, token)
     logfire.instrument_fastapi(
         app,
         capture_headers=False,

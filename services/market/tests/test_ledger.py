@@ -241,3 +241,18 @@ def test_value_v1_rounds_each_holding_once_half_even(tmp_path):
     ledger.set_cutoff(eid, DAY2_CLOSE)
     # A: 10.005 -> 10.00, B: 10.015 -> 10.02 (half-even), cash 80.00, no further rounding.
     assert ledger.portfolio(eid, aid).portfolio_value == Decimal("100.02")
+
+
+def test_a_price_from_after_the_cutoff_is_never_filled(tmp_path):
+    class LeakyPrices(FakePrices):
+        def price_at(self, symbol, cutoff):
+            return close(DAY2_CLOSE, "110.00")  # ignores the cutoff
+
+    ledger = make_ledger(tmp_path / "market.db", LeakyPrices(BARS))
+    eid, aid = open_account(ledger)
+    with pytest.raises(db.MarketError) as error:
+        ledger.submit(eid, aid, order("buy", "1"))
+    assert (error.value.status_code, error.value.code) == (500, ErrorCode.INTERNAL_ERROR)
+    with db.read_connection(tmp_path / "market.db") as connection:
+        assert connection.execute("SELECT COUNT(*) FROM acct_orders").fetchone()[0] == 0
+    assert ledger.account(eid, aid).cash == Decimal("1000.00")
