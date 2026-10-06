@@ -167,22 +167,25 @@ def test_cli_bars_then_import_bars_end_to_end(tmp_path, capsys):
         env={"ALPACA_API_KEY": "id", "ALPACA_SECRET_KEY": "secret"},
         http=serve({"KO": [payload("KO", WEEK)]}, seen),
     )
-    with pytest.raises(SourceError, match="AAPL is required"):
-        main(
-            [
-                "import-bars",
-                "--config",
-                str(config),
-                "--snapshot",
-                str(tmp_path / "raw" / "alpaca-bars" / "v1"),
-                "--db",
-                str(tmp_path / "m.db"),
-            ]
-        )
+    code = main(
+        [
+            "import-bars",
+            "--config",
+            str(config),
+            "--snapshot",
+            str(tmp_path / "raw" / "alpaca-bars" / "v1"),
+            "--db",
+            str(tmp_path / "m.db"),
+        ]
+    )
 
     assert {r.url.host for r in seen} == {"data.alpaca.markets"}
     assert seen[0].headers["apca-api-key-id"] == "id"
-    assert "bars: KO 5 daily bars" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "bars: KO 5 daily bars" in captured.out
+    assert code == 1
+    assert captured.err.startswith("error: missing coverage") and "AAPL is required" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def demo_snapshot(tmp_path, fi_pages):
@@ -312,3 +315,35 @@ def test_another_feed_needs_its_own_data_version(tmp_path):
         import_bars_snapshot(connection, iex.dir, required={}, data_version="alpaca-bars-v1-iex")
 
     assert SqliteMarketData(db, "alpaca-bars-v1-iex").price_source == "alpaca/iex/raw"
+
+
+def test_cli_import_bars_without_a_snapshot_prints_how_to_fetch_one(tmp_path, capsys):
+    missing = tmp_path / "raw" / "alpaca-bars" / "bars-2026-10-06"
+
+    code = main(["import-bars", "--snapshot", str(missing), "--db", str(tmp_path / "m.db")])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert err == (
+        f"No snapshot at {missing}. Run: uv run --env-file .env python -m bazaar_market.sources "
+        "bars --version bars-2026-10-06 first.\n"
+    )
+    assert not (tmp_path / "m.db").exists()
+
+
+def test_cli_import_bars_with_a_folder_but_no_manifest_says_the_same(tmp_path, capsys):
+    folder = tmp_path / "bars-x"
+    folder.mkdir()
+
+    code = main(["import-bars", "--snapshot", str(folder), "--db", str(tmp_path / "m.db")])
+
+    err = capsys.readouterr().err
+    assert (code, err.count("\n")) == (1, 1)
+    assert err.startswith(f"No snapshot at {folder}.") and "--version bars-x first." in err
+
+
+def test_cli_errors_that_are_not_source_failures_keep_their_traceback(tmp_path):
+    snap = demo_snapshot(tmp_path, [payload("FI", [])])
+
+    with pytest.raises(FileNotFoundError):
+        main(["import-bars", "--snapshot", str(snap.dir), "--config", str(tmp_path / "none.toml")])
