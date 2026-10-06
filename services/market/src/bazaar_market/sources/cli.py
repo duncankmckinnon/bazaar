@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import sys
 from collections.abc import Mapping
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -22,7 +23,9 @@ import httpx
 
 from .alpaca_bars import ticker_windows
 from .bars_import import ALPACA_BARS_VERSION, import_bars_snapshot
+from .errors import SourceError
 from .fetch import fetch_bars_range, fetch_edgar, fetch_news_range, fetch_universe
+from .snapshot import SnapshotConflict
 from .universe import load_config
 
 DEFAULT_SEC_USER_AGENT = "bazaar-market-sources/0.1 (no contact declared)"
@@ -41,6 +44,21 @@ def main(
     env: Mapping[str, str] | None = None,
     http: httpx.Client | None = None,
     now: datetime | None = None,
+) -> int:
+    """Run one command. A source or snapshot failure prints one line and exits 1."""
+    try:
+        return _run(argv, env=env, http=http, now=now)
+    except (SourceError, SnapshotConflict) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+
+def _run(
+    argv: list[str] | None,
+    *,
+    env: Mapping[str, str] | None,
+    http: httpx.Client | None,
+    now: datetime | None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="bazaar_market.sources", description=__doc__)
     parser.add_argument(
@@ -130,6 +148,13 @@ def _expected_tickers(config: Path) -> tuple[str, ...]:
 def _import_bars(args: argparse.Namespace) -> int:
     if args.snapshot is None:
         raise SystemExit("import-bars needs --snapshot data/raw/alpaca-bars/<version>")
+    if not (args.snapshot / "manifest.json").is_file():
+        print(
+            f"No snapshot at {args.snapshot}. Run: uv run --env-file .env python -m "
+            f"bazaar_market.sources bars --version {args.snapshot.name} first.",
+            file=sys.stderr,
+        )
+        return 1
     args.db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(args.db)) as connection:
         symbols = tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None

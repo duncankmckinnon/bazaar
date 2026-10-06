@@ -11,12 +11,22 @@ first `PUT /experiments/{experiment_id}/cutoff` (see section 3).
 
 ### Real prices: Alpaca daily bars
 
-Fetch unadjusted daily bars for the 13 companies in `config/demo-sources.toml`, then import them:
+Fetch unadjusted daily bars for the 13 companies in `config/demo-sources.toml`, then import them.
+Export your Alpaca keys in the shell first:
+
+```sh
+export ALPACA_API_KEY=<your-alpaca-key-id>
+export ALPACA_SECRET_KEY=<your-alpaca-secret-key>
+uv run python -m bazaar_market.sources bars --version bars-2026-10-06
+uv run python -m bazaar_market.sources import-bars \
+    --snapshot data/raw/alpaca-bars/bars-2026-10-06 --db data/market.sqlite3
+```
+
+If you keep the keys in a `.env` file at the repository root, load them from it for the fetch
+instead of exporting them. The checkouts do not ship a `.env`.
 
 ```sh
 uv run --env-file .env python -m bazaar_market.sources bars --version bars-2026-10-06
-uv run python -m bazaar_market.sources import-bars \
-    --snapshot data/raw/alpaca-bars/bars-2026-10-06 --db data/market.sqlite3
 ```
 
 - `bars` reads `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`. It prints one line per ticker. A count
@@ -31,13 +41,14 @@ The data version is **`alpaca-bars-v1`**.
 import it under its own data version:
 
 ```sh
-uv run --env-file .env python -m bazaar_market.sources bars --feed iex --version bars-2026-10-06-iex
+uv run python -m bazaar_market.sources bars --feed iex --version bars-2026-10-06-iex
 uv run python -m bazaar_market.sources import-bars \
     --snapshot data/raw/alpaca-bars/bars-2026-10-06-iex --db data/market.sqlite3 \
     --data-version alpaca-bars-v1-iex
 ```
 
-The data version is then **`alpaca-bars-v1-iex`**.
+With a `.env` file, add `--env-file .env` after `uv run` in the fetch, as above. The data version
+is then **`alpaca-bars-v1-iex`**.
 
 **If one ticker has no bars** (FI is the likely one) and blocks the import, import only the demo
 run's tickers. The same coverage checks apply to them. The output and the `data_imports` table
@@ -138,4 +149,4 @@ becomes visible at 16:00 New York time. A cutoff during a session sees the previ
 | `BAZAAR_DEV_APPROVAL_IDS` | server | DEV ONLY. Comma-separated `<approval_id>:<experiment_id>` pairs to allow. Unset means every approval is denied. |
 | `LOGFIRE_TOKEN` | server | Logfire write token. Traces are sent only when it is set. |
 | `BAZAAR_ENVIRONMENT` | server | Logfire environment label. Default `development`. |
-| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `bars` | Alpaca keys, from `.env`. Not needed to import or serve. |
+| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `bars` | Alpaca keys, exported in the shell or loaded with `--env-file .env`. Not needed to import or serve. |
