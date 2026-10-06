@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Protocol
@@ -36,9 +36,11 @@ from bazaar_protocol import (
 from bazaar_market import db
 from bazaar_market.clock import Experiment, SqliteClock, UnknownExperiment, load_experiment
 from bazaar_market.history import PageScope
-from bazaar_market.prices import MissingData
+from bazaar_market.prices import MissingData, TradingSession
 
 CENT = Decimal("0.01")
+# How far back the fill rule looks for the latest session. No US market closure has come close.
+SESSION_LOOKBACK = timedelta(days=14)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS acct_accounts (
@@ -113,6 +115,10 @@ class PriceSource(Protocol):
 
     def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation: ...
 
+    def session(self, day: date) -> TradingSession | None:
+        """The session on `day`, or None when the data version has no bars that day."""
+        ...
+
 
 @dataclass(frozen=True)
 class ExecutionRule:
@@ -130,6 +136,19 @@ class ExecutionRule:
 
 
 RULES = {"exec-v1": ExecutionRule(version="exec-v1", valuation_rule_version="value-v1")}
+
+
+def latest_session(prices: PriceSource, cutoff: datetime) -> TradingSession | None:
+    """The most recent session whose close is at or before `cutoff`, from the data version's own
+    calendar. None if there is none within SESSION_LOOKBACK.
+    """
+    day = cutoff.date()
+    while day >= (cutoff - SESSION_LOOKBACK).date():
+        session = prices.session(day)
+        if session is not None and session.close_at <= cutoff:
+            return session
+        day -= timedelta(days=1)
+    return None
 
 
 def rule_for(version: str) -> ExecutionRule:
@@ -499,12 +518,19 @@ class Ledger:
             )
 
         prices = self.prices_for(experiment.data_version)
+        session = latest_session(prices, now)
+        if session is None:
+            return reject(ErrorCode.MARKET_CLOSED, "No trading session has closed by the cutoff")
         try:
             price = prices.price_at(order.symbol, now)
         except MissingData:
             return reject(ErrorCode.DATA_UNAVAILABLE, f"No price for {order.symbol}")
         if price.available_at > now:
             raise db.MarketError(500, ErrorCode.INTERNAL_ERROR, "Price source returned future data")
+        if price.observed_at != session.close_at:
+            # exec-v1 fills only at the latest session's close. A symbol that has no bar there
+            # (delisted, acquired, halted) must not fill at an older, dead price.
+            return reject(ErrorCode.DATA_UNAVAILABLE, f"No {session.day} close for {order.symbol}")
         notional = to_cents(rule.notional(quantity, price.price))
         holdings = dict(account.holdings)
         if order.side is OrderSide.BUY:

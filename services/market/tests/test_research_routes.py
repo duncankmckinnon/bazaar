@@ -329,3 +329,27 @@ async def test_portfolio_history_reports_an_incomplete_cutoff_record_as_missing(
     async with client:
         result = await tools.portfolio_history(window(run))
     assert (result.data, result.error.code) == (None, "missing_data")
+
+
+def add_bar(run: Run, symbol: str, day: date, price: str) -> None:
+    with closing(sqlite3.connect(run.app.state.market_db_path)) as connection:
+        bar = Bar(symbol=symbol, session=day, open=Decimal(price), high=Decimal(price),
+                  low=Decimal(price), close=Decimal(price), volume=1000)  # fmt: skip
+        import_bars(connection, [bar], data_version="test-v1", source="synthetic")
+
+
+def test_a_delisted_symbol_does_not_fill_at_its_last_close(run):
+    add_bar(run, "K", D1, "80.00")  # K's only bar; AAPL and KO trade through D3
+    run.cutoff(D3)
+    dead = run.order("buy", "5", symbol="K")
+    assert (dead["status"], dead["error"]["code"]) == ("rejected", "data_unavailable")
+    assert run.order("buy", "1")["unit_price"] == "110.00"
+
+
+@pytest.mark.parametrize("day", [date(2025, 7, 4), date(2025, 7, 5)])  # Independence Day, Saturday
+def test_a_cutoff_with_no_session_fills_at_the_latest_session_close(run, day):
+    run.cutoff(day)
+    filled = run.order("buy", "1")
+    assert (filled["status"], filled["unit_price"]) == ("filled", "110.00")
+    assert filled["price_observed_at"] == iso(close_at(D3))
+    assert filled["executed_at"] == iso(close_at(day))
