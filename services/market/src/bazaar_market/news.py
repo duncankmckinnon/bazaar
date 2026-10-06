@@ -115,6 +115,14 @@ def import_news(
     return added
 
 
+def _imported(connection: sqlite3.Connection) -> bool:
+    """Whether any news was ever imported, so a missing table reads as missing, not as a 500."""
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_news_coverage'"
+    ).fetchone()
+    return row is not None
+
+
 class SqliteNewsArchive:
     """Reads one news version. Every read takes the cutoff from the caller's trusted clock."""
 
@@ -139,6 +147,8 @@ class SqliteNewsArchive:
         if end_at > cutoff:
             raise FutureDataError(f"end_at {end_at.isoformat()} is after the cutoff")
         with closing(self._connect()) as connection:
+            if not _imported(connection):
+                raise MissingCoverage(f"no news is imported under {self.data_version}")
             window = connection.execute(
                 "SELECT start_at, end_at FROM data_news_coverage "
                 "WHERE data_version = ? AND symbol = ?",
