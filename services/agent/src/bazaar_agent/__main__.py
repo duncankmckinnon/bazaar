@@ -31,6 +31,7 @@ async def main() -> None:
     ) as client:
         logfire.instrument_httpx(
             client,
+            capture_all=False,
             capture_headers=False,
             capture_request_body=False,
             capture_response_body=False,

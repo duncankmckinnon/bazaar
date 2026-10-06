@@ -12,9 +12,9 @@ model calls, or import an artifact's code.
 
 - `BAZAAR_REGISTRY_DB_PATH`: registry SQLite file; default `data/registry.sqlite3`, `/data/registry.sqlite3`
   in Compose. Compose uses the separate `registry-data` volume.
-- `BAZAAR_REGISTRY_MODEL_REFS`: comma-separated configured model references; default `test`. These
-  are catalog references for later execution, not credentials or claims that a gateway route is
-  currently available. Unknown references are rejected before writes.
+- `BAZAAR_REGISTRY_MODEL_REFS`: retained for configuration compatibility, but no longer constrains
+  registration. New definitions do not contain a model reference; execution settings belong to the
+  trading runtime, not the registry.
 - `BAZAAR_API_HOST`: default `127.0.0.1`; Compose sets `0.0.0.0` inside the container while binding
   the host port only to `127.0.0.1`. The API port is 8001.
 
@@ -31,9 +31,9 @@ request duration/status, registry operation spans, SQLite query spans, registrat
 metadata, validation/conflict/storage events, system metrics, and agent HTTPX/logging telemetry.
 Health/docs requests are excluded from API traces.
 
-Instructions, hypotheses, artifact references, request bodies, SQL parameters and HTTP headers are
-not captured. Operation argument extraction is disabled. Agent/strategy/version IDs and configured
-model/harness references identify behavior without serializing the definition. Telemetry tests use
+Instructions, hypotheses, legacy artifact references, request bodies, SQL parameters and HTTP headers
+are not captured. Operation argument extraction is disabled. Agent/strategy/version IDs identify
+registry operations without serializing the definition. Telemetry tests use
 Logfire's in-memory exporter to verify request/operation/SQL tracing and sensitive-payload exclusion;
 no real model or Logfire credentials are needed. No AI decision spans are fabricated for the current
 polling placeholders; Pydantic AI model/decision instrumentation comes with the real trading harness.
@@ -48,10 +48,7 @@ curl -sS localhost:8001/strategies \
     "name": "Alpha Trader",
     "description": "Initial historical strategy",
     "definition": {
-      "harness": "single_shot",
-      "model_ref": "test",
-      "instructions": "Maximize portfolio value using only permitted historical evidence.",
-      "tools": ["account", "market_history", "orders"]
+      "instructions": "Maximize portfolio value using only permitted historical evidence."
     }
   }'
 ```
@@ -61,11 +58,20 @@ strategy, and version have separate UUIDs. The version number starts at 1. Agent
 lowercased, with whitespace/underscores replaced by hyphens; they must start with a letter and
 contain only ASCII lowercase letters, digits and hyphens, up to 64 characters. Names are unique.
 
-Definitions support harnesses `single_shot`, `orchestrated`, `monty`, and `research`. Tool references
-are `account`, `market_history`, `orders`, `news`, `reports`, `monty`, and `private_history`. Defaults
-include account/history/order tools. Duplicate/unknown tools are rejected; tool order is normalized.
-An optional `artifact_ref` stores an opaque reviewed-artifact reference; it is never downloaded or
-executed. No arbitrary executable-code, credential, actor or free-form settings fields are accepted.
+New `StrategyDefinition` values are immutable and contain **only `instructions`**: a nonblank string
+of at most 20,000 characters. Extra fields are forbidden. Both creation and revision reject new
+submissions containing `harness`, `model_ref`, `tools`, or `artifact_ref`, even when they have formerly
+valid/default values. The only exception is read-only replay of a matching persisted legacy request,
+described below.
+Runtime model, harness and tool selection is separate from strategy intent. No arbitrary executable
+code, credential, actor or free-form settings fields are accepted.
+
+The public `RegistryStore.register` and `RegistryStore.add_version` methods enforce the same write
+contract independently of HTTP validation. They revalidate concrete serialized inputs before
+fingerprinting, replay lookup, or opening a transaction, rejecting legacy request subclasses and
+invalid `model_copy`/`model_construct` values with a payload-safe `RegistryError` (422,
+`invalid_request`). Rejection writes no records and consumes no idempotency key.
+`replay_legacy_request` is the sole read-only compatibility entry point for historical requests.
 
 `parent_version_id` optionally links a new strategy to an existing version. Parent references must
 exist. Creating a child does not change or share its parent's experiment account.
@@ -91,9 +97,10 @@ Agents/strategies sort by creation time then ID. Description/hypothesis/instruct
 lengths. Unknown request fields are rejected. UUID/time fields serialize normally through the
 shared `bazaar_protocol.registry` models.
 
-Each version stores a SHA-256 `definition_digest` of canonical normalized definition JSON, creation
-time and server provenance. This hashes the definition/reference, **not external artifact bytes**;
-actual artifact review/approval is future work.
+Each new version stores a SHA-256 `definition_digest` of canonical instructions-only definition JSON
+(sorted keys, compact separators, UTF-8 without ASCII escaping), creation time and server provenance.
+Instructions are not trimmed or otherwise rewritten. Legacy digests hash the original normalized
+runtime-bearing definition, **not external artifact bytes**, and are not recomputed.
 
 ## Idempotency, persistence and errors
 
@@ -107,7 +114,35 @@ orphan agent or consumed key. SQLite serializes concurrent writes so version num
 parent lineage stay consistent. All records/replay results survive restarts; no update/delete
 endpoints expose old versions.
 
-Failures use `ApiError` (`error.code`, `message`, `retryable`): invalid fields/header/model references
+### Persisted legacy compatibility
+
+`StrategyVersion.definition` reads either the new instructions-only contract or an explicit
+`LegacyStrategyDefinition`. Existing persisted versions and replay snapshots retain their original
+`harness`, `model_ref`, `tools`, and `artifact_ref` fields, including normalized defaults. Historical
+model references remain readable even if no longer configured. These fields are historical metadata,
+not runtime configuration or permission to execute an artifact. New creation/revision request models
+accept only `StrategyDefinition`; the legacy type is read/replay compatibility, not a new submission
+alternative. OpenAPI continues to advertise only instructions-only creation/revision bodies.
+
+No data migration, definition stripping, digest recomputation, or replay-fingerprint rewrite occurs.
+Stored replay responses can still be decoded with their original IDs, timestamps, definitions and
+hashes. A bounded read-only fallback on `POST /strategies` and
+`POST /strategies/{strategy_id}/versions` recognizes valid legacy bodies and UUID idempotency keys.
+It validates the complete historical request (including runtime fields), applies the original name,
+tool-order and default normalization, and compares its canonical fingerprint against the stored row
+in the exact creation/revision scope. Matching historical retries return the original HTTP 201
+snapshot, including after restart or later revisions. No records or keys are written during replay,
+and retired model references do not prevent replay.
+
+A valid legacy body with an unused key returns 422: compatibility cannot register a new legacy
+strategy or version. A valid legacy body with a used key but different content returns 409.
+Malformed legacy bodies, unknown fields, invalid/missing key UUIDs, and invalid strategy UUIDs return
+422 rather than bypassing validation. Removing runtime fields changes the request fingerprint, so
+using the old key also returns 409 rather than silently reinterpreting the original request. Use a
+fresh key for a new instructions-only registration or revision. New revisions may point to legacy
+parents without changing those parents.
+
+Failures use `ApiError` (`error.code`, `message`, `retryable`): invalid fields/header
 422, duplicate normalized names or changed-content keys 409, missing parent/agent/strategy/version
 404, and storage failures 500. Invalid bodies and internal storage details are not echoed.
 
