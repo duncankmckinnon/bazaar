@@ -311,7 +311,13 @@ async def test_recovery_still_obeys_overall_tool_budget():
 
 
 async def test_private_failure_feedback_not_in_global_sdk_telemetry(capfire, caplog):
+    import httpx
+    import logfire
+    from bazaar_agent.trading import run_decision
     from pydantic_ai import Agent
+
+    from .test_research import account, portfolio
+    from .test_trading import initial_router, inputs
 
     marker = "PRIVATE-CALC-DIAGNOSTIC-12345"
     Agent.instrument_all(True)
@@ -325,13 +331,27 @@ async def test_private_failure_feedback_not_in_global_sdk_telemetry(capfire, cap
             [ToolCallPart("monty_calculate", {"code": "1+2"})],
             lambda info: [output(info)],
         )
-        result, _ = await invoke(model, tools=("monty",), overrides={"calculator": calculator()})
+        cash = "98765432.10"
+        transport = initial_router(
+            lambda request: httpx.Response(500),
+            initial_account=account(cash=cash),
+            initial_portfolio=portfolio(cash=cash, portfolio_value=cash, source=marker),
+        )
+        async with httpx.AsyncClient(
+            base_url="https://market.invalid", transport=httpx.MockTransport(transport)
+        ) as client:
+            logfire.instrument_httpx(
+                client,
+                capture_all=False,
+                capture_headers=False,
+                capture_request_body=False,
+                capture_response_body=False,
+            )
+            result = await run_decision(client=client, model_factory=lambda ref: model, **inputs())
         assert result.error is None and marker in result.calculations[0].error_text
         assert marker in result.calculations[0].prints_json
-        assert (
-            marker
-            not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str) + caplog.text
-        )
+        telemetry = json.dumps(capfire.exporter.exported_spans_as_dict(), default=str) + caplog.text
+        assert marker not in telemetry and cash not in telemetry
     finally:
         Agent.instrument_all(False)
 
