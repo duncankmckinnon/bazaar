@@ -8,18 +8,20 @@ Status as of 2026-10-06 evening (US Eastern).
 
 ## What runs today
 
-One command runs four launches against the market over the same simulated period
-(AAPL, MSFT and KO, 2026-02-02 to 2026-02-13, $10,000 each):
+Each agent gets a funded account and trades autonomously, deciding for itself, until the run ends
+or it runs out of money. Its objective is to maximize its portfolio balance. One command runs three
+launches over the same simulated period (AAPL, MSFT and KO, 2026-02-02 to 2026-02-13, $10,000
+each):
 
-| Launch | Policy | Expected outcome |
-| --- | --- | --- |
-| agent | `scripted-momentum-v1` (no LLM) | completes |
-| baseline | `baseline-buy-and-hold` | completes |
-| baseline | `baseline-cash-only` | completes |
-| refused | the agent, with an approval that is not on the allow-list | `approval_denied` before any account opens |
+| Launch | Policy |
+| --- | --- |
+| agent | `scripted-momentum-v1` (no LLM; the slot the LLM agent plugs into) |
+| baseline | `baseline-buy-and-hold` |
+| baseline | `baseline-cash-only` |
 
-Each launch writes `runs/<run>/record.json` (what happened) and `evaluation.json` (scores). The
-leaderboard ranks the completed runs and lists the refused one separately.
+Each launch writes `runs/<run>/record.json` (what happened) and `evaluation.json` (scores), and the
+leaderboard ranks them. The runner also has a `--refused-demo` flag that launches with an
+unapproved id to test the approval check. It is not part of the demo.
 
 ## How the pieces fit
 
@@ -75,15 +77,14 @@ BAZAAR_MARKET_DB=data/market.sqlite3 uv run uvicorn bazaar_market.app:app --port
 until curl -sf localhost:8000/health >/dev/null; do sleep 0.5; done
 
 # 4. Runs, then the leaderboard.
-uv run python -m bazaar_runner --demo --refused-demo --data-version synthetic-v1 --runs-dir runs
+uv run python -m bazaar_runner --demo --data-version synthetic-v1 --runs-dir runs
 uv run python -m bazaar_replay.leaderboard runs -o leaderboard.html
 ```
 
 The runner prints one line per launch, for example
-`baseline-cash-only <experiment_id>: completed, final value 10000.00` and
-`scripted-momentum-v1 <experiment_id>: approval_denied, final value -`.
-The runner reads the six `BAZAAR_*_ID` variables; each also has a flag (`--agent-experiment-id`
-and so on). Without `--refused-demo` only the three approved launches run.
+`baseline-cash-only <experiment_id>: completed, final value 10000.00`.
+It reads the six `BAZAAR_*_ID` variables; each also has a flag (`--agent-experiment-id` and so
+on).
 
 ## Real prices
 
@@ -97,7 +98,15 @@ On 2026-10-06 the real-price run gave: cash-only 0.00%, buy-and-hold -0.98%, scr
 
 ## Logfire
 
-Set `LOGFIRE_TOKEN` in the environment of the market and the runner. Nothing is sent without it.
+Authenticate once from the repository root, then start the market and the runner from the same
+directory, so they find the project credentials. Nothing is sent without credentials.
+
+```sh
+uv run logfire auth
+uv run logfire projects use --org logfire bazaar-demo
+```
+
+Setting `LOGFIRE_TOKEN` (a project write token) in both processes' environment also works.
 Each run is one trace (run, decision, order and mark spans), and the evaluator adds one span per
 trade. The trace id is stored in `record.json` and shown on the leaderboard.
 
