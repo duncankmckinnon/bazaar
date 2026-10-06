@@ -19,6 +19,35 @@ def calculator():
     return MontyCalculator(snapshot)
 
 
+async def test_trusted_market_binding_preserves_prices_and_rejects_injected_cash():
+    from bazaar_protocol import AccountSnapshot, PortfolioSnapshot
+
+    from .test_research import account, portfolio
+
+    market_account = AccountSnapshot.model_validate(account())
+    market_portfolio = PortfolioSnapshot.model_validate(portfolio())
+    calc = calculator()
+    calc.bind_market_state(market_account, market_portfolio)
+    assert calc.snapshot.account == market_account
+    assert calc.snapshot.portfolio == market_portfolio
+    assert len(calc.snapshot.prices) == 1
+    assert (
+        json.loads((await calc.monty_inputs()).data)["portfolio"]["portfolio_value"]
+        == portfolio()["portfolio_value"]
+    )
+    injected = MontyCalculator(
+        CalculationSnapshot(
+            context=context().experiment,
+            account=market_account.model_copy(update={"cash": market_account.cash + 1}),
+        )
+    )
+    with pytest.raises(ValueError, match="disagree"):
+        injected.bind_market_state(market_account, market_portfolio)
+    assert calc.reserve()
+    with pytest.raises(ValueError, match="fresh"):
+        calc.bind_market_state(market_account, market_portfolio)
+
+
 async def test_actual_sdk_calculation_and_audit():
     calc = calculator()
     result = await calc.monty_calculate(

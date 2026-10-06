@@ -131,6 +131,23 @@ class MontyCalculator:
         self.snapshot = CalculationSnapshot.model_validate_json(snapshot.model_dump_json())
         self.inputs_json = encode(self.snapshot.model_dump(mode="json"))
 
+    def bind_market_state(self, account: AccountSnapshot, portfolio: PortfolioSnapshot) -> None:
+        """Trusted harness-only bootstrap; never let runner data replace market accounting.
+
+        Runner-supplied prices remain a fixed, cutoff-validated data seam. Financial
+        inputs are always the initial API snapshots, not caller-created balances.
+        """
+        if self._reserved or self.records:
+            raise ValueError("A fresh calculator is required")
+        snapshot = CalculationSnapshot.model_validate_json(self.snapshot.model_dump_json())
+        if (snapshot.account is not None and snapshot.account != account) or (
+            snapshot.portfolio is not None and snapshot.portfolio != portfolio
+        ):
+            raise ValueError("Calculation financial inputs disagree with market state")
+        snapshot = snapshot.model_copy(update={"account": account, "portfolio": portfolio})
+        self.snapshot = CalculationSnapshot.model_validate_json(snapshot.model_dump_json())
+        self.inputs_json = encode(self.snapshot.model_dump(mode="json"))
+
     def reserve(self) -> bool:
         """Prevent two decisions sharing a calculator/audit trail."""
         if self._reserved or self.records:
