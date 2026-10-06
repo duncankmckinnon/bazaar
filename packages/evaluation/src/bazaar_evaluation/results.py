@@ -2,7 +2,7 @@ from enum import StrEnum
 from typing import Annotated, Self
 from uuid import UUID
 
-from bazaar_protocol import NonNegativeAmount, Version
+from bazaar_protocol import ExactAmount, NonNegativeAmount, Version
 from pydantic import Field, model_validator
 
 from bazaar_evaluation._base import EvaluationModel
@@ -36,6 +36,8 @@ class _Result(EvaluationModel):
 
     @model_validator(mode="after")
     def unscored_results_explain_why(self) -> Self:
+        if self.status == ScoreStatus.SCORED and not self.evidence:
+            raise ValueError("a scored result needs evidence")
         if self.status in (ScoreStatus.FAILED, ScoreStatus.UNSUPPORTED) and not any(
             e.reason.strip() for e in self.evidence
         ):
@@ -45,6 +47,9 @@ class _Result(EvaluationModel):
 
 class TradeScore(_Result):
     order_id: UUID
+    realized_pnl: ExactAmount | None = None  # net of this sell's fee and the closed lots' buy fees
+    closed_quantity: NonNegativeAmount | None = None
+    fee: NonNegativeAmount | None = None
 
 
 class PeriodSummary(_Result):

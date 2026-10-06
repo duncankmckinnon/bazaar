@@ -13,6 +13,7 @@ from bazaar_evaluation.inputs import (
     SymbolChange,
     corporate_action_adapter,
 )
+from bazaar_evaluation.ledger import LedgerReplay, OpenLot, replay_ledger
 from bazaar_evaluation.results import (
     Denominator,
     Evidence,
@@ -30,6 +31,8 @@ __all__ = [
     "EvaluatorConfig",
     "Evidence",
     "InferenceSpend",
+    "LedgerReplay",
+    "OpenLot",
     "PeriodSummary",
     "PriceSeries",
     "RunEvidence",
@@ -38,4 +41,5 @@ __all__ = [
     "SymbolChange",
     "TradeScore",
     "corporate_action_adapter",
+    "replay_ledger",
 ]
