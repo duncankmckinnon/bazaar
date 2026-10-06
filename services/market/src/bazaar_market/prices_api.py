@@ -1,13 +1,12 @@
 """Agent price reads, cut off at the experiment's trusted clock.
 
-The app provides two things on `app.state`: `clock`, with `cutoff(experiment_id)`, and
+The app provides two things on `app.state`: `clock`, with `experiment(experiment_id)`, and
 `market_data_for`, which returns the `SqliteMarketData` for an experiment's data version.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -21,7 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from .clock import Clock
+from .clock import SqliteClock
 from .prices import FutureDataError, MissingData, SqliteMarketData
 
 router = APIRouter()
@@ -50,16 +49,16 @@ def price_history(
     except ValidationError as exc:
         return _error(422, ErrorCode.INVALID_REQUEST, str(exc.errors()[0]["msg"]))
 
-    clock: Clock = request.app.state.clock
+    clock: SqliteClock = request.app.state.clock
     market_data_for: Callable[[UUID], SqliteMarketData] = request.app.state.market_data_for
     try:
-        cutoff = clock.cutoff(experiment_id).astimezone(UTC)
+        experiment = clock.experiment(experiment_id)
         market_data = market_data_for(experiment_id)
     except LookupError:
         return _error(404, ErrorCode.NOT_FOUND, "Unknown experiment")
     try:
         observations = market_data.price_history(
-            query.symbol, query.start_at, query.end_at, cutoff, query.limit
+            query.symbol, query.start_at, query.end_at, experiment.cutoff_at, query.limit
         )
         source = market_data.price_source
     except FutureDataError:
@@ -69,8 +68,10 @@ def price_history(
     return PriceHistory(
         experiment_id=experiment_id,
         symbol=query.symbol,
-        cutoff_at=cutoff,
+        cutoff_at=experiment.cutoff_at,
         source=source,
-        data_version=market_data.data_version,
+        # The experiment's version (a bundle id, or a plain bars version), which the agent's
+        # client checks against its context; the bars component it resolves to is the source.
+        data_version=experiment.data_version,
         observations=observations,
     )
