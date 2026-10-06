@@ -1,7 +1,7 @@
 """The market as the runner sees it: agent-facing routes plus the trusted control calls."""
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol
 from uuid import UUID
@@ -18,7 +18,17 @@ from bazaar_protocol import (
     PortfolioSnapshot,
     PriceObservation,
     RejectedOrder,
+    Symbol,
+    WireModel,
 )
+
+
+class FiscalCycle(WireModel):
+    """A company's current reporting cycle as of a cutoff: start is the day after the period end
+    of its latest 10-K/10-Q public at that cutoff. Trusted market data, never invented."""
+
+    symbol: Symbol
+    start: date
 
 
 class MarketError(Exception):
@@ -103,6 +113,12 @@ class MarketPort(Protocol):
 
     async def orders(self, ctx: ExperimentContext, start_at: datetime) -> tuple[OrderResult, ...]:
         """The account's order results from start_at to ctx's cutoff, for reconciliation."""
+        ...
+
+    async def fiscal_cycles(
+        self, ctx: ExperimentContext, symbols: Sequence[str]
+    ) -> tuple[FiscalCycle, ...]:
+        """Each symbol's cycle as of ctx's cutoff; a symbol with no public filing is absent."""
         ...
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
