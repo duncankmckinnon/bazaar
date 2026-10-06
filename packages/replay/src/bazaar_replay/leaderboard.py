@@ -253,7 +253,7 @@ def build_board(loaded: list[Run | Entry]) -> Leaderboard:
             )
 
     ranked.sort(key=lambda e: e.run_id)
-    ranked.sort(key=lambda e: e.period_return is None or -e.period_return)
+    ranked.sort(key=lambda e: (e.period_return is None, -(e.period_return or 0)))
     header = None
     if anchor is not None:
         manifest = anchor.record.manifest

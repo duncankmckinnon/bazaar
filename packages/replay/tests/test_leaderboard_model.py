@@ -247,3 +247,11 @@ def test_without_buy_and_hold_there_is_no_excess_but_matching_still_applies(tmp_
     assert ids(board.ranked) == ["a-agent", "cash"]
     assert all(e.excess_vs_buy_and_hold is None for e in board.ranked)
     assert ids(board.not_comparable) == ["shifted"]
+
+
+def test_null_return_sorts_below_a_total_loss(tmp_path):
+    write_run(tmp_path, "a-none", policy_ref="scripted-momentum-v1", period_return=None)
+    write_run(tmp_path, "b-total-loss", policy_ref="scripted-momentum-v1", period_return="-1")
+    write_run(tmp_path, "c-flat", policy_ref="baseline-cash-only", period_return="0")
+
+    assert ids(load_board(tmp_path).ranked) == ["c-flat", "b-total-loss", "a-none"]
