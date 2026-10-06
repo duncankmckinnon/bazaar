@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI
 
 from bazaar_market import ledger_api, prices, prices_api
 from bazaar_market.clock import SqliteClock
+from bazaar_market.dev_grants import DevAllowListGrants
 from bazaar_market.ledger import Ledger
 from bazaar_market.ledger_api import DenyAllGrants, GrantChecker
 
@@ -47,7 +48,7 @@ def create_app(
 ) -> FastAPI:
     path = database_path or Path(os.getenv("BAZAAR_MARKET_DB", DEFAULT_DB))
     token = runner_token if runner_token is not None else os.getenv("BAZAAR_RUNNER_TOKEN")
-    grants = grants or DenyAllGrants()
+    grants = grants or DevAllowListGrants.from_env() or DenyAllGrants()
     clock = SqliteClock(path)
     ledger = Ledger(path, lambda data_version: prices.SqliteMarketData(path, data_version))
 
