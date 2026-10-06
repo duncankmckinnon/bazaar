@@ -41,13 +41,20 @@ class Snapshot:
             raise UnsafePath(f"{name!r} is outside {self.dir}")
         return target
 
+    def _key(self, name: str) -> str:
+        """The manifest name for `name`, so two spellings of one file share one entry."""
+        return self.path(name).relative_to(self.dir.resolve()).as_posix()
+
     def entry(self, name: str) -> dict | None:
         """The manifest entry for `name`, or None when the file was never recorded."""
-        return next((e for e in self._manifest()["files"] if e["file"] == name), None)
+        key = self._key(name)
+        return next((e for e in self._manifest()["files"] if e["file"] == key), None)
 
     def write(self, name: str, content: bytes, *, url: str, rows: int) -> Path:
         target = self.path(name)
         if self.entry(name) is not None:
+            if not target.exists():
+                raise SnapshotConflict(f"{target} is listed in the manifest but missing on disk.")
             if target.read_bytes() == content:
                 return target
             raise SnapshotConflict(
@@ -59,7 +66,7 @@ class Snapshot:
         manifest = self._manifest()
         manifest["files"].append(
             {
-                "file": name,
+                "file": self._key(name),
                 "url": url,
                 "sha256": hashlib.sha256(content).hexdigest(),
                 "bytes": len(content),

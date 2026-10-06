@@ -101,3 +101,24 @@ def test_a_write_leaves_no_temporary_files_behind(tmp_path):
 
 def test_entry_is_none_for_a_file_that_was_never_recorded(tmp_path):
     assert make(tmp_path).entry("missing.json") is None
+
+
+def test_two_spellings_of_one_name_share_one_frozen_file(tmp_path):
+    snap = make(tmp_path)
+    snap.write("a/b.json", b"one", url="u", rows=1)
+
+    with pytest.raises(SnapshotConflict):
+        snap.write("a/./b.json", b"two", url="u", rows=1)
+
+    assert snap.path("a/b.json").read_bytes() == b"one"
+    manifest = json.loads((snap.dir / "manifest.json").read_text())
+    assert [e["file"] for e in manifest["files"]] == ["a/b.json"]
+
+
+def test_a_listed_file_missing_on_disk_is_a_conflict(tmp_path):
+    snap = make(tmp_path)
+    snap.write("b.json", b"hello\n", url="u", rows=1)
+    snap.path("b.json").unlink()
+
+    with pytest.raises(SnapshotConflict, match="missing"):
+        snap.write("b.json", b"hello\n", url="u", rows=1)
