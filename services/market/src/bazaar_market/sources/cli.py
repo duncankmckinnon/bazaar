@@ -31,10 +31,13 @@ from .universe import load_config
 DEFAULT_SEC_USER_AGENT = "bazaar-market-sources/0.1 (no contact declared)"
 
 
-def _alpaca_headers(env: Mapping[str, str]) -> dict[str, str]:
+def _alpaca_headers(env: Mapping[str, str], command: str) -> dict[str, str]:
     key, secret = env.get("ALPACA_API_KEY"), env.get("ALPACA_SECRET_KEY")
     if not key or not secret:
-        raise SystemExit("news needs ALPACA_API_KEY and ALPACA_SECRET_KEY in the environment")
+        raise SystemExit(
+            f"{command} needs ALPACA_API_KEY and ALPACA_SECRET_KEY in the environment. "
+            "Run it with: uv run --env-file .env python -m bazaar_market.sources " + command
+        )
     return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
 
 
@@ -90,7 +93,8 @@ def _run(
     cfg = load_config(Path(args.config))
     root = Path(args.root)
     needs_news = args.command in ("news", "capture-news", "all")
-    news_headers = _alpaca_headers(env) if needs_news or args.command == "bars" else None
+    needs_keys = needs_news or args.command == "bars"
+    news_headers = _alpaca_headers(env, args.command) if needs_keys else None
     http = http or httpx.Client(timeout=60)
 
     if args.command in ("universe", "all"):
