@@ -96,7 +96,7 @@ def encode(value: object) -> str:
 
 
 def digest(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()
+    return hashlib.sha256(value.encode(errors="surrogatepass")).hexdigest()
 
 
 async def _reap(creation, process, communication) -> None:
@@ -181,15 +181,38 @@ class MontyCalculator:
                 raw, stderr = await asyncio.shield(communication)
                 if process.returncode == 0:
                     result = json.loads(raw)
-                    status = result["status"]
+                    # IPC failures are fatal boundaries, not correctable model math errors.
+                    if not isinstance(result, dict) or result.get("status") not in (
+                        "ok",
+                        "denied",
+                        "syntax",
+                        "runtime",
+                        "serialization",
+                        "worker_error",
+                    ):
+                        raise ValueError("Invalid calculation worker response")
                     output = result.get("output_json")
                     error_text = result.get("error_text")
-                    prints_json = encode(result.get("prints", []))
+                    prints = result.get("prints", [])
+                    if (
+                        not isinstance(prints, list)
+                        or (error_text is not None and not isinstance(error_text, str))
+                        or (output is not None and not isinstance(output, str))
+                        or (result["status"] == "ok" and output is None)
+                        or (result["status"] != "ok" and output is not None)
+                    ):
+                        raise ValueError("Invalid calculation worker payload")
+                    if output is not None:
+                        json.loads(output)
+                    prints_json = encode(prints)
+                    status = result["status"]
                 else:
                     error_text = f"Worker exited with status {process.returncode}: {stderr.decode(errors='replace')}"
             except asyncio.CancelledError:
                 cancelled = True
             except Exception as exc:  # noqa: BLE001 -- private record, never span exception text
+                status = "worker_error"
+                output = None
                 error_text = str(exc)
             finally:
                 cleanup = asyncio.create_task(_reap(creation, process, communication))
@@ -221,8 +244,9 @@ class MontyCalculator:
             return ToolResult(data=record)
         # Detailed SDK diagnostics belong to the caller-owned audit record, not telemetry.
         return ToolResult(
+            data=record,
             error=ToolError(
                 code="unsupported" if status == "denied" else "invalid_request",
                 message=f"Monty calculation failed: {status}",
-            )
+            ),
         )

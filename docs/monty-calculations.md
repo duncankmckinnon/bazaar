@@ -1,6 +1,6 @@
 # Monty calculations (#22)
 
-The `monty` strategy capability exposes two model-callable tools:
+The harness exposes two built-in model-callable tools, independently of strategy:
 
 - `monty_inputs()` inspects the runner's fixed calculation snapshot.
 - `monty_calculate(code)` executes Python in **pydantic-monty 0.0.14**. The last
@@ -8,9 +8,9 @@ The `monty` strategy capability exposes two model-callable tools:
 
 The model supplies **code only**, not a dataset, account identity, clock, filesystem
 path, URL or host callback. The runner supplies a `MontyCalculator` to `run_decision`.
-The `monty` harness requires this explicit capability and calculator. Existing
-`single_shot` and `research` harnesses can also opt into the capability. Models remain
-local injected PydanticAI fixtures; Gateway binding is separate work.
+There is no Monty strategy flag or Monty-specific harness. Trusted harness/runner
+configuration owns the model and eligible data. Models remain local injected
+PydanticAI fixtures; Gateway binding is separate work.
 
 ## Inputs and calculations
 
@@ -24,7 +24,7 @@ calculator = MontyCalculator(CalculationSnapshot(
     account=account_snapshot,
     portfolio=portfolio_snapshot,
 ))
-# Pass calculator=calculator to run_decision, with a definition enabling "monty".
+# Pass calculator=calculator to run_decision; strategy contains instructions only.
 ```
 
 `inputs` is a JSON-compatible dictionary containing `context`, `prices`, `account`
@@ -72,8 +72,12 @@ not available. Input mutations affect only the worker's copy.
 **There are intentionally no Monty-specific code/data/output size ceilings,
 truncation, allocation/recursion quotas, memory quotas or execution deadlines.**
 This follows the requested design: SDK compilation/runtime failures and ordinary
-JSON serialization failures are reported as failures, rather than invented resource
-rejections. Finite JSON is required by the result format. Printed output is retained,
+JSON serialization failures are reported with complete private diagnostics, rather
+than invented resource rejections. In the decision loop, syntax/runtime/serialization
+failures return their full immutable calculation record to the model so it can correct
+code within the existing overall budget. Host-denial, invalid worker boundaries and
+scope failures still stop the decision; ambiguous orders remain fatal. Finite JSON
+is required by the result format. Printed output is retained,
 not emitted to ordinary application stdout or silently truncated.
 
 The pre-existing trading-agent model/tool/token/decision budgets are unchanged;
@@ -89,8 +93,10 @@ is an experimental SDK boundary, not an independently audited security guarantee
 complete code, canonical inputs, code/snapshot digests, status, complete JSON result,
 captured prints, SDK failure diagnostics and elapsed duration. Records are owned by
 the caller through `calculator.records`; `DecisionResult.calculations` retains that
-decision's records, including failures and cancellation. No new database or storage
-API is introduced. Validation failures before execution are not execution records.
+decision's records, including failures. Cancellation raises instead of returning a
+`DecisionResult`: the cancelled execution record remains in the caller's calculator
+only. No new database or storage API is introduced. Validation failures before
+execution are not execution records.
 
 Ordinary Logfire spans contain only digests, status and duration. Source, inputs,
 results, prints and error diagnostics are private audit data, not telemetry. The

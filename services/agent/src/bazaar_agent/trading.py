@@ -166,7 +166,14 @@ async def run_decision(
                     if calls > budget.tool_calls:
                         raise UsageLimitExceeded("Tool budget exhausted")
                     result = await fn(*args, **kwargs)
-                    if result.error is not None:
+                    # Pure compile/math/JSON failures are private tool feedback, not
+                    # a failed decision. The model may correct code within the SAME
+                    # overall budgets; scope/host/worker/order failures remain fatal.
+                    if result.error is not None and not (
+                        name == "monty_calculate"
+                        and result.data is not None
+                        and result.data.status in ("syntax", "runtime", "serialization")
+                    ):
                         raise _StopDecision(result.error)
                     return result
 

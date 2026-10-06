@@ -229,3 +229,101 @@ async def test_private_code_inputs_results_excluded_from_logfire(capfire):
     spans = capfire.exporter.exported_spans_as_dict()
     assert marker not in json.dumps(spans, default=str)
     assert any(span["name"] == "monty.calculate" for span in spans)
+
+
+@pytest.mark.parametrize(
+    "code,status", [("1 +", "syntax"), ("1/0", "runtime"), ("float('inf')", "serialization")]
+)
+async def test_model_corrects_pure_calculation_failure(code, status):
+    from pydantic_ai.messages import ToolReturnPart
+
+    def correction(info):
+        return [ToolCallPart("monty_calculate", {"code": "1+2"})]
+
+    model, calls = script(
+        [ToolCallPart("monty_calculate", {"code": code})],
+        correction,
+        lambda info: [output(info)],
+    )
+    calc = calculator()
+    result, _ = await invoke(model, tools=("monty",), overrides={"calculator": calc})
+    assert result.error is None and result.decision.action == "hold"
+    assert [r.status for r in result.calculations] == [status, "ok"]
+    feedback = [p for m in calls[1][0] for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert feedback[0].content.data.error_text == calc.records[0].error_text
+    assert feedback[0].content.data.code == code
+    assert result.usage.tool_calls == 2 and result.usage.model_requests == 3
+
+
+async def test_denied_host_boundary_stops_decision():
+    model, calls = script([ToolCallPart("monty_calculate", {"code": "open('/etc/passwd')"})])
+    result, _ = await invoke(model, tools=("monty",), overrides={"calculator": calculator()})
+    assert result.error is not None and result.decision is None
+    assert result.calculations[0].status == "denied" and len(calls) == 1
+
+
+async def test_recovery_still_obeys_overall_tool_budget():
+    from bazaar_agent.trading import DecisionBudget
+
+    model, _ = script(
+        [ToolCallPart("monty_calculate", {"code": "1/0"})],
+        [ToolCallPart("monty_calculate", {"code": "1+2"})],
+    )
+    result, _ = await invoke(
+        model,
+        tools=("monty",),
+        overrides={
+            "calculator": calculator(),
+            "budget": DecisionBudget(tool_calls=1),
+        },
+    )
+    assert result.error.code == "conflict"
+    assert len(result.calculations) == 1 and result.calculations[0].status == "runtime"
+
+
+async def test_private_failure_feedback_not_in_global_sdk_telemetry(capfire, caplog):
+    from pydantic_ai import Agent
+
+    marker = "PRIVATE-CALC-DIAGNOSTIC-12345"
+    Agent.instrument_all(True)
+    try:
+        model, _ = script(
+            [
+                ToolCallPart(
+                    "monty_calculate", {"code": f"print({marker!r})\nraise ValueError({marker!r})"}
+                )
+            ],
+            [ToolCallPart("monty_calculate", {"code": "1+2"})],
+            lambda info: [output(info)],
+        )
+        result, _ = await invoke(model, tools=("monty",), overrides={"calculator": calculator()})
+        assert result.error is None and marker in result.calculations[0].error_text
+        assert marker in result.calculations[0].prints_json
+        assert (
+            marker
+            not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str) + caplog.text
+        )
+    finally:
+        Agent.instrument_all(False)
+
+
+async def test_invalid_worker_response_is_fatal_boundary(monkeypatch):
+    import sys
+
+    original = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        return await original(sys.executable, "-c", 'print(\'{"status":"future"}\')', **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    calc = calculator()
+    result = await calc.monty_calculate("1+2")
+    assert result.error is not None and result.data.status == "worker_error"
+    assert result.data.output_json is None
+
+
+async def test_invalid_unicode_code_is_recorded_privately(capfire):
+    calc = calculator()
+    result = await calc.monty_calculate("'\ud800'")
+    assert result.error is not None and len(calc.records) == 1
+    assert calc.records[0].code == "'\ud800'"
