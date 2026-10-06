@@ -21,6 +21,8 @@ def evaluate_run(
 ) -> RunEvaluation:
     context = evidence.context
     for snap in (outcome.final_account, *outcome.marks):
+        if snap is None:
+            continue
         if (snap.account_id, snap.experiment_id) != (context.account_id, context.experiment_id):
             raise ValueError(
                 "run outcome snapshots must belong to the run's account and experiment"
@@ -70,24 +72,31 @@ def _drawdown(values: list[Decimal]) -> tuple[Decimal, Decimal | None]:
     return amount, fraction
 
 
+def period_denominators(
+    orders: tuple, statuses: list[ScoreStatus], marks: int
+) -> tuple[Denominator, ...]:
+    fills = sum(isinstance(o, FilledOrder) for o in orders)
+    return tuple(
+        Denominator(name=name, value=value)
+        for name, value in (
+            ("orders", len(orders)),
+            ("fills", fills),
+            ("rejections", len(orders) - fills),
+            ("scored", statuses.count(ScoreStatus.SCORED)),
+            ("failed", statuses.count(ScoreStatus.FAILED)),
+            ("unsupported", statuses.count(ScoreStatus.UNSUPPORTED)),
+            ("marks", marks),
+        )
+    )
+
+
 def _period(
     evidence: RunEvidence, outcome: RunOutcome, config: EvaluatorConfig, replay: LedgerReplay
 ) -> PeriodSummary:
     context, opening, marks = evidence.context, evidence.opening_account, outcome.marks
     fills = [o for o in evidence.orders if isinstance(o, FilledOrder)]
     statuses = [s.status for s in replay.trade_scores]
-    denominators = tuple(
-        Denominator(name=name, value=value)
-        for name, value in (
-            ("orders", len(evidence.orders)),
-            ("fills", len(fills)),
-            ("rejections", len(evidence.orders) - len(fills)),
-            ("scored", statuses.count(ScoreStatus.SCORED)),
-            ("failed", statuses.count(ScoreStatus.FAILED)),
-            ("unsupported", statuses.count(ScoreStatus.UNSUPPORTED)),
-            ("marks", len(marks)),
-        )
-    )
+    denominators = period_denominators(evidence.orders, statuses, len(marks))
     links = Evidence(
         data_version=context.data_version,
         execution_rule_version=context.execution_rule_version,
@@ -134,8 +143,9 @@ def _period(
         for lot in replay.open_lots:
             held[lot.symbol] = held.get(lot.symbol, Decimal(0)) + lot.quantity
         replayed = (replay.final_cash, held)
-        final = (outcome.final_account.cash, _holdings(outcome.final_account))
-        if final != replayed:
+        if outcome.final_account is None:
+            gaps.append("no final account snapshot")
+        elif (final := (outcome.final_account.cash, _holdings(outcome.final_account))) != replayed:
             gaps.append(
                 f"final account cash {final[0]} holdings {final[1]} differs from replay "
                 f"cash {replayed[0]} holdings {replayed[1]}"
