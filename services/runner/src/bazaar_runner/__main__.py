@@ -1,5 +1,10 @@
 """`python -m bazaar_runner --demo`: run the demo launches against the market service.
 
+    uv run --package bazaar-runner python -m bazaar_runner --demo --data-version alpaca-bars-v1
+
+Use --data-version synthetic-v1 as the fallback when real prices are not imported. Logfire sends
+only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
+
 Ids come from flags or environment variables. The runner token comes only from
 BAZAAR_RUNNER_TOKEN and is never printed. Evals (bazaar_evaluation) and the baselines
 (bazaar_replay) are optional imports, present on the demo integration branch.
@@ -63,7 +68,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--data-version",
         required=True,
-        help="the market's imported data version, e.g. synthetic-v1",
+        help="the market's imported data version: alpaca-bars-v1, or synthetic-v1 as fallback",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))
