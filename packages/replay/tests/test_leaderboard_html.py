@@ -78,3 +78,28 @@ def test_real_data_version_is_not_labelled_synthetic(tmp_path, write_run):
     )
 
     assert "synthetic prices" not in render(real)
+
+
+def test_refused_run_is_listed_with_its_code(tmp_path, demo_runs):
+    demo_runs(tmp_path)
+    html = render(load_board(tmp_path))
+
+    assert "<h2>Refused / failed</h2>" in html
+    assert "Failed runs" not in html
+    assert "approval_denied: refused before any account was opened" in html
+
+
+def test_failure_code_is_escaped(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "r",
+        policy_ref="scripted-momentum-v1",
+        period_return=None,
+        status="failed",
+        failure="x",
+        failure_code="<i>denied</i>",
+        account=False,
+        evaluation=False,
+    )
+
+    assert "&lt;i&gt;denied&lt;/i&gt;: x" in render(load_board(tmp_path))

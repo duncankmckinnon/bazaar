@@ -96,6 +96,11 @@ def row(rank: int, entry: Entry) -> str:
     return f"<tr{css}>{''.join(cells)}</tr>"
 
 
+def failure(entry: Entry) -> str:
+    reason = entry.reason or ""
+    return f"{entry.failure_code}: {reason}" if entry.failure_code else reason
+
+
 def side_list(title: str, items: list[str]) -> str:
     if not items:
         return ""
@@ -128,8 +133,8 @@ def render(board: Leaderboard) -> str:
     body = "".join(row(rank, entry) for rank, entry in enumerate(board.ranked, start=1))
     sides = (
         side_list(
-            "Failed runs",
-            [f"{escape(e.policy_ref or e.run_id)}: {escape(e.reason or '')}" for e in board.failed],
+            "Refused / failed",
+            [f"{escape(e.policy_ref or e.run_id)}: {escape(failure(e))}" for e in board.failed],
         )
         + side_list(
             "Not comparable",
