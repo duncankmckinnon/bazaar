@@ -15,12 +15,27 @@ from bazaar_protocol.registry import (
     AgentRecord,
     CreateStrategyRequest,
     CreateVersionRequest,
+    LegacyStrategyDefinition,
     Page,
     StrategyDefinition,
     StrategyRecord,
     StrategyRegistration,
     StrategyVersion,
 )
+from pydantic import ValidationError
+
+
+class _LegacyCreateStrategyRequest(CreateStrategyRequest):
+    """Historical normalization for read-only replay, not a submission model."""
+
+    definition: LegacyStrategyDefinition
+
+
+class _LegacyCreateVersionRequest(CreateVersionRequest):
+    """Historical normalization for read-only replay, not a submission model."""
+
+    definition: LegacyStrategyDefinition
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS registry_agents (
@@ -77,7 +92,8 @@ def digest(value: object) -> str:
 class RegistryStore:
     def __init__(self, database_path: Path, model_refs: frozenset[str], actor_label: str) -> None:
         self.database_path = database_path
-        self.model_refs = model_refs
+        # Retain the constructor argument for existing API callers. Runtime model
+        # catalogs no longer constrain instructions-only strategy registration.
         self.actor_label = actor_label
 
     @contextmanager
@@ -98,10 +114,6 @@ class RegistryStore:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
 
-    def _validate_definition(self, definition: StrategyDefinition) -> None:
-        if definition.model_ref not in self.model_refs:
-            raise RegistryError(422, ErrorCode.INVALID_REQUEST, "Unsupported model reference")
-
     @staticmethod
     def _replay(
         connection: sqlite3.Connection, scope: str, key: UUID, fingerprint: str
@@ -121,6 +133,33 @@ class RegistryStore:
                 409, ErrorCode.IDEMPOTENCY_CONFLICT, "Idempotency key content differs"
             )
         return row["response"]
+
+    def replay_legacy_request(
+        self, payload: object, key: UUID, *, strategy_id: UUID | None = None
+    ) -> StrategyRegistration | StrategyVersion | None:
+        """Replay a valid historical request only; never create records or consume keys.
+
+        Preserve all legacy fields and the original request normalization when
+        comparing fingerprints. Invalid legacy bodies and unused keys are not
+        compatible retries; a used key with different valid content conflicts.
+        """
+        request_type = (
+            _LegacyCreateStrategyRequest if strategy_id is None else _LegacyCreateVersionRequest
+        )
+        try:
+            request = request_type.model_validate(payload)
+        except ValidationError:
+            return None
+        scope = "create" if strategy_id is None else str(strategy_id)
+        with self.connect() as connection:
+            connection.cursor().execute("PRAGMA query_only = ON")
+            replay = self._replay(connection, scope, key, digest(request.model_dump(mode="json")))
+        if replay is None:
+            return None
+        response_type = StrategyRegistration if strategy_id is None else StrategyVersion
+        result = response_type.model_validate_json(replay)
+        logfire.info("Replayed legacy registry request", scope=scope)
+        return result
 
     @staticmethod
     def _remember(
@@ -190,7 +229,6 @@ class RegistryStore:
             if replay is not None:
                 logfire.info("Replayed strategy registration")
                 return StrategyRegistration.model_validate_json(replay)
-            self._validate_definition(request.definition)
             self._require_parent(connection, request.parent_version_id)
             if (
                 connection.cursor()
@@ -249,8 +287,6 @@ class RegistryStore:
                 strategy_id=str(strategy_id),
                 version_id=str(version.version_id),
                 agent_name=request.name,
-                harness=request.definition.harness,
-                model_ref=request.definition.model_ref,
             )
             return result
 
@@ -265,7 +301,6 @@ class RegistryStore:
             if replay is not None:
                 logfire.info("Replayed strategy version", strategy_id=str(strategy_id))
                 return StrategyVersion.model_validate_json(replay)
-            self._validate_definition(request.definition)
             strategy = self._strategy(connection, strategy_id)
             parent = request.parent_version_id or strategy.latest_version_id
             self._require_parent(connection, parent)
