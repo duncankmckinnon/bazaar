@@ -2,12 +2,14 @@
 
     uv run --package bazaar-runner python -m bazaar_runner --demo --data-version alpaca-bars-v1
 
+Four launches: agent-fixture-v1 (the agent places its own order through bazaar_agent.trading),
+scripted-momentum-v1 (drop it with --no-momentum), and the buy-and-hold and cash-only baselines.
 Use --data-version synthetic-v1 as the fallback when real prices are not imported. Logfire sends
 only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
 
 Ids come from flags or environment variables. The runner token comes only from
-BAZAAR_RUNNER_TOKEN and is never printed. Evals (bazaar_evaluation) and the baselines
-(bazaar_replay) are optional imports, present on the demo integration branch.
+BAZAAR_RUNNER_TOKEN and is never printed. The agent harness (bazaar_agent.trading), evals
+(bazaar_evaluation) and the baselines (bazaar_replay) are on the demo integration branch.
 """
 
 import argparse
@@ -22,6 +24,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from bazaar_runner.demo import (
+    AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
@@ -29,6 +32,7 @@ from bazaar_runner.demo import (
     Launch,
     PolicyFactory,
     ScriptedMomentum,
+    check_one_agent_per_experiment,
     run_demo,
 )
 from bazaar_runner.http_market import DEFAULT_BASE_URL, HttpMarketPort, RunnerConfigError
@@ -36,63 +40,93 @@ from bazaar_runner.record import Evaluate
 from bazaar_runner.telemetry import configure_telemetry
 
 logger = logging.getLogger("bazaar_runner")
-# Flag prefix -> policy_ref. All three share the schedule, period and starting cash.
-APPROVED_RUNS = {
-    "agent": MOMENTUM_REF,
-    "buy-and-hold": BUY_AND_HOLD_REF,
-    "cash-only": CASH_ONLY_REF,
-}
+# (flag prefix, policy_ref, older prefixes that still work). Every launch shares the schedule,
+# period, starting cash and data version, and has its own experiment, approval and port.
+DEMO_LAUNCHES = (
+    ("agent-fixture", AGENT_FIXTURE_REF, ()),
+    ("momentum", MOMENTUM_REF, ("agent",)),
+    ("buy-and-hold", BUY_AND_HOLD_REF, ()),
+    ("cash-only", CASH_ONLY_REF, ()),
+)
+KINDS = ("experiment", "approval")
 
 
-def _id_flag(parser: argparse.ArgumentParser, name: str, *, default: UUID | None = None) -> None:
-    env = "BAZAAR_" + name.upper().replace("-", "_")
-    value = os.getenv(env)
+class DemoUnavailable(Exception):
+    """A package the demo needs is not installed in this environment."""
+
+
+def _env_id(*names: str) -> UUID | None:
+    for name in names:
+        if value := os.getenv(name):
+            return UUID(value)
+    return None
+
+
+def _env_name(prefix: str, kind: str) -> str:
+    return f"BAZAAR_{prefix.upper().replace('-', '_')}_{kind.upper()}_ID"
+
+
+def _id_flag(
+    parser: argparse.ArgumentParser,
+    prefix: str,
+    kind: str,
+    aliases: tuple[str, ...] = (),
+    *,
+    default: UUID | None = None,
+) -> None:
+    names = (prefix, *aliases)
+    envs = [_env_name(name, kind) for name in names]
     parser.add_argument(
-        f"--{name}",
+        *(f"--{name}-{kind}-id" for name in names),
+        dest=f"{prefix.replace('-', '_')}_{kind}_id",
         type=UUID,
-        default=UUID(value) if value else default,
-        help=f"defaults to ${env}",
+        default=_env_id(*envs) or default,
+        help="defaults to " + " or ".join(f"${env}" for env in envs),
     )
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m bazaar_runner", description=__doc__)
     parser.add_argument("--demo", action="store_true", required=True, help="run the demo launches")
+    parser.add_argument("--no-momentum", action="store_true", help="leave out scripted-momentum-v1")
     parser.add_argument(
         "--refused-demo",
         action="store_true",
-        help="also launch an unlisted approval/experiment pair, which the market must refuse",
+        help="test only: also launch an unlisted approval/experiment pair the market must refuse",
     )
     parser.add_argument("--market-url", default=os.getenv("BAZAAR_MARKET_URL", DEFAULT_BASE_URL))
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument(
         "--data-version",
-        required=True,
-        help="the market's imported data version: alpaca-bars-v1, or synthetic-v1 as fallback",
+        default="alpaca-bars-v1",
+        help="one data version for every launch, so they stay comparable (synthetic-v1 fallback)",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))
-    for name in APPROVED_RUNS:
-        _id_flag(parser, f"{name}-experiment-id")
-        _id_flag(parser, f"{name}-approval-id")
+    for prefix, _, aliases in DEMO_LAUNCHES:
+        for kind in KINDS:
+            _id_flag(parser, prefix, kind, aliases)
     # Fresh random ids are never on the market's allow-list.
-    _id_flag(parser, "refused-experiment-id", default=uuid4())
-    _id_flag(parser, "refused-approval-id", default=uuid4())
+    for kind in KINDS:
+        _id_flag(parser, "refused", kind, default=uuid4())
     args = parser.parse_args(argv)
     missing = [
-        f"--{name}-{kind}-id"
-        for name in APPROVED_RUNS
-        for kind in ("experiment", "approval")
-        if _ids(args, name)[kind] is None
+        f"--{prefix}-{kind}-id"
+        for prefix, ref, _ in demo_launches(args)
+        for kind in KINDS
+        if _ids(args, prefix)[kind] is None
     ]
     if missing:
         parser.error("missing ids: " + ", ".join(missing))
     return args
 
 
-def _ids(args: argparse.Namespace, name: str) -> dict[str, UUID | None]:
-    prefix = name.replace("-", "_")
-    return {kind: getattr(args, f"{prefix}_{kind}_id") for kind in ("experiment", "approval")}
+def demo_launches(args: argparse.Namespace) -> list[tuple[str, str, tuple[str, ...]]]:
+    return [row for row in DEMO_LAUNCHES if not (args.no_momentum and row[1] == MOMENTUM_REF)]
+
+
+def _ids(args: argparse.Namespace, prefix: str) -> dict[str, UUID | None]:
+    return {kind: getattr(args, f"{prefix.replace('-', '_')}_{kind}_id") for kind in KINDS}
 
 
 def load_evaluate() -> Evaluate | None:
@@ -104,9 +138,27 @@ def load_evaluate() -> Evaluate | None:
     return evaluate_and_emit
 
 
-def load_policies() -> dict[str, PolicyFactory]:
+def load_policies(market_url: str) -> dict[str, PolicyFactory]:
+    try:
+        import bazaar_agent.trading  # noqa: F401 - fail at startup, not at the first decision
+        import pydantic_ai  # noqa: F401
+    except ImportError as exc:
+        raise DemoUnavailable(f"the agent launch needs bazaar_agent.trading: {exc}") from None
+    from bazaar_runner.agent import (
+        AGENT_FIXTURE_INSTRUCTIONS,
+        fixture_model_factory,
+        make_agent_decider,
+    )
+    from bazaar_runner.agent_step import AgentStep
+
+    def agent(prices):
+        # A fresh decider and fixture model per launch; the agent reads prices itself.
+        decider = make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory())
+        return AgentStep(decider, market_url=market_url)
+
     policies: dict[str, PolicyFactory] = {
-        MOMENTUM_REF: lambda prices: ScriptedMomentum(DEMO_SYMBOLS, prices)
+        AGENT_FIXTURE_REF: agent,
+        MOMENTUM_REF: lambda prices: ScriptedMomentum(DEMO_SYMBOLS, prices),
     }
     try:
         from bazaar_replay.baselines import BuyAndHold, CashOnly
@@ -119,14 +171,16 @@ def load_policies() -> dict[str, PolicyFactory]:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    policies = load_policies()
+    policies = load_policies(args.market_url)
     launches = []
-    for name, ref in APPROVED_RUNS.items():
+    for prefix, ref, _ in demo_launches(args):
         if ref in policies:
-            ids = _ids(args, name)
+            ids = _ids(args, prefix)
             launches.append(Launch(ref, ids["experiment"], ids["approval"]))
     if args.refused_demo:
         launches.append(Launch(MOMENTUM_REF, args.refused_experiment_id, args.refused_approval_id))
+    # One agent per experiment: refuse before any port, account or order exists.
+    check_one_agent_per_experiment(launches)
 
     async with httpx.AsyncClient(base_url=args.market_url, timeout=30) as client:
         # Built before any run, so a missing token stops the CLI at startup.
@@ -158,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_telemetry()
     try:
         return asyncio.run(amain(args))
-    except RunnerConfigError as exc:
+    except (RunnerConfigError, DemoUnavailable, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
