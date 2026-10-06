@@ -7,3 +7,5 @@ dist/
 *.egg-info/
 .env
 data/*.db
+skills-lock.json
+.claude/
