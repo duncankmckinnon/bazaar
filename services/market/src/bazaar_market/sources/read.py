@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .alpaca_news import parse_news
-from .edgar import parse_company_facts, parse_submissions
+from .edgar import check_acceptance_label, parse_company_facts, parse_submissions
 from .errors import SourceError
 from .models import Fact, Filing, NewsItem
 
@@ -59,6 +59,8 @@ def load_filings(
         if not frozen.has(older):
             raise SourceError(f"filing history for company {cik} is incomplete: {older}")
         filings += parse_submissions(frozen.read(older), cik=cik, forms=forms)
+    for filing in filings:
+        check_acceptance_label(filing)
     return sorted(filings, key=lambda f: f.accepted_at)
 
 

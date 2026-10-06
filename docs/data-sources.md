@@ -91,6 +91,12 @@ They do not authorize anything, and the market server still has to enforce the c
   and 8-K filings since 2005 match EDGAR's 17:30 Eastern filing-date rule only after subtracting the Eastern offset.
   Read as labelled, no filing is dated before its acceptance, so these filings become visible late and never early.
   Correcting the value needs the acceptance time on the filing index page, which is on `www.sec.gov`.
+  `load_filings` checks every 10-K, 10-Q and 8-K, and their amendments, against the 17:30 Eastern rule.
+  It raises `SourceError` when a filing is labelled on a weekday before 17:30 Eastern but dated a later day, because
+  that label is earlier than the real acceptance and would show the filing early.
+  This catches only early labels that cross a filing-date boundary.
+  An early label that stays on the filing date, such as 16:30 Eastern stamped as 16:30 UTC, is still undetectable
+  without the index page.
 - Membership is keyed by the ticker in use at the time.
   `in_universe` is false for FISV from 2023-06-07 to 2025-11-10, when Fiserv traded as FI.
   Mapping a company across a rename is left to the importer.

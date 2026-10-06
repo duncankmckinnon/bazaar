@@ -10,7 +10,9 @@ import json
 import time
 from collections.abc import Callable
 from datetime import date, datetime
+from datetime import time as clock
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -21,6 +23,9 @@ from .snapshot import Snapshot
 
 DATA_URL = "https://data.sec.gov"
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data"
+EASTERN = ZoneInfo("America/New_York")
+FILING_DAY_CUTOFF = clock(17, 30)
+CUTOFF_FORMS = frozenset({"10-K", "10-Q", "8-K"})
 
 
 class ContactRequired(Exception):
@@ -52,6 +57,26 @@ def parse_submissions(
             )
         )
     return filings
+
+
+def check_acceptance_label(filing: Filing) -> None:
+    """Raise when `accepted_at` is provably earlier than the real acceptance.
+
+    EDGAR dates a 10-K, 10-Q or 8-K accepted on a business day before 17:30 Eastern with that
+    day. If the labelled time falls on a weekday before 17:30 Eastern and the filing date is
+    later, the filing was accepted later than labelled, and reading the label would show it
+    early. A label later than the real time is tolerated, since it only delays visibility.
+    """
+    if filing.form.removesuffix("/A") not in CUTOFF_FORMS:
+        return
+    labelled = filing.accepted_at.astimezone(EASTERN)
+    on_weekday_before_cutoff = labelled.weekday() < 5 and labelled.time() < FILING_DAY_CUTOFF
+    if on_weekday_before_cutoff and filing.filing_date > labelled.date():
+        raise SourceError(
+            f"{filing.accession} ({filing.form}) is labelled as accepted at {filing.accepted_at}, "
+            f"which is before the 17:30 Eastern cutoff on {labelled.date()}, but its filing date is "
+            f"{filing.filing_date}. The label is earlier than the real acceptance."
+        )
 
 
 def parse_company_facts(payload: dict) -> list[Fact]:

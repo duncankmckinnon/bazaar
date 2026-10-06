@@ -230,3 +230,47 @@ def test_news_coverage_fails_when_no_window_was_recorded(tmp_path):
 
     with pytest.raises(SourceError, match="AAPL"):
         news_coverage(snap.dir, "AAPL")
+
+
+def one_filing_snapshot(tmp_path, *, form, filed, accepted):
+    snap = Snapshot(tmp_path, source="edgar", version="v1")
+    recent = {**columns("a-1", form, filed), "acceptanceDateTime": [accepted]}
+    payload = {"cik": "0000000042", "filings": {"recent": recent}}
+    snap.write("submissions/CIK0000000042.json", json.dumps(payload).encode(), url="u", rows=1)
+    return snap.dir
+
+
+def test_a_filing_accepted_before_the_cutoff_on_its_filing_date_loads(tmp_path):
+    # 16:30 EDT on Wednesday 2025-07-30.
+    snap_dir = one_filing_snapshot(
+        tmp_path, form="8-K", filed="2025-07-30", accepted="2025-07-30T20:30:00.000Z"
+    )
+
+    assert [f.accession for f in load_filings(snap_dir, 42)] == ["a-1"]
+
+
+@pytest.mark.parametrize(
+    ("filed", "accepted"),
+    [
+        # Accepted 16:30 EDT, labelled 4 h late: 20:30 EDT, after the cutoff on the same day.
+        ("2025-07-30", "2025-07-31T00:30:00.000Z"),
+        # Accepted 21:00 EDT and dated the next day, labelled 4 h late: 01:00 EDT on that day.
+        ("2025-07-31", "2025-07-31T05:00:00.000Z"),
+    ],
+)
+def test_a_filing_labelled_later_than_its_acceptance_loads(tmp_path, filed, accepted):
+    snap_dir = one_filing_snapshot(tmp_path, form="10-Q", filed=filed, accepted=accepted)
+
+    assert [f.accession for f in load_filings(snap_dir, 42)] == ["a-1"]
+
+
+@pytest.mark.parametrize("form", ["8-K", "10-K/A"])
+def test_a_filing_labelled_earlier_than_its_acceptance_is_refused(tmp_path, form):
+    # Accepted 18:00 EDT on 2025-07-30, so dated 2025-07-31. Eastern wall time stamped as UTC
+    # reads as 14:00 EDT on 2025-07-30, before the cutoff and before the filing date.
+    snap_dir = one_filing_snapshot(
+        tmp_path, form=form, filed="2025-07-31", accepted="2025-07-30T18:00:00.000Z"
+    )
+
+    with pytest.raises(SourceError, match="earlier than the real acceptance"):
+        load_filings(snap_dir, 42)
