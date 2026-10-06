@@ -1,0 +1,16 @@
+[project]
+name = "bazaar-runner"
+version = "0.1.0"
+description = "Experiment runner: simulated clock, event ordering and run lifecycle."
+requires-python = ">=3.12"
+dependencies = ["bazaar-protocol"]
+
+[tool.uv.sources]
+bazaar-protocol = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bazaar_runner"]
