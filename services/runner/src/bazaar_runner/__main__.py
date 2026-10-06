@@ -29,6 +29,7 @@ from bazaar_runner.demo import (
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
     MOMENTUM_REF,
+    DuplicateLaunch,
     Launch,
     PolicyFactory,
     ScriptedMomentum,
@@ -40,8 +41,9 @@ from bazaar_runner.record import Evaluate
 from bazaar_runner.telemetry import configure_telemetry
 
 logger = logging.getLogger("bazaar_runner")
-# (flag prefix, policy_ref, older prefixes that still work). Every launch shares the schedule,
-# period, starting cash and data version, and has its own experiment, approval and port.
+# (flag prefix, policy_ref, deprecated prefixes that still work but warn). Every launch shares
+# the schedule, period, starting cash and data version, and has its own experiment, approval
+# and port.
 DEMO_LAUNCHES = (
     ("agent-fixture", AGENT_FIXTURE_REF, ()),
     ("momentum", MOMENTUM_REF, ("agent",)),
@@ -55,34 +57,61 @@ class DemoUnavailable(Exception):
     """A package the demo needs is not installed in this environment."""
 
 
-def _env_id(*names: str) -> UUID | None:
-    for name in names:
+def _env_name(prefix: str, kind: str) -> str:
+    return f"BAZAAR_{prefix.upper().replace('-', '_')}_{kind.upper()}_ID"
+
+
+def _env_id(primary: str, *deprecated: str) -> UUID | None:
+    if value := os.getenv(primary):
+        return UUID(value)
+    for name in deprecated:
         if value := os.getenv(name):
+            logger.warning("$%s is deprecated: it names the momentum run; set $%s", name, primary)
             return UUID(value)
     return None
 
 
-def _env_name(prefix: str, kind: str) -> str:
-    return f"BAZAAR_{prefix.upper().replace('-', '_')}_{kind.upper()}_ID"
+class _DeprecatedFlag(argparse.Action):
+    """An old flag that still works but warns, so an operator is not misled by its name."""
+
+    def __init__(self, *args, primary: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.primary = primary
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        logger.warning(
+            "%s is deprecated: it names the momentum run; use %s", option_string, self.primary
+        )
+        setattr(namespace, self.dest, values)
 
 
 def _id_flag(
     parser: argparse.ArgumentParser,
     prefix: str,
     kind: str,
-    aliases: tuple[str, ...] = (),
+    deprecated: tuple[str, ...] = (),
     *,
     default: UUID | None = None,
 ) -> None:
-    names = (prefix, *aliases)
-    envs = [_env_name(name, kind) for name in names]
+    dest = f"{prefix.replace('-', '_')}_{kind}_id"
+    primary, env = f"--{prefix}-{kind}-id", _env_name(prefix, kind)
+    old_envs = [_env_name(name, kind) for name in deprecated]
+    help_text = f"defaults to ${env}"
+    if old_envs:
+        help_text += " (deprecated: " + ", ".join(f"${e}" for e in old_envs) + ")"
     parser.add_argument(
-        *(f"--{name}-{kind}-id" for name in names),
-        dest=f"{prefix.replace('-', '_')}_{kind}_id",
-        type=UUID,
-        default=_env_id(*envs) or default,
-        help="defaults to " + " or ".join(f"${env}" for env in envs),
+        primary, dest=dest, type=UUID, default=_env_id(env, *old_envs) or default, help=help_text
     )
+    for name in deprecated:
+        parser.add_argument(
+            f"--{name}-{kind}-id",
+            dest=dest,
+            type=UUID,
+            action=_DeprecatedFlag,
+            primary=primary,
+            default=argparse.SUPPRESS,
+            help=f"deprecated alias for {primary}",
+        )
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -212,7 +241,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_telemetry()
     try:
         return asyncio.run(amain(args))
-    except (RunnerConfigError, DemoUnavailable, ValueError) as exc:
+    # By name only: any other ValueError (a pydantic ValidationError, say) keeps its traceback.
+    except (RunnerConfigError, DemoUnavailable, DuplicateLaunch) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

@@ -340,6 +340,28 @@ def test_parse_order_page_accepts_each_candidate_shape(shape):
     assert cursor == ("c2" if shape == "items" else None)
 
 
+def test_parse_order_page_reads_the_markets_history_page():
+    """The market's GET orders, as checked live on demo 2d7e6e3: a HistoryPage with rejections."""
+    sample = json.loads(SAMPLE.read_text())
+    filled, rejected = (o["result"] for o in sample["orders"][:3:2])
+    page = {
+        "experiment_id": sample["manifest"]["experiment_id"],
+        "account_id": sample["manifest"]["account_id"],
+        "agent_id": sample["manifest"]["agent_id"],
+        "strategy_version_id": sample["manifest"]["strategy_version_id"],
+        "cutoff_at": "2025-07-02T13:30:00Z",
+        "start_at": "2025-07-01T13:30:00Z",
+        "end_at": "2025-07-02T13:30:00Z",
+        "source": "market-ledger",
+        "data_version": "synthetic-v1",
+        "coverage": "complete",
+        "items": [filled, rejected],
+        "next_cursor": None,
+    }
+    results, cursor = parse_order_page(json.dumps(page).encode())
+    assert [r.status for r in results] == ["filled", "rejected"] and cursor is None
+
+
 async def test_http_orders_reads_the_route_with_the_approval_only():
     seen: list[httpx.Request] = []
     fake = InMemoryMarket()

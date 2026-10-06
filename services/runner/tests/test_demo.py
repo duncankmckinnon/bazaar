@@ -12,6 +12,7 @@ from bazaar_runner.demo import (
     CASH_ONLY_REF,
     DEMO_SYMBOLS,
     MOMENTUM_REF,
+    DuplicateLaunch,
     Launch,
     ScriptedMomentum,
     demo_script,
@@ -250,7 +251,7 @@ def test_cli_refuses_a_shared_approval_too(offline_cli, monkeypatch, capsys, tmp
 
 async def test_run_demo_itself_refuses_a_shared_experiment(tmp_path):
     twin = Launch(CASH_ONLY_REF, MOMENTUM.experiment_id, UUID(int=0xAB))
-    with pytest.raises(ValueError, match="more than one launch"):
+    with pytest.raises(DuplicateLaunch, match="more than one launch"):
         await run_demo(
             [MOMENTUM, twin],
             {MOMENTUM: InMemoryMarket(), twin: InMemoryMarket()},
@@ -260,6 +261,17 @@ async def test_run_demo_itself_refuses_a_shared_experiment(tmp_path):
             **DEMO,
         )
     assert list(tmp_path.iterdir()) == []
+
+
+def test_other_value_errors_are_not_swallowed_by_the_cli(offline_cli, monkeypatch, tmp_path):
+    monkeypatch.setenv(RUNNER_TOKEN_ENV, TOKEN)
+
+    async def broken(args):
+        raise ValueError("a bug, not an operator mistake")
+
+    monkeypatch.setattr(cli, "amain", broken)
+    with pytest.raises(ValueError, match="a bug"):
+        cli.main(["--demo", "--runs-dir", str(tmp_path), *cli_ids()])
 
 
 def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
@@ -276,7 +288,7 @@ def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
     assert MOMENTUM_REF not in [ref for _, ref, _ in cli.demo_launches(args)]
 
 
-def test_the_old_agent_flags_still_name_the_momentum_run(offline_cli, monkeypatch):
+def test_the_deprecated_agent_names_still_set_momentum_but_warn(offline_cli, monkeypatch, caplog):
     rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_REF]
     by_flag = cli.parse_args(
         [
@@ -292,6 +304,10 @@ def test_the_old_agent_flags_still_name_the_momentum_run(offline_cli, monkeypatc
         UUID(int=0xBEEF),
         UUID(int=0xBEF0),
     )
+    assert "--agent-experiment-id is deprecated" in caplog.text
+    assert "use --momentum-experiment-id" in caplog.text
+
+    caplog.clear()
     monkeypatch.setenv("BAZAAR_AGENT_EXPERIMENT_ID", str(UUID(int=0xCAFE)))
     monkeypatch.setenv("BAZAAR_AGENT_APPROVAL_ID", str(UUID(int=0xCAFF)))
     by_env = cli.parse_args(["--demo", *cli_ids(*rows)])
@@ -299,6 +315,14 @@ def test_the_old_agent_flags_still_name_the_momentum_run(offline_cli, monkeypatc
         UUID(int=0xCAFE),
         UUID(int=0xCAFF),
     )
+    assert "$BAZAAR_AGENT_EXPERIMENT_ID is deprecated" in caplog.text
+    assert "set $BAZAAR_MOMENTUM_EXPERIMENT_ID" in caplog.text
+
+
+def test_the_primary_momentum_names_do_not_warn(offline_cli, caplog):
+    args = cli.parse_args(["--demo", *cli_ids()])
+    assert args.momentum_experiment_id is not None
+    assert "deprecated" not in caplog.text
 
 
 def test_cli_requires_every_launch_id(offline_cli, capsys):

@@ -109,6 +109,10 @@ def demo_spec(
     )
 
 
+class DuplicateLaunch(ValueError):
+    """Two launches share an experiment or approval id: one agent per experiment."""
+
+
 def check_one_agent_per_experiment(launches: Sequence[Launch]) -> None:
     """Approvals are experiment-scoped: no two launches may share an experiment or approval id."""
     for kind in ("experiment_id", "approval_id"):
@@ -116,7 +120,7 @@ def check_one_agent_per_experiment(launches: Sequence[Launch]) -> None:
         for launch in launches:
             value = getattr(launch, kind)
             if value in seen:
-                raise ValueError(
+                raise DuplicateLaunch(
                     f"{kind} {value} is used by more than one launch"
                     f" ({seen[value]} and {launch.policy_ref}); each launch needs its own"
                 )
