@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Annotated, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from bazaar_protocol import (
     AccountSnapshot,
@@ -27,6 +27,17 @@ class HistoryRequest(WireModel):
     end_at: AwareDatetime
     limit: Annotated[int, Field(strict=True, ge=1, le=1000)] = 100
     cursor: Cursor | None = None
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def parse_query_limit(cls, value: object) -> object:
+        return PriceHistoryRequest.parse_query_limit(value)
+
+    @model_validator(mode="after")
+    def valid_window(self) -> "HistoryRequest":
+        if self.start_at > self.end_at:
+            raise ValueError("start_at must not be after end_at")
+        return self
 
 
 class Provenance(WireModel):

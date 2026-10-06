@@ -20,8 +20,13 @@ credentials. The caller owns its lifecycle. Requests never follow redirects or a
 retry orders. Preserve `client_order_id` on an explicit retry after an ambiguous failure.
 Transport/API errors discard server bodies and exception text; rejected order messages are
 replaced with their enum codes. Successful archived content is intentionally returned to the
-trading model, but never recorded in tool spans. Instrument HTTP without headers or bodies.
-Tool spans use `extract_args=False`; caught errors cannot produce payload-bearing exception events.
+trading model, but never recorded in tool spans. The outbound request runs inside
+`logfire.suppress_instrumentation()` even when the client is HTTPX-instrumented: child spans can
+otherwise expose cursor query strings or exception text before a tool catches it. Only the safe
+tool span remains. Do not attach hooks/transports that independently log credentials or payloads.
+Tool spans use `extract_args=False`; ordinary transport/hook exceptions are caught inside the
+span with fixed messages. Cancellation still propagates. Local preflight errors are
+`invalid_request`, distinct from invalid server responses.
 No real model, external search provider, database credentials, approval or auth implementation is added.
 
 ## Trusted context and defensive validation
@@ -39,7 +44,9 @@ All returned data must match scope, cutoff, version, query window and page limit
 ordered with unique record IDs; continuations must be ordered beyond the previous page and may
 not repeat IDs. Opaque cursors can only be used after issuance for that exact route/window/symbol/
 limit and context. Repeated reads may reissue a stable cursor only with the same query, source,
-accumulated IDs and boundary. Cursor cycles/incompatible reuse are rejected. No automatic page
+accumulated IDs and boundary. A payload digest additionally requires identical page replays,
+including terminal pages; no page content is cached. Callers must treat repeated reads as replays,
+not append duplicate records to their history. Cursor cycles/incompatible reuse are rejected. No automatic page
 walking or unbounded retrieval. Archive queries select publication timestamps (private history
 selects simulated timestamps), with inclusive UTC start/end. A daily news request uses a UTC day
 window capped at the cutoff; revision/availability filtering still applies to its text/headline.
@@ -79,7 +86,11 @@ Queries are `start_at`, `end_at`, `limit`, optional `cursor`; symbols only come 
 with scope, cutoff, requested coverage window, source/version and `coverage` status. Complete
 coverage is for the entire query window, not just the records on one page. Provenance records
 carry stable IDs and revision IDs; news/filing content includes publication, revision and
-availability timestamps. Servers must choose only eligible versions and never backfill a modern
+availability timestamps. Provenance-bearing archive items must match the page source. Account/
+portfolio/order history envelope source identifies the history store, while embedded mark/fill
+sources may identify a different price provider; embedded source versions must still match the
+trusted context. Snapshot identity is simulated timestamp plus state version, not state version
+alone. Servers must choose only eligible versions and never backfill a modern
 snippet into an old version. Missing supported routes return safe `missing_data` (404) or
 `unsupported` (501), not an invented success. The existing price DTO does not have a coverage
 flag: explicit missing-price coverage must be a server error; empty price history is not proof

@@ -1,10 +1,12 @@
 """Synthetic archive/adapter fixtures only; no live market, model or telemetry token."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
+import logfire
 import pytest
 from bazaar_agent.research import FiscalCycle, ResearchContext, ResearchTools
 from bazaar_protocol import ExperimentContext, OrderRequest
@@ -576,6 +578,93 @@ async def test_private_stable_cursor_replay():
         first = await tools.private_history(history_request())
         second = await tools.private_history(history_request())
     assert first.error is None and first == second
+
+
+@pytest.mark.parametrize("failure", ["timeout", "transport", "hook"])
+async def test_instrumented_http_failures_cannot_leak_exception_text(failure, capfire, caplog):
+    def handler(r):
+        if failure == "timeout":
+            raise httpx.ReadTimeout(SECRET, request=r)
+        if failure == "transport":
+            raise RuntimeError(SECRET)
+        return httpx.Response(200, json=page([news()]))
+
+    async def hook(response):
+        raise RuntimeError(SECRET)
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid",
+        transport=httpx.MockTransport(handler),
+        event_hooks={"response": [hook]} if failure == "hook" else {},
+    ) as client:
+        logfire.instrument_httpx(
+            client, capture_headers=False, capture_request_body=False, capture_response_body=False
+        )
+        result = await ResearchTools(client, context()).news(request())
+    assert result.error.code == ("network" if failure == "timeout" else "server_error")
+    assert SECRET not in result.model_dump_json()
+    spans = capfire.exporter.exported_spans_as_dict()
+    assert "research.tool" in {s["name"] for s in spans}
+    assert SECRET not in json.dumps(spans, default=str)
+    assert SECRET not in caplog.text
+    assert not any(
+        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
+    )
+
+
+async def test_instrumented_http_cursor_and_payload_not_exported(capfire):
+    def handler(r):
+        cursor = r.url.params.get("cursor")
+        return httpx.Response(
+            200,
+            json=page(
+                [news(record_id="n2" if cursor else "n1")], next_cursor=None if cursor else SECRET
+            ),
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        logfire.instrument_httpx(
+            client, capture_headers=False, capture_request_body=False, capture_response_body=False
+        )
+        tools = ResearchTools(client, context())
+        assert (await tools.news(request())).error is None
+        assert (await tools.news(request(cursor=SECRET))).error is None
+    assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+
+
+async def test_terminal_page_replay_must_be_identical():
+    responses = [
+        page([news()], next_cursor="first"),
+        page([news(record_id="n2")]),
+        page([news(record_id="n2", text="changed")]),
+    ]
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=responses.pop(0))),
+    ) as client:
+        tools = ResearchTools(client, context())
+        assert (await tools.news(request())).error is None
+        assert (await tools.news(request(cursor="first"))).error is None
+        assert (await tools.news(request(cursor="first"))).error.code == "invalid_response"
+
+
+async def test_http_cancellation_is_not_swallowed():
+    def handler(r):
+        raise asyncio.CancelledError
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(asyncio.CancelledError):
+            await ResearchTools(client, context()).news(request())
+
+
+def test_history_wire_query_limit_and_reversed_window():
+    assert HistoryRequest(start_at=EARLY, end_at=NOW, limit="100").limit == 100
+    with pytest.raises(ValidationError):
+        HistoryRequest(start_at=NOW, end_at=EARLY)
 
 
 async def test_cross_page_duplicate_rejected():

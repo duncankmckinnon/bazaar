@@ -5,6 +5,7 @@ state cache, external search, database access or unrestricted private-history qu
 """
 
 from datetime import date, datetime
+from hashlib import sha256
 from typing import Literal, Protocol, TypeVar
 
 import httpx
@@ -116,6 +117,7 @@ class ResearchTools:
         self._client = client
         self._context = ResearchContext.model_validate_json(context.model_dump_json())
         self._private = private_history or UnavailablePrivateHistory()
+        self._pages: dict[tuple[str, str, str | None], str] = {}
         self._cursors: dict[tuple[str, str], str] = {}
         self._cursor_sources: dict[tuple[str, str], str] = {}
         self._cursor_rows: dict[tuple[str, str], tuple[tuple[datetime, str], frozenset[str]]] = {}
@@ -201,6 +203,21 @@ class ResearchTools:
                 self._cursor_sources[token] = source
                 self._cursor_rows[token] = boundary
 
+    def _replay(
+        self,
+        value: BaseModel,
+        request: HistoryRequest | PriceHistoryRequest,
+        route: str,
+        *,
+        remember: bool = False,
+    ) -> None:
+        key = (route, self._query_key(request), request.cursor)
+        fingerprint = sha256(value.model_dump_json().encode()).hexdigest()
+        require(key not in self._pages or self._pages[key] == fingerprint)
+        if remember:
+            # Retain only a digest, never private/research payloads.
+            self._pages[key] = fingerprint
+
     def _provenance(self, value: Provenance) -> None:
         require(value.data_version == self._ctx.data_version)
         require(
@@ -210,6 +227,7 @@ class ResearchTools:
     def _page(
         self, value: HistoryPage, request: HistoryRequest | ResearchRequest, route: str
     ) -> None:
+        self._replay(value, request, route)
         self._scope(value)
         require(value.cutoff_at == self._ctx.simulated_at)
         require(value.start_at == request.start_at and value.end_at == request.end_at)
@@ -246,6 +264,7 @@ class ResearchTools:
             keys.append((timestamp, key))
         require(keys == sorted(keys) and len({k for _, k in keys}) == len(keys))
         self._pagination(request, route, value.next_cursor, len(value.items), keys, value.source)
+        self._replay(value, request, route, remember=True)
 
     async def _call(
         self,
@@ -255,6 +274,7 @@ class ResearchTools:
     ) -> ToolResult[T]:
         # Catch INSIDE span: exceptions/validation payloads must never enter telemetry.
         with logfire.span("research tool", _tags=["research"], _span_name="research.tool"):
+            prepared = False
             try:
                 if request is not None:
                     request = type(request).model_validate_json(request.model_dump_json())
@@ -263,15 +283,19 @@ class ResearchTools:
                     params = request.model_dump(mode="json", exclude={"symbol"}, exclude_none=True)
                 else:
                     params = None
-                response = await self._client.request(
-                    "POST" if isinstance(request, OrderRequest) else "GET",
-                    route,
-                    params=params,
-                    json=request.model_dump(mode="json")
-                    if isinstance(request, OrderRequest)
-                    else None,
-                    follow_redirects=False,
-                )
+                prepared = True
+                # HTTP child spans can record opaque cursors or exception messages
+                # before this boundary catches them. Keep only our payload-free span.
+                with logfire.suppress_instrumentation():
+                    response = await self._client.request(
+                        "POST" if isinstance(request, OrderRequest) else "GET",
+                        route,
+                        params=params,
+                        json=request.model_dump(mode="json")
+                        if isinstance(request, OrderRequest)
+                        else None,
+                        follow_redirects=False,
+                    )
                 if response.status_code != 200:
                     code, message = {
                         401: ("unauthorized", "Authentication required"),
@@ -307,6 +331,7 @@ class ResearchTools:
                 elif isinstance(value, PriceHistory):
                     if not isinstance(request, PriceHistoryRequest):
                         raise BoundaryError
+                    self._replay(value, request, route)
                     self._scope(value)
                     require(value.symbol == request.symbol)
                     require(value.cutoff_at == self._ctx.simulated_at)
@@ -325,6 +350,7 @@ class ResearchTools:
                         [(p.observed_at, p.observed_at.isoformat()) for p in value.observations],
                         value.source,
                     )
+                    self._replay(value, request, route, remember=True)
                 elif isinstance(value, FilledOrder | RejectedOrder):
                     # Sanitize domain messages before returning or validating further.
                     value = self._safe_order(value)
@@ -354,8 +380,17 @@ class ResearchTools:
             except (ValidationError, BoundaryError, ValueError):
                 return ToolResult(
                     error=ToolError(
-                        code="invalid_response",
-                        message="Request or response violates scoped contract",
+                        code="invalid_response" if prepared else "invalid_request",
+                        message="Response violates scoped contract"
+                        if prepared
+                        else "Request violates scoped contract",
+                    )
+                )
+            except Exception:  # noqa: BLE001 -- transport/hooks must not leak secrets
+                return ToolResult(
+                    error=ToolError(
+                        code="server_error",
+                        message="Market client failed; retry orders only with the same ID",
                     )
                 )
 
@@ -401,9 +436,11 @@ class ResearchTools:
 
     @logfire.instrument("private history tool", extract_args=False)
     async def private_history(self, request: HistoryRequest) -> ToolResult[PrivateHistoryPage]:
+        prepared = False
         try:
             request = HistoryRequest.model_validate_json(request.model_dump_json())
             self._window(request, "private")
+            prepared = True
             value = await self._private.read(self._ctx, request)
             value = PrivateHistoryPage.model_validate_json(value.model_dump_json())
             if value.coverage != "complete":
@@ -421,6 +458,9 @@ class ResearchTools:
         except Exception:  # noqa: BLE001 -- untrusted SDK failures must not leak payloads
             return ToolResult(
                 error=ToolError(
-                    code="invalid_response", message="Private-history boundary or adapter failure"
+                    code="invalid_response" if prepared else "invalid_request",
+                    message="Private-history boundary or adapter failure"
+                    if prepared
+                    else "Request violates scoped contract",
                 )
             )
