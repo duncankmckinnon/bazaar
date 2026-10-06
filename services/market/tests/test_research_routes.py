@@ -243,3 +243,16 @@ def test_research_scope_reads_the_account_header(run):
     ok = run.http.get(url, headers={"X-Bazaar-Account": str(run.account_id)}).json()
     assert ok == {"account_id": str(run.account_id), "data_version": "test-v1",
                   "agent_id": str(run.agent_id), "cutoff_at": iso(run.now)}  # fmt: skip
+
+
+async def test_an_order_placed_while_paging_is_not_skipped(run):
+    placed = [run.order("buy", "1") for _ in range(3)]
+    assert [p["order_id"] for p in placed] == sorted(p["order_id"] for p in placed)
+    tools, client = run.tools()
+    async with client:
+        first = await tools.orders(window(run, limit=2))
+        late = run.order("buy", "1")  # same cutoff, after the cursor was issued
+        rest = await tools.orders(window(run, limit=2, cursor=first.data.next_cursor))
+    assert first.error is None and rest.error is None
+    returned = [str(item.order_id) for item in (*first.data.items, *rest.data.items)]
+    assert returned == [*(p["order_id"] for p in placed), late["order_id"]]

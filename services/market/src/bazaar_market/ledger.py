@@ -7,6 +7,7 @@ the write, so concurrent orders cannot spend the same cash or sell the same shar
 
 import hashlib
 import json
+import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -318,7 +319,10 @@ class Ledger:
             rule = rule_for(experiment.execution_rule_version)
             quantity = whole_shares(order.quantity)
             now = experiment.cutoff_at
-            result = self._execute(connection, experiment, rule, account, order, quantity, now)
+            order_id = self._next_order_id(connection)
+            result = self._execute(
+                connection, experiment, rule, account, order, quantity, now, order_id
+            )
             connection.execute(
                 "INSERT INTO acct_orders VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -427,10 +431,11 @@ class Ledger:
         order: OrderRequest,
         quantity: int,
         now: datetime,
+        order_id: UUID,
     ) -> FilledOrder | RejectedOrder:
         def reject(code: ErrorCode, message: str) -> RejectedOrder:
             return RejectedOrder(
-                order_id=uuid4(),
+                order_id=order_id,
                 client_order_id=order.client_order_id,
                 symbol=order.symbol,
                 side=order.side,
@@ -475,7 +480,7 @@ class Ledger:
         )
         updated = replace(account, cash_cents=cash, state_version=state_version, holdings=holdings)
         return FilledOrder(
-            order_id=uuid4(),
+            order_id=order_id,
             client_order_id=order.client_order_id,
             symbol=order.symbol,
             side=order.side,
@@ -554,6 +559,17 @@ class Ledger:
             closed_at=db.parse_time(row["closed_at"]) if row["closed_at"] else None,
             holdings={h["symbol"]: h["quantity"] for h in holdings},
         )
+
+    @staticmethod
+    def _next_order_id(connection: sqlite3.Connection) -> UUID:
+        """A UUID whose string sorts in placement order: the first 16 hex digits are the order's
+        sequence number. Call it inside the order's write transaction, which serializes writers.
+
+        Order history sorts by (simulated_at, order_id), so an order placed while a client is
+        paging always sorts after the orders already returned at that cutoff.
+        """
+        (last,) = connection.execute("SELECT COALESCE(MAX(rowid), 0) FROM acct_orders").fetchone()
+        return UUID(hex=f"{last + 1:016x}{secrets.token_hex(8)}")
 
     @staticmethod
     def _page_scope(experiment: Experiment, account: _Account) -> PageScope:

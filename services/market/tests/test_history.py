@@ -118,3 +118,12 @@ def test_query_parsing_errors_are_422():
         parse_history_request("2025-07-02T00:00:00Z", "2025-07-01T00:00:00Z")
     assert error.value.status_code == 422
     assert parse_history_request("2025-07-01T00:00:00Z", "2025-07-02T00:00:00Z", "5").limit == 5
+
+
+def test_a_non_ascii_cursor_is_422_not_500():
+    cursor = page(request(limit=1)).next_cursor
+    token, _ = cursor.split(".")
+    for bad in (f"{token}.é", "é.abc"):
+        with pytest.raises(MarketError) as error:
+            page(request(limit=1, cursor=bad))
+        assert error.value.status_code == 422

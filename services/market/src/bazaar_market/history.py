@@ -80,7 +80,7 @@ def decode_cursor(cursor: str, binding: dict[str, object], secret: bytes) -> Key
         payload = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
     except ValueError:
         raise _invalid_cursor() from None
-    if not hmac.compare_digest(signature, _sign(payload, secret)):
+    if not hmac.compare_digest(signature.encode(), _sign(payload, secret).encode()):
         raise _invalid_cursor()
     body = json.loads(payload)
     after = body.pop("after")
