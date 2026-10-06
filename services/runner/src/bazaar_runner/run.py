@@ -95,23 +95,25 @@ def failure_code(exc: Exception) -> FailureCode:
 def describe_failure(
     exc: Exception, spec: "RunSpec", step: str, account: AccountSnapshot | None
 ) -> str:
-    """One readable sentence for Logfire and the leaderboard: no exception repr, no secret."""
+    """One readable sentence for Logfire and the leaderboard: no exception repr, no secret.
+
+    The leaderboard prints "<failure_code>: <failure>", so the sentence never repeats its code.
+    """
     if isinstance(exc, ApprovalDenied):
         sentence = (
-            f"approval denied: approval {spec.approval_id} is not approved"
-            f" for experiment {spec.experiment_id}"
+            f"approval {spec.approval_id} is not approved for experiment {spec.experiment_id}"
         )
         if account is None:
             sentence += "; refused before any account was opened"
         return sentence
     if isinstance(exc, RunnerUnauthorized):
-        return f"runner unauthorized {step}: the market refused the runner's credential"
+        return f"the market refused the runner's credential {step}"
     if isinstance(exc, FutureData):
-        return f"future data refused {step}: a read asked for data past the experiment's clock"
+        return f"a read past the experiment's clock was refused {step}"
     if isinstance(exc, MarketError):
         # The adapter has already redacted the runner token from market messages.
-        return f"market error {step} ({exc.detail.code}): {exc.detail.message}"
-    return f"policy error {step}: the run stopped on {type(exc).__name__}"
+        return f"{step}, the market said: {exc.detail.message}"
+    return f"the run stopped on {type(exc).__name__} {step}"
 
 
 def _at(kind: str, event_sequence: int, simulated_at: datetime) -> str:

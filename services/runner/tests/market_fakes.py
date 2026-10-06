@@ -61,7 +61,7 @@ SPEC = RunSpec(
 
 def refused_sentence(approval_id: UUID, experiment_id: UUID) -> str:
     return (
-        f"approval denied: approval {approval_id} is not approved for experiment {experiment_id}"
+        f"approval {approval_id} is not approved for experiment {experiment_id}"
         "; refused before any account was opened"
     )
 
