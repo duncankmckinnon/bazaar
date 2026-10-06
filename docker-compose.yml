@@ -1,0 +1,34 @@
+x-agent: &agent
+  build:
+    context: .
+    dockerfile: services/agent/Dockerfile
+  depends_on:
+    market:
+      condition: service_healthy
+  environment: &agent-env
+    MARKET_URL: http://market:8000
+
+services:
+  market:
+    build:
+      context: .
+      dockerfile: services/market/Dockerfile
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  seller:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      AGENT_NAME: seller
+
+  buyer:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      AGENT_NAME: buyer

@@ -6,6 +6,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync
+      - run: uv sync --all-packages --frozen
       - run: uv run ruff check
       - run: uv run pytest
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build --wait market
+      - run: docker compose up -d --build seller buyer
+      - run: sleep 8 && docker compose logs seller buyer | grep -c "market reachable"

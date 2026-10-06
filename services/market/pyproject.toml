@@ -1,0 +1,13 @@
+[project]
+name = "bazaar-market"
+version = "0.1.0"
+description = "Simulated commodity market: prices, accounts, transaction history."
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115", "uvicorn>=0.30"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bazaar_market"]

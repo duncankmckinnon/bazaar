@@ -7,7 +7,7 @@ Replace the single-package prototype with a Docker project of three independent 
 ## Decisions
 
 - **Market is the exchange.** Agents only know the market URL. It serves prices, holds accounts and relays messages. Settlement of trades is deferred but the data model includes it.
-- **Symmetric agents.** One agent image, two instances with different directives files. No hard-coded seller or buyer role in code; each agent's goals, starting account and persona come from its directives.
+- **Symmetric agents.** One agent image, two instances with different directives files. No hard-coded seller or buyer role in code; each agent's goals and persona come from its directives; starting accounts come from `market.yaml`.
 - **Participants, not roles.** The market's unit is a participant (`id`, `kind` = `agent` | `human`). Messages are addressed participant to participant. A terminal or voice client for a third party is a future participant and needs no market or agent changes. No such client is built now.
 - **Free-form messages.** A message is `{id, thread_id, from_id, to_id, text, sent_at}`. The market never parses text. Structured trades are a later commitment step.
 - **Autonomous loop.** Each agent runs continuously: poll the market for new messages, run the Pydantic AI agent when there is something to react to, sleep otherwise.
@@ -42,9 +42,9 @@ Pydantic models: `Participant`, `Account`, `Holding`, `PricePoint`, `Message`, `
 - Messages are readable only by sender and recipient (checked via the `for` parameter; real auth is deferred).
 
 ### services/agent
-- Loads a directives YAML: participant id, starting account (sent to the market only through its seeding config), goals and persona text.
+- Loads a directives YAML: participant id, name, persona and goals. The starting account (cash, holdings) lives only in the market's `market.yaml`.
 - Market client (httpx) with typed methods for the skeleton endpoints; waits for `/health` on startup.
-- A Pydantic AI `Agent` whose system prompt is built from the directives, with three tools: `get_prices`, `get_my_account`, `send_message`.
+- A Pydantic AI `Agent` whose system prompt is built from the directives, with four tools: `get_prices`, `list_participants`, `get_my_account`, `send_message`. `list_participants` is included because a proactive agent cannot message anyone without knowing who exists.
 - Loop: poll messages since the persisted cursor, run the agent if any are new or a self-wake timer fires, advance the cursor only after a successful run, sleep. Tool errors from the market return as readable tool results; model failures leave the cursor unchanged.
 - Logfire: `logfire.configure()`, `instrument_pydantic_ai()` and httpx instrumentation, with `participant_id` as a resource attribute. Runs without a token (no export) for local work.
 
