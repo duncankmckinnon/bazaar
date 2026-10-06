@@ -1,11 +1,12 @@
 """`python -m bazaar_runner --demo`: run the demo launches against the market service.
 
-    uv run --package bazaar-runner python -m bazaar_runner --demo --data-version alpaca-bars-v1
+    uv run --package bazaar-runner python -m bazaar_runner --demo --data-version demo-bundle-v1
 
 Four launches: agent-fixture-v1 (the agent places its own order through bazaar_agent.trading),
 scripted-momentum-v1 (drop it with --no-momentum), and the buy-and-hold and cash-only baselines.
-Use --data-version synthetic-v1 as the fallback when real prices are not imported. Logfire sends
-only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
+demo-bundle-v1 (bars, news, filings) is the default because the agent reads news; every launch
+uses the one --data-version. alpaca-bars-v1 is bars only; synthetic-v1 is the offline fallback.
+Logfire sends only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
 
 Ids come from flags or environment variables. The runner token comes only from
 BAZAAR_RUNNER_TOKEN and is never printed. The agent harness (bazaar_agent.trading), evals
@@ -127,8 +128,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument(
         "--data-version",
-        default="alpaca-bars-v1",
-        help="one data version for every launch, so they stay comparable (synthetic-v1 fallback)",
+        default="demo-bundle-v1",
+        help="one data version for every launch, so they stay comparable: demo-bundle-v1 (bars,"
+        " news, filings), alpaca-bars-v1 (bars only) or synthetic-v1",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))

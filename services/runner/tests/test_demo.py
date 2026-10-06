@@ -276,7 +276,7 @@ def test_other_value_errors_are_not_swallowed_by_the_cli(offline_cli, monkeypatc
 
 def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
     args = cli.parse_args(["--demo", *cli_ids()])
-    assert args.data_version == "alpaca-bars-v1"
+    assert args.data_version == "demo-bundle-v1"
     assert [ref for _, ref, _ in cli.demo_launches(args)] == [
         "agent-fixture-v1",
         "scripted-momentum-v1",
@@ -368,7 +368,11 @@ async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfi
     assert (order.request.symbol, order.request.quantity) == ("AAPL", 10)
     assert order.result.client_order_id == uuid5(AGENT.experiment_id, "decision:0")
     assert agent.decision_errors == ()
-    assert [c[0] for c in agent_market.calls].count("submit") == 1
+    calls = [c[0] for c in agent_market.calls]
+    assert calls.count("submit") == 1
+    # It read AAPL news once, at the first decision, before it ordered.
+    assert [c for c in agent_market.calls if c[0] == "news"] == [("news", "AAPL")]
+    assert calls.index("news") < calls.index("submit")
     assert {r.manifest.schedule_digest for r in (agent, momentum, cash)} == {
         agent.manifest.schedule_digest
     }
@@ -390,3 +394,39 @@ async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfi
     assert len(trading) == len(SESSIONS)
     assert by_id[trading[0]["parent"]["span_id"]] is first
     assert TOKEN not in json.dumps(spans, default=str)
+
+
+async def test_demo_agent_news_error_ends_the_decision_and_is_reconciled(tmp_path):
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_runner.agent import (
+        AGENT_FIXTURE_INSTRUCTIONS,
+        fixture_model_factory,
+        make_agent_decider,
+    )
+    from bazaar_runner.agent_step import AgentStep
+
+    agent_market = InMemoryMarket()
+    served = delegating_transport(agent_market, approval_id=AGENT.approval_id)
+
+    async def news_down(request):
+        if "/news/" in request.url.path:
+            return httpx.Response(500, json={"error": {"code": "internal_error", "message": "x"}})
+        return await served.handle_async_request(request)
+
+    step = AgentStep(
+        make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory()),
+        market_url="http://market",
+        transport=httpx.MockTransport(news_down),
+    )
+    (agent,) = await run_demo(
+        [AGENT],
+        {AGENT: agent_market},
+        {AGENT_FIXTURE_REF: lambda prices: step},
+        starting_cash=Decimal(10000),
+        runs_dir=tmp_path,
+        **DEMO,
+    )
+    assert agent.status == "completed" and agent.orders == ()
+    (error,) = agent.decision_errors
+    assert (error.event_sequence, error.reconciled) == (0, "absent")
+    assert [c[0] for c in agent_market.calls].count("submit") == 0
