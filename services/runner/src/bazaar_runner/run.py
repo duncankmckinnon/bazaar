@@ -20,13 +20,21 @@ from bazaar_protocol import (
 )
 from pydantic import AwareDatetime, Field
 
-from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule
-from bazaar_runner.market import ApprovalDenied, FutureData, MarketError, MarketPort
+from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule, utc_z
+from bazaar_runner.market import (
+    ApprovalDenied,
+    FutureData,
+    MarketError,
+    MarketPort,
+    RunnerUnauthorized,
+)
 from bazaar_runner.policy import DecisionPolicy
 
 Index = Annotated[int, Field(ge=0, strict=True)]
-# The market's error code, or one of two runner codes. T4, evals and Logfire match on it.
-FailureCode = Literal["approval_denied", "future_data", "policy_error"] | ErrorCode
+# The market's error code, or a runner code. T4, evals and Logfire match on it.
+FailureCode = (
+    Literal["approval_denied", "future_data", "runner_unauthorized", "policy_error"] | ErrorCode
+)
 
 
 class RunState(StrEnum):
@@ -77,9 +85,37 @@ def failure_code(exc: Exception) -> FailureCode:
         return "approval_denied"
     if isinstance(exc, FutureData):
         return "future_data"
+    if isinstance(exc, RunnerUnauthorized):
+        return "runner_unauthorized"
     if isinstance(exc, MarketError):
         return exc.detail.code
     return "policy_error"
+
+
+def describe_failure(
+    exc: Exception, spec: "RunSpec", step: str, account: AccountSnapshot | None
+) -> str:
+    """One readable sentence for Logfire and the leaderboard: no exception repr, no secret."""
+    if isinstance(exc, ApprovalDenied):
+        sentence = (
+            f"approval denied: approval {spec.approval_id} is not approved"
+            f" for experiment {spec.experiment_id}"
+        )
+        if account is None:
+            sentence += "; refused before any account was opened"
+        return sentence
+    if isinstance(exc, RunnerUnauthorized):
+        return f"runner unauthorized {step}: the market refused the runner's credential"
+    if isinstance(exc, FutureData):
+        return f"future data refused {step}: a read asked for data past the experiment's clock"
+    if isinstance(exc, MarketError):
+        # The adapter has already redacted the runner token from market messages.
+        return f"market error {step} ({exc.detail.code}): {exc.detail.message}"
+    return f"policy error {step}: the run stopped on {type(exc).__name__}"
+
+
+def _at(kind: str, event_sequence: int, simulated_at: datetime) -> str:
+    return f"during the {kind} at {utc_z(simulated_at)} (event {event_sequence})"
 
 
 async def _submit(
@@ -115,6 +151,7 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
     orders: list[OrderRecord] = []
     marks: list[MarkRecord] = []
     state, failure, code = RunState.RUNNING, None, None
+    step = "while opening the run"
 
     async def set_cutoff(cutoff: datetime) -> None:
         await market.set_cutoff(
@@ -137,6 +174,7 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
         for event in schedule:
             ctx = event.context(manifest)
             at = {"event_sequence": event.event_sequence, "simulated_at": event.simulated_at}
+            step = _at(event.kind.value, event.event_sequence, event.simulated_at)
             if event.kind is EventKind.MARK:
                 with logfire.span("runner.mark", **at) as span:
                     await set_cutoff(event.simulated_at)
@@ -152,15 +190,17 @@ async def run_strategy(spec: RunSpec, market: MarketPort, policy: DecisionPolicy
                     account = await _submit(market, ctx, index, order, orders)
         state = RunState.COMPLETED
     except Exception as exc:  # noqa: BLE001 - any policy or market failure ends the run as failed
-        state, failure, code = RunState.FAILED, f"{type(exc).__name__}: {exc}", failure_code(exc)
+        state, code = RunState.FAILED, failure_code(exc)
+        failure = describe_failure(exc, spec, step, account)
 
     if account is not None:
         try:
             account = await market.close_account(spec.experiment_id, account.account_id)
         except Exception as exc:  # noqa: BLE001 - keep the run's record even if closing fails
             state, code = RunState.FAILED, code or failure_code(exc)
-            failure = f"{failure}; " if failure else ""
-            failure += f"close_account failed, account left open: {type(exc).__name__}: {exc}"
+            closing = describe_failure(exc, spec, "while closing the account", account)
+            failure = f"{failure}; then {closing}" if failure else closing
+            failure += f"; account {account.account_id} was left open"
 
     return RunResult(
         run_id=spec.run_id,

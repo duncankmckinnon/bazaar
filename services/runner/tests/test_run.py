@@ -6,7 +6,7 @@ from bazaar_protocol import ErrorCode, ErrorDetail, OrderRequest, OrderSide
 from bazaar_runner.market import ApprovalDenied, MarketError
 from bazaar_runner.run import RunResult, RunState, run_strategy
 
-from .market_fakes import SESSIONS, SPEC, InMemoryMarket
+from .market_fakes import SESSIONS, SPEC, InMemoryMarket, refused_sentence
 
 
 def order(side: OrderSide, symbol: str, quantity: int, n: int) -> OrderRequest:
@@ -118,7 +118,12 @@ async def test_decide_raising_fails_the_run_and_keeps_its_fills():
     result = await run_strategy(SPEC, market, decide)
 
     assert result.state is RunState.FAILED
-    assert result.failure == "RuntimeError: policy blew up"
+    # 2026-02-05 is the fourth session; its open is event 6.
+    assert result.failure == (
+        "policy error during the decision at 2026-02-05T14:30:00Z (event 6):"
+        " the run stopped on RuntimeError"
+    )
+    assert "policy blew up" not in result.failure
     assert result.failure_code == "policy_error"
     assert [o.event_sequence for o in result.orders] == [0, 2, 2, 4]
     assert [m.event_sequence for m in result.marks] == [1, 3, 5]
@@ -141,9 +146,7 @@ async def test_market_error_before_any_account_fails_the_run(fail_on):
     assert result.state is RunState.FAILED
     assert result.account is None and result.orders == () and result.marks == ()
     assert result.failure_code == "approval_denied"
-    assert result.failure == (
-        "ApprovalDenied: experiment_not_approved: This approval does not allow the call"
-    )
+    assert result.failure == refused_sentence(SPEC.approval_id, SPEC.experiment_id)
     assert "close_account" not in [c[0] for c in market.calls]
 
 
@@ -157,7 +160,8 @@ async def test_close_failure_is_recorded_and_the_run_is_failed():
     result = await run_strategy(SPEC, market, scripted_policy([]))
     assert result.state is RunState.FAILED
     assert result.failure == (
-        "close_account failed, account left open: MarketError: internal_error: down"
+        "market error while closing the account (internal_error): down"
+        f"; account {result.account.account_id} was left open"
     )
     assert result.failure_code is ErrorCode.INTERNAL_ERROR
     assert result.account.cash == Decimal(7588)
@@ -173,6 +177,9 @@ async def test_a_policy_reading_a_future_price_fails_the_run():
     result = await run_strategy(SPEC, market, peek)
     assert result.state is RunState.FAILED
     assert result.failure_code == "future_data"
-    assert result.failure.startswith("FutureData: forbidden: 2026-02-13T21:00:00+00:00 is after")
+    assert result.failure == (
+        "future data refused during the decision at 2026-02-02T14:30:00Z (event 0):"
+        " a read asked for data past the experiment's clock"
+    )
     assert result.orders == () and result.marks == ()
     assert result.account.account_id in market.closed

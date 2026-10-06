@@ -9,7 +9,7 @@ from bazaar_runner.record import RunRecord, build_record, record_run
 from bazaar_runner.run import run_strategy
 from pydantic import BaseModel, ValidationError
 
-from .market_fakes import SESSIONS, SPEC, InMemoryMarket
+from .market_fakes import SESSIONS, SPEC, InMemoryMarket, refused_sentence
 
 # Copied from evals: feat/trade-evaluators 157878c,
 # packages/evaluation/tests/fixtures/runrecord-v1-sample.json.
@@ -80,7 +80,7 @@ async def test_record_from_a_completed_run():
     assert RunRecord.model_validate_json(record.model_dump_json()) == record
 
 
-async def test_an_approval_denied_run_is_recorded_but_not_evaluated(tmp_path):
+async def test_an_approval_denied_run_is_recorded_and_evaluated(capfire, tmp_path):
     market = InMemoryMarket()
 
     async def refuse(*args):
@@ -91,12 +91,38 @@ async def test_an_approval_denied_run_is_recorded_but_not_evaluated(tmp_path):
         SPEC, market, buy_once, policy_ref="refused", runs_dir=tmp_path, evaluate=fake_evaluate
     )
     assert record.status == "failed" and record.failure_code == "approval_denied"
-    assert record.failure.startswith("ApprovalDenied: experiment_not_approved")
+    assert record.failure == refused_sentence(SPEC.approval_id, SPEC.experiment_id)
     assert record.manifest.account_id is None and record.final_account is None
-    assert evaluation is None
+    assert evaluation == FakeEvaluation(policy_ref="refused", orders=0)
+    run_dir = tmp_path / str(SPEC.run_id)
+    assert RunRecord.model_validate_json((run_dir / "record.json").read_text()) == record
+    assert (run_dir / "evaluation.json").exists()
+
+    spans = capfire.exporter.exported_spans_as_dict()
+    (run,) = [s for s in spans if s["name"] == "runner.run"]
+    assert run["attributes"]["failure"] == record.failure
+    assert run["attributes"]["failure_code"] == "approval_denied"
+    assert run["attributes"]["logfire.level_num"] == 17  # error
+
+
+async def test_an_evaluator_that_raises_never_loses_the_record(capfire, tmp_path):
+    def broken(record):
+        raise RuntimeError("evals fell over")
+
+    record, evaluation = await record_run(
+        SPEC, InMemoryMarket(), buy_once, policy_ref="p", runs_dir=tmp_path, evaluate=broken
+    )
+    assert record.status == "completed" and evaluation is None
     run_dir = tmp_path / str(SPEC.run_id)
     assert RunRecord.model_validate_json((run_dir / "record.json").read_text()) == record
     assert not (run_dir / "evaluation.json").exists()
+
+    spans = capfire.exporter.exported_spans_as_dict()
+    (failed,) = [s for s in spans if s["name"] == "runner.evaluate"]
+    assert failed["events"][0]["attributes"]["exception.type"] == "RuntimeError"
+    (run,) = [s for s in spans if s["name"] == "runner.run"]
+    assert failed["parent"]["span_id"] == run["context"]["span_id"]
+    assert run["attributes"]["status"] == "completed"
 
 
 async def test_record_run_writes_record_and_evaluation(tmp_path):
@@ -153,7 +179,7 @@ async def test_spans_nest_under_the_run_and_evals_shares_its_trace(capfire, tmp_
         "status": "filled",
     }
     (evals,) = named("evals.fake")
-    assert parent(evals) is run
+    assert parent(parent(evals)) is run and parent(evals)["name"] == "runner.evaluate"
     trace = run["context"]["trace_id"]
     assert all(s["context"]["trace_id"] == trace for s in spans)
     assert record.trace_id == format(trace, "032x")
@@ -182,4 +208,26 @@ async def test_real_evals_reconcile_a_fixture_run(tmp_path):
     )
     assert record.status == "completed"
     assert result.period.reconciled is True
+    assert (tmp_path / str(SPEC.run_id) / "evaluation.json").exists()
+
+
+async def test_real_evals_accept_a_refused_record(tmp_path):
+    evaluation = pytest.importorskip("bazaar_evaluation")
+    market = InMemoryMarket()
+
+    async def refuse(*args):
+        raise ApprovalDenied("This approval does not allow the call")
+
+    market.set_cutoff = refuse
+    record, result = await record_run(
+        SPEC,
+        market,
+        buy_once,
+        policy_ref="refused",
+        runs_dir=tmp_path,
+        evaluate=evaluation.evaluate_and_emit,
+    )
+    assert record.final_account is None and result is not None
+    assert result.run_status == "failed"
+    assert result.run_failure == refused_sentence(SPEC.approval_id, SPEC.experiment_id)
     assert (tmp_path / str(SPEC.run_id) / "evaluation.json").exists()

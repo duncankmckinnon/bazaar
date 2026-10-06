@@ -19,8 +19,16 @@ from bazaar_runner.demo import (
 from bazaar_runner.http_market import RUNNER_TOKEN_ENV, RUNNER_TOKEN_HEADER, HttpMarketPort
 from bazaar_runner.market import ApprovalDenied
 from bazaar_runner.record import RunRecord
+from pydantic import BaseModel
 
-from .market_fakes import SESSIONS, SPEC, TOKEN, InMemoryMarket, delegating_transport
+from .market_fakes import (
+    SESSIONS,
+    SPEC,
+    TOKEN,
+    InMemoryMarket,
+    delegating_transport,
+    refused_sentence,
+)
 
 MOMENTUM = Launch(MOMENTUM_REF, UUID(int=0xE1), UUID(int=0xA1))
 CASH = Launch(CASH_ONLY_REF, UUID(int=0xE2), UUID(int=0xA2))
@@ -43,6 +51,10 @@ class RefusingMarket(InMemoryMarket):
     async def set_cutoff(self, *args):
         self.calls.append(("set_cutoff", args[1]))
         raise ApprovalDenied("This approval does not allow the call")
+
+
+class Evaluated(BaseModel):
+    status: str
 
 
 async def cash_only(ctx, account):
@@ -68,6 +80,7 @@ async def test_demo_runs_share_a_schedule_and_the_refusal_is_recorded(tmp_path):
         POLICIES,
         starting_cash=Decimal(10000),
         runs_dir=tmp_path,
+        evaluate=lambda record: Evaluated(status=record["status"]),
         **DEMO,
     )
 
@@ -94,8 +107,27 @@ async def test_demo_runs_share_a_schedule_and_the_refusal_is_recorded(tmp_path):
     assert ports[REFUSED].calls == [("set_cutoff", SESSIONS[0].open_at)]
     written = [RunRecord.model_validate_json(f.read_text()) for f in tmp_path.glob("*/record.json")]
     assert sorted(written, key=str) == sorted([momentum, cash, refused], key=str)
-    # The refused run has no account, so evals cannot read it yet (record.evaluable).
-    assert len(list(tmp_path.glob("*/evaluation.json"))) == 0
+    assert refused.failure == refused_sentence(REFUSED.approval_id, REFUSED.experiment_id)
+    # Every run is evaluated, the refused one included.
+    assert len(list(tmp_path.glob("*/evaluation.json"))) == 3
+
+
+async def test_a_failing_evaluator_does_not_stop_the_next_launch(tmp_path):
+    def broken(record):
+        raise RuntimeError("evals fell over")
+
+    first, second = await run_demo(
+        [MOMENTUM, CASH],
+        {MOMENTUM: InMemoryMarket(), CASH: InMemoryMarket()},
+        POLICIES,
+        starting_cash=Decimal(10000),
+        runs_dir=tmp_path,
+        evaluate=broken,
+        **DEMO,
+    )
+    assert first.status == second.status == "completed"
+    assert len(list(tmp_path.glob("*/record.json"))) == 2
+    assert list(tmp_path.glob("*/evaluation.json")) == []
 
 
 async def test_the_real_buy_and_hold_fills_its_whole_basket_at_its_sizing_prices(tmp_path):

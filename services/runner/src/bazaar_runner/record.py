@@ -3,6 +3,7 @@
 Evals mirrors this shape (bazaar_evaluation.run_record) and never imports the runner.
 """
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -24,6 +25,8 @@ from bazaar_runner.run import (
     RunState,
     run_strategy,
 )
+
+logger = logging.getLogger(__name__)
 
 TraceId = Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
 Evaluate = Callable[[dict], BaseModel]
@@ -72,10 +75,6 @@ class RunRecord(WireModel):
         if self.orders and self.orders[-1].event_sequence >= last.event_sequence:
             raise ValueError("the closing mark must come after the last order")
         return self
-
-    @property
-    def evaluable(self) -> bool:
-        return self.final_account is not None and self.manifest.account_id is not None
 
 
 def build_record(
@@ -128,22 +127,32 @@ async def record_run(
     evaluate: Evaluate | None = None,
 ) -> tuple[RunRecord, BaseModel | None]:
     """Run, build the record and evaluate it inside one runner.run span, then write the files."""
+    run_dir = runs_dir / str(spec.run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
     with logfire.span(
         "runner.run", experiment_id=str(spec.experiment_id), policy_ref=policy_ref
     ) as span:
         result = await run_strategy(spec, market, policy)
         record = build_record(spec, result, policy_ref, _trace_id(span))
         span.set_attribute("status", record.status)
-        if record.failure_code is not None:
+        if record.status == "failed":
             span.set_attribute("failure_code", record.failure_code)
-        # Evals emits its own spans; calling it here keeps them in the run's trace.
-        evaluation = (
-            evaluate(record.model_dump(mode="json")) if evaluate and record.evaluable else None
-        )
+            span.set_attribute("failure", record.failure)
+            span.set_level("error")
+        # Written before evaluation, so an evaluator failure can never lose the run.
+        (run_dir / "record.json").write_text(record.model_dump_json(indent=2))
+        evaluation = _evaluate(evaluate, record) if evaluate else None
 
-    run_dir = runs_dir / str(spec.run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "record.json").write_text(record.model_dump_json(indent=2))
     if evaluation is not None:
         (run_dir / "evaluation.json").write_text(evaluation.model_dump_json(indent=2))
     return record, evaluation
+
+
+def _evaluate(evaluate: Evaluate, record: RunRecord) -> BaseModel | None:
+    # Inside runner.run, so evals' own spans join the run's trace.
+    try:
+        with logfire.span("runner.evaluate"):
+            return evaluate(record.model_dump(mode="json"))
+    except Exception:
+        logger.exception("evaluation failed for experiment %s", record.manifest.experiment_id)
+        return None

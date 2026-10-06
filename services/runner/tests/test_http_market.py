@@ -44,6 +44,7 @@ from .market_fakes import (
     delegating_transport,
     history,
     model_response,
+    refused_sentence,
     route,
 )
 
@@ -328,11 +329,13 @@ async def test_the_driver_runs_over_http_exactly_as_over_the_port():
 async def test_an_unapproved_run_over_http_fails_as_approval_denied():
     fake = InMemoryMarket()
     client = httpx.AsyncClient(transport=delegating_transport(fake), base_url="http://market")
-    port = HttpMarketPort(client, SPEC.experiment_id, UUID(int=404), TOKEN)
-    result = await run_strategy(SPEC, port, buy_and_hold(port.price_at))
+    unapproved = SPEC.model_copy(update={"approval_id": UUID(int=404)})
+    port = HttpMarketPort(client, unapproved.experiment_id, unapproved.approval_id, TOKEN)
+    result = await run_strategy(unapproved, port, buy_and_hold(port.price_at))
 
     assert result.state is RunState.FAILED
     assert result.failure_code == "approval_denied"
+    assert result.failure == refused_sentence(UUID(int=404), SPEC.experiment_id)
     assert result.account is None
     assert fake.calls == []
     assert utc_z(datetime(2026, 2, 2, 14, 30, tzinfo=UTC)) == "2026-02-02T14:30:00Z"
@@ -362,8 +365,10 @@ async def test_a_wrong_token_fails_the_run_as_runner_unauthorized():
     port = HttpMarketPort(client, SPEC.experiment_id, SPEC.approval_id, "wrong-token")
     result = await run_strategy(SPEC, port, buy_and_hold(port.price_at))
     assert result.state is RunState.FAILED
-    assert result.failure_code is ErrorCode.UNAUTHORIZED
-    assert result.failure.startswith("RunnerUnauthorized: unauthorized: runner token required")
+    assert result.failure_code == "runner_unauthorized"
+    assert result.failure == (
+        "runner unauthorized while opening the run: the market refused the runner's credential"
+    )
     assert fake.calls == []
 
 
