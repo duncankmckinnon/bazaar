@@ -14,21 +14,18 @@ from bazaar_protocol import (
 from pydantic import AwareDatetime
 
 # Latest observation with available_at <= cutoff, shaped like the market's MarketData.price_at.
-PriceLookup = Callable[[Symbol, AwareDatetime], PriceObservation]
+PriceAt = Callable[[Symbol, AwareDatetime], PriceObservation]
+Decision = tuple[OrderRequest, ...]
 
 
 class DecisionPolicy(Protocol):
-    """Local stand-in for bazaar_runner's decide()/Decision; swap to it when the runner lands."""
+    """Local stand-in for bazaar_runner's policy and Decision types; swap to them when it lands."""
 
-    async def decide(
-        self, ctx: ExperimentContext, account: AccountSnapshot
-    ) -> tuple[OrderRequest, ...]: ...
+    async def __call__(self, ctx: ExperimentContext, account: AccountSnapshot) -> Decision: ...
 
 
 class CashOnly:
-    async def decide(
-        self, ctx: ExperimentContext, account: AccountSnapshot
-    ) -> tuple[OrderRequest, ...]:
+    async def __call__(self, ctx: ExperimentContext, account: AccountSnapshot) -> Decision:
         return ()
 
 
@@ -38,22 +35,22 @@ class BuyAndHold:
     Sizing assumes zero fees (fixture rule). Use one instance per run.
     """
 
-    def __init__(self, symbols: Sequence[Symbol], prices: PriceLookup) -> None:
+    def __init__(self, symbols: Sequence[Symbol], prices: PriceAt) -> None:
         self.symbols = tuple(symbols)
         self.prices = prices
         self.bought = False
 
-    async def decide(
-        self, ctx: ExperimentContext, account: AccountSnapshot
-    ) -> tuple[OrderRequest, ...]:
+    async def __call__(self, ctx: ExperimentContext, account: AccountSnapshot) -> Decision:
         if self.bought:
             return ()
-        self.bought = True
 
         cash = account.cash
         orders = []
         for remaining, symbol in zip(range(len(self.symbols), 0, -1), self.symbols, strict=True):
-            price = self.prices(symbol, ctx.simulated_at).price
+            observation = self.prices(symbol, ctx.simulated_at)
+            if observation.available_at > ctx.simulated_at:
+                raise ValueError(f"{symbol} price is not available at {ctx.simulated_at}")
+            price = observation.price
             quantity = cash // (price * remaining)
             if quantity == 0:
                 continue
@@ -66,4 +63,6 @@ class BuyAndHold:
                     quantity=quantity,
                 )
             )
+        # Only a completed decision counts; a failed one is retried with the same order ids.
+        self.bought = True
         return tuple(orders)
