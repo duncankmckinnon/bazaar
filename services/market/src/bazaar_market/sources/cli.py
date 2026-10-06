@@ -159,10 +159,10 @@ def _import_bars(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    symbols = tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None
+    expected = None if symbols else _expected_tickers(Path(args.config))
     args.db.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(args.db)) as connection:
-        symbols = tuple(s.strip() for s in args.symbols.split(",")) if args.symbols else None
-        expected = None if symbols else _expected_tickers(Path(args.config))
         report = import_bars_snapshot(
             connection,
             args.snapshot,
