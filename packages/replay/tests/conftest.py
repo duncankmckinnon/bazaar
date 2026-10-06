@@ -5,6 +5,7 @@ from uuid import UUID, uuid5
 
 import pytest
 
+SAME = object()
 NAMESPACE = UUID("00000000-0000-0000-0000-00000000b0a2")
 START = "2026-02-02T14:30:00Z"
 END = "2026-02-13T21:00:00Z"
@@ -24,9 +25,12 @@ def _write_run(
     period_start=START,
     trace_id=None,
     evaluation=True,
-    evaluation_account=None,
+    evaluation_account=SAME,
+    account=True,
+    failure_code=None,
+    evaluator_version="evals-v1",
 ):
-    account_id = str(uuid5(NAMESPACE, f"{run_id}-account"))
+    account_id = str(uuid5(NAMESPACE, f"{run_id}-account")) if account else None
     manifest = {
         "experiment_id": str(uuid5(NAMESPACE, "experiment")),
         "agent_id": str(uuid5(NAMESPACE, f"{run_id}-agent")),
@@ -48,6 +52,7 @@ def _write_run(
         "manifest": manifest,
         "status": status,
         "failure": failure,
+        "failure_code": failure_code,
         "orders": [
             {
                 "event_sequence": i,
@@ -70,15 +75,15 @@ def _write_run(
         "status": "scored" if period_return is not None else "unsupported",
         "period_return": period_return,
         "reconciled": reconciled,
-        "evaluator_version": "evals-v1",
+        "evaluator_version": evaluator_version,
     }
     (run_dir / "evaluation.json").write_text(
         json.dumps(
             {
                 "experiment_id": manifest["experiment_id"],
-                "account_id": evaluation_account or account_id,
+                "account_id": account_id if evaluation_account is SAME else evaluation_account,
                 "agent_id": manifest["agent_id"],
-                "evaluator_version": "evals-v1",
+                "evaluator_version": evaluator_version,
                 "run_status": status,
                 "run_failure": failure,
                 "trade_scores": [{"status": s, "order_id": str(NAMESPACE)} for s in scores],
@@ -123,6 +128,18 @@ def _demo_runs(runs_dir):
         policy_ref="scripted-momentum-v1",
         period_return="0.0900",
         period_start="2026-02-03T14:30:00Z",
+    )
+    _write_run(
+        runs_dir,
+        "refused",
+        policy_ref="scripted-momentum-v1",
+        period_return=None,
+        status="failed",
+        failure="refused before any account was opened",
+        failure_code="approval_denied",
+        account=False,
+        orders=(),
+        evaluation=False,
     )
     _write_run(
         runs_dir, "no-eval", policy_ref="scripted-momentum-v1", period_return="0", evaluation=False

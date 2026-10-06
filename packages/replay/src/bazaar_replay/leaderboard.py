@@ -29,7 +29,7 @@ class ReadModel(BaseModel):
 
 class Manifest(ReadModel):
     experiment_id: UUID
-    account_id: UUID
+    account_id: UUID | None  # None for a run refused before its account existed
     strategy_version_id: UUID
     data_version: str
     execution_rule_version: str
@@ -53,6 +53,7 @@ class RunRecord(ReadModel):
     manifest: Manifest
     status: Literal["completed", "failed"]
     failure: str | None = None
+    failure_code: str | None = None
     orders: tuple[OrderEntry, ...] = ()
     trace_id: str | None = None
 
@@ -69,7 +70,7 @@ class Period(ReadModel):
 
 class RunEvaluation(ReadModel):
     experiment_id: UUID
-    account_id: UUID
+    account_id: UUID | None
     evaluator_version: str
     run_status: Literal["completed", "failed"]
     run_failure: str | None = None
@@ -88,6 +89,7 @@ class Entry(WireModel):
     run_id: str
     section: Section
     reason: str | None = None
+    failure_code: str | None = None
     mismatch: MismatchCode | None = None
     policy_ref: str | None = None
     kind: Literal["agent", "baseline"] | None = None
@@ -124,7 +126,7 @@ class Leaderboard(WireModel):
 class Run(ReadModel):
     run_id: str
     record: RunRecord
-    evaluation: RunEvaluation
+    evaluation: RunEvaluation | None  # None only for a failed run that was never evaluated
 
     @property
     def policy_ref(self) -> str:
@@ -140,9 +142,16 @@ class Run(ReadModel):
 
     @property
     def failure(self) -> str | None:
-        if self.record.status == "completed" and self.evaluation.run_status == "completed":
+        evaluation = self.evaluation
+        if (
+            self.record.status == "completed"
+            and evaluation
+            and evaluation.run_status == "completed"
+        ):
             return None
-        return self.record.failure or self.evaluation.run_failure or "run failed without a reason"
+        if self.record.status == "failed" and self.record.failure:
+            return self.record.failure
+        return (evaluation and evaluation.run_failure) or "run failed without a reason"
 
 
 def load_run(run_dir: Path) -> Run | Entry:
@@ -153,6 +162,10 @@ def load_run(run_dir: Path) -> Run | Entry:
         try:
             parsed[name] = model.model_validate_json((run_dir / name).read_bytes())
         except FileNotFoundError:
+            # The runner evaluates only runs that opened an account; a failed run may have none.
+            record = parsed.get("record.json")
+            if record is not None and record.status == "failed":
+                return Run(run_id=run_id, record=record, evaluation=None)
             return Entry(run_id=run_id, section=Section.INVALID, reason=f"{name} is missing")
         except (OSError, ValidationError) as exc:
             reason = f"{name} is unreadable: {exc}".splitlines()[0]
@@ -178,14 +191,18 @@ def mismatch(run: Run, reference: Run) -> MismatchCode | None:
     for field, code in checks:
         if getattr(run.record.manifest, field) != getattr(reference.record.manifest, field):
             return code
-    if run.evaluation.evaluator_version != reference.evaluation.evaluator_version:
+    if (
+        run.evaluation is not None
+        and reference.evaluation is not None
+        and run.evaluation.evaluator_version != reference.evaluation.evaluator_version
+    ):
         return MismatchCode.EVALUATOR_VERSION
     return None
 
 
 def excess_vs_buy_and_hold(run: Run, reference: Run | None) -> Decimal | None:
     """Computed until evals publishes a baseline-relative field; switch to it here."""
-    if reference is None or run is reference:
+    if reference is None or run is reference or not (run.evaluation and reference.evaluation):
         return None
     mine, theirs = run.evaluation.period.period_return, reference.evaluation.period.period_return
     if mine is None or theirs is None:
@@ -195,7 +212,9 @@ def excess_vs_buy_and_hold(run: Run, reference: Run | None) -> Decimal | None:
 
 def entry(run: Run, section: Section, **fields: object) -> Entry:
     orders = Counter(order.result.status for order in run.record.orders)
-    scores = Counter(score.status for score in run.evaluation.trade_scores)
+    evaluation = run.evaluation
+    scores = Counter(score.status for score in evaluation.trade_scores) if evaluation else Counter()
+    period = evaluation.period if evaluation else None
     return Entry(
         run_id=run.run_id,
         section=section,
@@ -203,9 +222,9 @@ def entry(run: Run, section: Section, **fields: object) -> Entry:
         kind="baseline" if run.is_baseline else "agent",
         strategy_version_id=run.record.manifest.strategy_version_id,
         trace_id=run.record.trace_id or run.record.manifest.trace_id,
-        period_return=run.evaluation.period.period_return,
-        period_status=run.evaluation.period.status,
-        not_reconciled=not run.evaluation.period.reconciled,
+        period_return=period and period.period_return,
+        period_status=period and period.status,
+        not_reconciled=period is not None and not period.reconciled,
         orders_filled=orders["filled"],
         orders_rejected=orders["rejected"],
         trade_scores={status: scores[status] for status in (*SCORE_STATUSES, *scores)},
@@ -226,15 +245,27 @@ def build_board(loaded: list[Run | Entry]) -> Leaderboard:
     reference = next((run for run in references if run.failure is None), None)
     if reference is None and references:
         reference = references[0]
-    # Without a buy-and-hold run, anchor matching on the first completed run so that
-    # mismatched runs are still never ranked side by side.
-    anchor = reference or next((run for run in runs if run.failure is None), None)
+    # Anchor matching on an evaluated run, so evaluator versions are always compared: the
+    # buy-and-hold run if it was evaluated, else the first completed run. Mismatched runs are
+    # then never ranked side by side, even when buy-and-hold is missing or was refused.
+    if reference is not None and reference.evaluation is not None:
+        anchor = reference
+    else:
+        anchor = next((run for run in runs if run.failure is None), reference)
 
     ranked, failed, not_comparable = [], [], []
     for run in runs:
         is_reference = run is reference
         if run.failure is not None:
-            failed.append(entry(run, Section.FAILED, reason=run.failure, is_reference=is_reference))
+            failed.append(
+                entry(
+                    run,
+                    Section.FAILED,
+                    reason=run.failure,
+                    failure_code=run.record.failure_code,
+                    is_reference=is_reference,
+                )
+            )
         elif anchor is not None and (code := mismatch(run, anchor)) is not None:
             not_comparable.append(
                 entry(run, Section.NOT_COMPARABLE, mismatch=code, reason=f"differs in {code}")

@@ -13,7 +13,7 @@ def test_sections_keep_every_run(tmp_path, demo_runs):
     board = load_board(tmp_path)
 
     assert ids(board.ranked) == ["agent", "bh", "cash", "null-return"]
-    assert ids(board.failed) == ["crashed"]
+    assert ids(board.failed) == ["crashed", "refused"]
     assert ids(board.not_comparable) == ["other-period"]
     assert ids(board.invalid) == ["no-eval"]
     assert board.reference_run_id == "bh"
@@ -130,3 +130,106 @@ def test_null_return_sorts_below_a_total_loss(tmp_path, write_run):
     write_run(tmp_path, "c-flat", policy_ref="baseline-cash-only", period_return="0")
 
     assert ids(load_board(tmp_path).ranked) == ["c-flat", "b-total-loss", "a-none"]
+
+
+def test_refused_run_without_evaluation_is_listed_as_failed(tmp_path, demo_runs):
+    demo_runs(tmp_path)
+    refused = {e.run_id: e for e in load_board(tmp_path).failed}["refused"]
+
+    assert refused.section is Section.FAILED
+    assert refused.failure_code == "approval_denied"
+    assert refused.reason == "refused before any account was opened"
+    assert refused.period_return is None
+    assert refused.excess_vs_buy_and_hold is None
+    assert (refused.orders_filled, refused.orders_rejected) == (0, 0)
+
+
+def test_refused_run_with_failed_evaluation_gives_the_same_entry(tmp_path, write_run):
+    refused = {
+        "policy_ref": "scripted-momentum-v1",
+        "period_return": None,
+        "status": "failed",
+        "failure": "refused before any account was opened",
+        "failure_code": "approval_denied",
+        "account": False,
+        "orders": (),
+        "scores": (),
+    }
+    (tmp_path / "with-eval").mkdir()
+    (tmp_path / "without-eval").mkdir()
+    write_run(tmp_path / "with-eval", "r", **refused, evaluation=True)
+    write_run(tmp_path / "without-eval", "r", **refused, evaluation=False)
+
+    with_eval = load_board(tmp_path / "with-eval")
+    without_eval = load_board(tmp_path / "without-eval")
+
+    assert with_eval.invalid == without_eval.invalid == ()
+    shown = ("section", "reason", "failure_code", "period_return", "excess_vs_buy_and_hold")
+    [a], [b] = with_eval.failed, without_eval.failed
+    assert {f: getattr(a, f) for f in shown} == {f: getattr(b, f) for f in shown}
+    assert a.failure_code == "approval_denied"
+
+
+def test_completed_run_without_evaluation_is_invalid(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "unscored",
+        policy_ref="scripted-momentum-v1",
+        period_return="0.02",
+        evaluation=False,
+    )
+
+    assert load_board(tmp_path).invalid[0].reason == "evaluation.json is missing"
+
+
+def test_missing_account_on_one_side_only_is_invalid(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "half",
+        policy_ref="scripted-momentum-v1",
+        period_return=None,
+        status="failed",
+        failure="refused",
+        account=False,
+        evaluation_account="00000000-0000-0000-0000-00000000dead",
+    )
+
+    assert (
+        load_board(tmp_path).invalid[0].reason == "record and evaluation have different account_id"
+    )
+
+
+def test_refused_buy_and_hold_still_compares_evaluator_versions(tmp_path, write_run):
+    write_run(
+        tmp_path,
+        "a-bh",
+        policy_ref="baseline-buy-and-hold",
+        period_return=None,
+        status="failed",
+        failure="refused before any account was opened",
+        failure_code="approval_denied",
+        account=False,
+        orders=(),
+        evaluation=False,
+    )
+    write_run(tmp_path, "b-agent", policy_ref="scripted-momentum-v1", period_return="0.02")
+    write_run(
+        tmp_path,
+        "c-agent",
+        policy_ref="scripted-momentum-v1",
+        period_return="0.05",
+        evaluator_version="evals-v2",
+    )
+    board = load_board(tmp_path)
+
+    assert ids(board.ranked) == ["b-agent"]
+    assert board.not_comparable[0].run_id == "c-agent"
+    assert board.not_comparable[0].mismatch is MismatchCode.EVALUATOR_VERSION
+    [refused] = board.failed
+    assert (refused.run_id, refused.is_reference, refused.failure_code) == (
+        "a-bh",
+        True,
+        "approval_denied",
+    )
+    assert board.reference_run_id == "a-bh"
+    assert board.ranked[0].excess_vs_buy_and_hold is None
