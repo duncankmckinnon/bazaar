@@ -1,25 +1,25 @@
 """Deterministic baseline policies that run through the same market execution as candidates."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import uuid5
 
-from bazaar_protocol import (
-    AccountSnapshot,
-    ExperimentContext,
-    OrderRequest,
-    PriceObservation,
-    Symbol,
-)
+from bazaar_protocol import AccountSnapshot, ExperimentContext, OrderRequest, PriceObservation
 from pydantic import AwareDatetime
 
-# Latest observation with available_at <= cutoff, shaped like the market's MarketData.price_at.
-PriceAt = Callable[[Symbol, AwareDatetime], PriceObservation]
+# Decision, PriceAt and DecisionPolicy mirror bazaar_runner.policy (feat/experiment-runner c208eea)
+# so that switching to the runner's types is an import change.
 Decision = tuple[OrderRequest, ...]
 
 
+class PriceAt(Protocol):
+    """As-of price lookup, bound to the market port and injected into a policy at construction."""
+
+    async def __call__(self, symbol: str, cutoff: AwareDatetime) -> PriceObservation: ...
+
+
 class DecisionPolicy(Protocol):
-    """Local stand-in for bazaar_runner's policy and Decision types; swap to them when it lands."""
+    """Called once per DECISION event; orders fill at ctx.simulated_at."""
 
     async def __call__(self, ctx: ExperimentContext, account: AccountSnapshot) -> Decision: ...
 
@@ -35,7 +35,7 @@ class BuyAndHold:
     Sizing assumes zero fees (fixture rule). Use one instance per run.
     """
 
-    def __init__(self, symbols: Sequence[Symbol], prices: PriceAt) -> None:
+    def __init__(self, symbols: Sequence[str], prices: PriceAt) -> None:
         self.symbols = tuple(symbols)
         self.prices = prices
         self.bought = False
@@ -47,7 +47,7 @@ class BuyAndHold:
         cash = account.cash
         orders = []
         for remaining, symbol in zip(range(len(self.symbols), 0, -1), self.symbols, strict=True):
-            observation = self.prices(symbol, ctx.simulated_at)
+            observation = await self.prices(symbol, ctx.simulated_at)
             if observation.available_at > ctx.simulated_at:
                 raise ValueError(f"{symbol} price is not available at {ctx.simulated_at}")
             price = observation.price

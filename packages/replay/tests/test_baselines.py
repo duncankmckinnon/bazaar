@@ -4,7 +4,7 @@ from uuid import UUID
 
 import pytest
 from bazaar_protocol import AccountSnapshot, ExperimentContext, PriceObservation
-from bazaar_replay import BuyAndHold, CashOnly
+from bazaar_replay import BuyAndHold, CashOnly, PriceAt
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 OPEN = datetime(2026, 2, 2, 14, 30, tzinfo=UTC)
@@ -12,17 +12,21 @@ LATER = datetime(2026, 2, 13, 14, 30, tzinfo=UTC)
 PRICES = {"AAPL": "100.00", "MSFT": "333.33", "KO": "47.50"}
 
 
+class MissingPrice(LookupError):
+    """Like the runner's MissingPrice (code data_unavailable)."""
+
+
 class FakePrices:
-    def __init__(self, available_at=OPEN, failures=0):
+    def __init__(self, available_at=OPEN, fail_once=None):
         self.calls = []
         self.available_at = available_at
-        self.failures = failures
+        self.fail_once = fail_once
 
-    def __call__(self, symbol, cutoff):
+    async def __call__(self, symbol: str, cutoff: datetime) -> PriceObservation:
         self.calls.append((symbol, cutoff))
-        if self.failures:
-            self.failures -= 1
-            raise LookupError(f"no {symbol} observation yet")
+        if symbol == self.fail_once:
+            self.fail_once = None
+            raise MissingPrice(f"no {symbol} observation yet")
         return PriceObservation(
             observed_at=OPEN, available_at=self.available_at, price=PRICES[symbol]
         )
@@ -114,12 +118,21 @@ async def test_client_order_ids_are_deterministic_per_experiment_and_symbol():
     assert {o.client_order_id for o in first}.isdisjoint(o.client_order_id for o in elsewhere)
 
 
-async def test_buy_and_hold_retries_a_failed_first_decision():
-    policy = BuyAndHold(["AAPL", "MSFT", "KO"], FakePrices(failures=1))
+def test_async_fake_satisfies_price_at():
+    price_at: PriceAt = FakePrices()
 
-    with pytest.raises(LookupError):
+    assert callable(price_at)
+
+
+async def test_buy_and_hold_retries_after_a_lookup_fails_mid_basket():
+    prices = FakePrices(fail_once="MSFT")
+    policy = BuyAndHold(["AAPL", "MSFT", "KO"], prices)
+
+    with pytest.raises(MissingPrice):
         await policy(ctx(), account())
     orders = await policy(ctx(), account())
+
+    assert [symbol for symbol, _ in prices.calls] == ["AAPL", "MSFT", "AAPL", "MSFT", "KO"]
 
     assert [(o.symbol, o.quantity) for o in orders] == [
         ("AAPL", Decimal(33)),
