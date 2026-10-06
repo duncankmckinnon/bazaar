@@ -10,8 +10,12 @@ start an experiment.
 The current scaffold runs an agent-side registry API, a market container and two placeholder agents
 named `seller` and `buyer`.
 
-**Status: registry + scaffolding.** Strategy registration, retrieval and immutable versioning are
-implemented. Market data, trading behavior, experiments and approvals are not implemented yet. The target design is in
+**Status: registry + fixture trading harness.** Strategy registration, retrieval and immutable
+versioning, scoped research clients and a bounded PydanticAI decision loop are implemented.
+The [trading harness guide](docs/trading-agent.md) describes local fixture usage, tool capabilities,
+budgets and order recovery. Registration and the placeholder processes still do not execute
+strategies. Live market handlers, historical experiments, Monty, gateway binding and approvals
+are not implemented yet. The target design is in
 `docs/superpowers/specs/`; `docs/superpowers/plans/` contains an archived skeleton plan.
 
 The [current provisional specification](docs/superpowers/specs/bazaar-evaluation-and-optimization-design.md)
