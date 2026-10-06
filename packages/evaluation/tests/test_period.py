@@ -319,3 +319,19 @@ def test_outcome_for_another_account_is_rejected():
     bad_mark = final_mark().model_copy(update={"account_id": UUID(int=7)})
     with pytest.raises(ValueError, match="account"):
         other.evaluate([bad_mark], "8150", [("MSFT", "5")])
+
+
+def test_unreplayed_ledger_reports_no_pnl_instead_of_inventing_it():
+    # Buy 10 @ 100 -> 9000; one mark at 100, portfolio 9000 + 1000 = 10000. True net is 0, but
+    # with no execution rule registered the ledger is not replayed, so PnL must not be claimed.
+    run = Run().fill(1, "buy", "10", "100", "9000", [("AAPL", "10")])
+    config = EvaluatorConfig(evaluator_version="v1", valuation_rules={"value-v1": CENTS})
+    marks = [mark(1, "9000", [("AAPL", "10", "100")], "10000")]
+    p = run.evaluate(marks, "9000", [("AAPL", "10")], config=config).period
+
+    assert p.status == ScoreStatus.UNSUPPORTED
+    assert p.reconciled is False
+    assert (p.realized_pnl, p.unrealized_pnl, p.net_pnl) == (None, None, None)
+    assert (p.period_return, p.excess_return_vs_cash) == (None, None)
+    assert (p.start_value, p.end_value, p.market_end_value) == (10000, 10000, 10000)
+    assert any("replayed ledger" in r for r in reasons(p))

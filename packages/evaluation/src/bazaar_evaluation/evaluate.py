@@ -117,10 +117,12 @@ def _period(
 
     gaps = []
     start = opening.cash
-    realized = sum(
-        (s.realized_pnl for s in replay.trade_scores if s.status == ScoreStatus.SCORED),
-        Decimal(0),
-    )
+    realized = None
+    if replay.final_cash is not None:
+        realized = sum(
+            (s.realized_pnl for s in replay.trade_scores if s.status == ScoreStatus.SCORED),
+            Decimal(0),
+        )
     if failed := statuses.count(ScoreStatus.FAILED):
         gaps.append(f"{failed} trade score(s) failed")
 
@@ -160,17 +162,20 @@ def _period(
                 f"last mark cash {last.cash} holdings {_holdings(last)} differs from replay "
                 f"cash {replayed[0]} holdings {replayed[1]}"
             )
-        if any(lot.cost_basis is None for lot in replay.open_lots):
-            notes.append("unrealized PnL unknown: an open lot has no cost basis")
-        else:
-            basis = sum((lot.cost_basis for lot in replay.open_lots), Decimal(0))
-            unrealized = end - last.cash - basis
+        if replayed is not None:
+            if any(lot.cost_basis is None for lot in replay.open_lots):
+                notes.append("unrealized PnL unknown: an open lot has no cost basis")
+            else:
+                basis = sum((lot.cost_basis for lot in replay.open_lots), Decimal(0))
+                unrealized = end - last.cash - basis
         if len(marks) < 2:
             notes.append("max drawdown needs at least 2 marks")
         else:
             drawdown, drawdown_fraction = _drawdown([_value(m, config)[0] for m in marks])
 
-    net = None if unrealized is None else realized + unrealized
+    if replayed is None:
+        notes.append("PnL and return need a replayed ledger; see trade score reasons")
+    net = None if realized is None or unrealized is None else realized + unrealized
     if net is not None and end is not None and start + net != end:
         gaps.append(f"start_value {start} + net_pnl {net} != end_value {end}")
     period_return = None
@@ -180,7 +185,7 @@ def _period(
         period_return = net / start
 
     return summary(
-        ScoreStatus.SCORED,
+        ScoreStatus.UNSUPPORTED if replayed is None else ScoreStatus.SCORED,
         gaps,
         start_value=start,
         end_value=end,
