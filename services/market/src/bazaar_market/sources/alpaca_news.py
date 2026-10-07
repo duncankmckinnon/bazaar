@@ -30,6 +30,7 @@ def parse_news(payload: dict) -> list[NewsItem]:
             symbols=tuple(a["symbols"]),
             headline=a["headline"],
             body=a.get("content") or "",
+            summary=a.get("summary") or "",
             created_at=datetime.fromisoformat(a["created_at"]),
             updated_at=datetime.fromisoformat(a["updated_at"]),
         )

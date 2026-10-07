@@ -233,6 +233,7 @@ class SqliteMarketData:
 
     @property
     def price_source(self) -> str:
+        """Where this version's bars came from, followed by the version, e.g. synthetic/synthetic-v1."""
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT DISTINCT source FROM data_bars WHERE data_version = ?",
@@ -242,7 +243,7 @@ class SqliteMarketData:
             raise MissingData(
                 f"{self.data_version} needs exactly one price source, has {len(rows)}"
             )
-        return rows[0]["source"]
+        return f"{rows[0]['source']}/{self.data_version}"
 
     def _require_symbol(self, connection: sqlite3.Connection, symbol: str) -> None:
         known = connection.execute(

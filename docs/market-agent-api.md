@@ -138,6 +138,12 @@ a cached context cannot bypass expiry/revocation or scope exhaustion. The orches
 strategies but cannot approve or execute them. Atomic resource checks and historical-information
 boundaries need market integration tests when the backend lands.
 
+## Agent research client
+
+The agent-side typed client and proposed archive/history extensions are described separately in
+[agent-research-tools.md](agent-research-tools.md). Those proposals add no market handlers and do
+not change the existing route agreement or its server-side authorization responsibilities.
+
 ## Verification
 
 Protocol tests are in the existing market test suite. They check JSON round trips, discriminated

@@ -147,3 +147,7 @@ becomes visible at 16:00 New York time. A cutoff during a session sees the previ
 | `LOGFIRE_TOKEN` | server | Logfire write token. Traces are sent only when it is set. |
 | `BAZAAR_ENVIRONMENT` | server | Logfire environment label. Default `development`. |
 | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | `bars` | Alpaca keys, exported in the shell or loaded with `--env-file .env`. Not needed to import or serve. |
+
+## Known limits
+
+- Orders fill only at the latest session's close, so a symbol with no bar there (delisted or acquired, such as K or EA) is rejected. Valuation still marks a held position at its last close: an acquired holding stays a holding valued at its final close, not converted to cash at the deal price.

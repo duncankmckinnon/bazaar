@@ -103,8 +103,8 @@ def load_news(snapshot_dir: Path, symbol: str) -> list[NewsItem]:
             return sorted(by_id.values(), key=lambda n: (n.created_at, n.id))
 
 
-def bar_windows(snapshot_dir: Path) -> dict[str, dict[str, str]]:
-    """Each ticker's recorded request: start, end, adjustment and feed."""
+def recorded_windows(snapshot_dir: Path) -> dict[str, dict[str, str]]:
+    """Each symbol's recorded request window, with any details such as adjustment and feed."""
     return dict(_Frozen(snapshot_dir).coverage)
 
 
@@ -124,3 +124,12 @@ def load_bars(snapshot_dir: Path, ticker: str) -> list[Bar]:
         bars += parse_bars(payload, ticker)
         if not payload.get("next_page_token"):
             return sorted(bars, key=lambda b: b.session)
+
+
+def load_document(snapshot_dir: Path, filing: Filing) -> bytes | None:
+    """A filing's frozen primary document, checked against the manifest. None if not frozen."""
+    if not filing.primary_document:
+        return None
+    frozen = _Frozen(snapshot_dir)
+    name = f"documents/{filing.cik}/{filing.accession}/{filing.primary_document}"
+    return frozen.read_bytes(name) if frozen.has(name) else None
