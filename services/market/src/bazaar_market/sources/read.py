@@ -12,6 +12,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from ..prices import Bar
+from .alpaca_bars import load_page, parse_bars
 from .alpaca_news import parse_news
 from .edgar import check_acceptance_label, parse_company_facts, parse_submissions
 from .errors import SourceError
@@ -36,13 +38,16 @@ class _Frozen:
         return False
 
     def read(self, name: str) -> dict:
+        return json.loads(self.read_bytes(name))
+
+    def read_bytes(self, name: str) -> bytes:
         path = self.dir / name
         if not path.exists():
             raise SourceError(f"{name} is listed in the manifest of {self.dir} but missing")
         content = path.read_bytes()
         if hashlib.sha256(content).hexdigest() != self.entries[name]["sha256"]:
             raise SourceError(f"{name} in {self.dir} does not match its manifest SHA-256")
-        return json.loads(content)
+        return content
 
 
 def load_filings(
@@ -96,3 +101,26 @@ def load_news(snapshot_dir: Path, symbol: str) -> list[NewsItem]:
             by_id.setdefault(item.id, item)
         if not payload.get("next_page_token"):
             return sorted(by_id.values(), key=lambda n: (n.created_at, n.id))
+
+
+def bar_windows(snapshot_dir: Path) -> dict[str, dict[str, str]]:
+    """Each ticker's recorded request: start, end, adjustment and feed."""
+    return dict(_Frozen(snapshot_dir).coverage)
+
+
+def load_bars(snapshot_dir: Path, ticker: str) -> list[Bar]:
+    """Every frozen daily bar for one ticker. A fetch that stopped part way raises."""
+    frozen = _Frozen(snapshot_dir)
+    if ticker not in frozen.coverage or not frozen.has(f"{ticker}/page-0001.json"):
+        raise SourceError(f"no bars for {ticker} in {snapshot_dir}")
+    bars: list[Bar] = []
+    number = 0
+    while True:
+        number += 1
+        page = f"{ticker}/page-{number:04d}.json"
+        if not frozen.has(page):
+            raise SourceError(f"bars for {ticker} are incomplete: {page} was never frozen")
+        payload = load_page(frozen.read_bytes(page))
+        bars += parse_bars(payload, ticker)
+        if not payload.get("next_page_token"):
+            return sorted(bars, key=lambda b: b.session)

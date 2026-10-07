@@ -27,7 +27,7 @@ and skeleton assumptions; the old implementation plan needs revision before use 
 
 | Container | Source | Purpose |
 | --- | --- | --- |
-| `market` | `services/market` | FastAPI service (`/health` for now); will own prices, accounts and history |
+| `market` | `services/market` | FastAPI service: daily prices, the experiment clock, accounts and orders, in one SQLite file |
 | `seller`, `buyer` | `services/agent` | One image run twice; will be Pydantic AI agents with their own directives |
 | `api` | `services/agent` | Named-agent and strategy registry, with its own persistent SQLite volume; independent of the market |
 
@@ -38,6 +38,15 @@ docker compose up --build
 curl localhost:8000/health
 curl localhost:8001/health
 ```
+
+To run only the market locally, against a SQLite file of your choice:
+
+```sh
+BAZAAR_MARKET_DB=data/market.sqlite3 uv run uvicorn bazaar_market.app:app --port 8000
+```
+
+Every account, order and clock route needs an `X-Bazaar-Approval` header. Until the approval
+service exists, every approval is denied (403 `experiment_not_approved`).
 
 ## Strategy registration
 

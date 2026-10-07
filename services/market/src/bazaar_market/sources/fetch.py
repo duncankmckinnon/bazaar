@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from .alpaca_bars import fetch_bars, ticker_windows
 from .alpaca_news import fetch_news
 from .edgar import EdgarClient
 from .errors import SourceError
@@ -88,4 +89,24 @@ def fetch_news_range(
                 http, symbol=symbol, start=start, end=end, snap=snap, headers=headers, until=until
             )
             summary[symbol] = len(items)
+    return summary
+
+
+def fetch_bars_range(
+    cfg: SourcesConfig,
+    root: Path,
+    http: httpx.Client,
+    *,
+    version: str,
+    feed: str,
+    headers: dict[str, str] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, int]:
+    """Freeze unadjusted daily bars for every configured company over the configured period."""
+    snap = Snapshot(root, source="alpaca-bars", version=version)
+    tickers = tuple(c.ticker for c in cfg.companies)
+    summary = {}
+    for window in ticker_windows(tickers, cfg.period_start, cfg.period_end):
+        bars = fetch_bars(http, window=window, snap=snap, feed=feed, headers=headers, sleep=sleep)
+        summary[window.ticker] = len(bars)
     return summary

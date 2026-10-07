@@ -16,7 +16,51 @@ Reading a snapshot and applying the visibility rules does not, and the tests use
   Ticker, start date, end date.
   The file is hand-maintained from a book and Wikipedia.
 
-Prices, corporate actions and the trading calendar are not fetched yet.
+- **Alpaca daily bars**, `data.alpaca.markets/v2/stocks/bars`, needs `ALPACA_API_KEY` and `ALPACA_SECRET_KEY`.
+  Requested with `adjustment=raw`: split- or dividend-adjusted history rewrites old prices with corporate actions that
+  happened later, which is lookahead.
+  The manifest records the adjustment and feed with each ticker's window.
+  Each ticker is requested with `asof=-` over the days it traded under that name, so Fiserv is fetched as FI until
+  2025-11-10 and as FISV from 2025-11-11.
+
+Corporate actions and the trading calendar are not fetched.
+
+## Prices
+
+`bazaar_market.prices` stores daily bars in the market database's `data_bars` table, keyed by data version, symbol
+and observation time.
+A bar's close is observed and available at its session's 16:00 Eastern close, stored in UTC, so a read cut off
+during a session gets the previous close.
+`SqliteMarketData.price_at` returns the latest close available at the cutoff and raises `MissingData` when there is
+none.
+A day with no bar for any symbol has no session. Early closes and holidays are not modelled.
+
+Bars are imported from a CSV with the header `symbol,date,open,high,low,close,volume`: the ticker in use that day,
+the session date as `YYYY-MM-DD`, decimal prices and an integer volume.
+Re-importing the same bars is a no-op, and a changed bar under the same data version raises `BarConflict`.
+
+```sh
+uv run python -m bazaar_market.prices synthetic --out data/bars-synthetic-v1.csv
+uv run python -m bazaar_market.prices import data/bars-synthetic-v1.csv --db data/market.sqlite3
+```
+
+Real bars are fetched into a snapshot and then imported as data version `alpaca-bars-v1`:
+
+```sh
+uv run --env-file .env python -m bazaar_market.sources bars --version <version>
+uv run python -m bazaar_market.sources import-bars --snapshot data/raw/alpaca-bars/<version> --db data/market.sqlite3
+```
+
+`bars` takes `--feed sip` (the default) or `--feed iex`.
+Alpaca answers 200 with no bars where it has no data, so `import-bars` treats missing data as an error and stores
+nothing.
+It fails when a ticker has no bars, when a ticker lacks a session other tickers traded between its first and last bar,
+or when AAPL, MSFT or KO lacks a weekday from 2026-01-30 to 2026-02-13, the runner's demo run.
+
+`synthetic` writes data version `synthetic-v1`: a seeded random walk on every weekday from 2025-07-01 to 2026-09-30
+for the thirteen demo companies.
+It follows the demo's ticker history (FI until 2025-11-10, then FISV; K ends 2025-12-10; EA ends 2026-08-04).
+The prices are invented.
 
 ## Commands
 
