@@ -1,0 +1,84 @@
+# Source selection for the demo data snapshot.
+#
+# Every value here is an explicit choice. Nothing falls back to current data when a value is
+# missing. The period and company list are placeholders. The period is recent on purpose: models
+# trained into mid-2026 have not seen its last months, which makes them a held-out stretch. It
+# also contains a ticker rename (FI to FISV, November 2025) and two cash acquisitions (Kellanova,
+# December 2025, and Electronic Arts, August 2026). Change both before running real experiments.
+
+[period]
+start = 2025-07-01
+end = 2026-09-30
+
+[sp500]
+# Commit of github.com/fja05680/sp500 to read membership history from. MIT licence,
+# hand-maintained from a book and Wikipedia. Demo-grade, not authoritative.
+commit = "a2430f2af0c79ddf0748e91de11bdeb1616ab5a7"
+
+[edgar]
+forms = ["10-K", "10-K/A", "10-Q", "10-Q/A", "8-K", "8-K/A"]
+# Filing text is downloaded for filings accepted from this date to the end of the period,
+# so reports from before the period starts are on hand. Needs a contact in the User-Agent.
+documents_since = 2024-07-01
+# The SEC asks automated clients to name a contact. SEC_USER_AGENT in the environment overrides it.
+user_agent = "bazaar-market-sources/0.1 anthony@pydantic.dev"
+
+# cik is the SEC's company number, checked against data.sec.gov on 2026-10-06.
+# EDGAR returns no ticker for companies that stopped trading, so the mapping lives here.
+
+[[company]]
+ticker = "AAPL"
+cik = 320193
+
+[[company]]
+ticker = "MSFT"
+cik = 789019
+
+[[company]]
+ticker = "NVDA"
+cik = 1045810
+
+[[company]]
+ticker = "AMZN"
+cik = 1018724
+
+[[company]]
+ticker = "JPM"
+cik = 19617
+
+[[company]]
+ticker = "XOM"
+cik = 34088
+
+[[company]]
+ticker = "KO"
+cik = 21344
+
+[[company]]
+ticker = "JNJ"
+cik = 200406
+
+[[company]]
+ticker = "WMT"
+cik = 104169
+
+[[company]]
+ticker = "META"
+cik = 1326801
+
+[[company]]
+ticker = "FISV"
+cik = 798354
+# Traded as FI from 2023-06-07 to 2025-11-10. news_symbols carries no dates, so FI articles from
+# after the rename are fetched too.
+news_symbols = ["FISV", "FI"]
+
+# Kellanova. Acquired for cash on 2025-12-11. Last price 2025-12-10.
+[[company]]
+ticker = "K"
+cik = 55067
+
+# Electronic Arts. Acquired for cash on 2026-08-04. Last price 2026-08-04.
+[[company]]
+ticker = "EA"
+cik = 712515

@@ -21,6 +21,7 @@ from bazaar_protocol.registry import (
     StrategyVersion,
 )
 from fastapi import Depends, FastAPI, Header, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -84,6 +85,33 @@ def create_app(
 
     @application.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
+        # Only these POST routes may replay a historical body. Keep endpoint request
+        # models (and OpenAPI) instructions-only; this fallback cannot submit writes.
+        route_path = getattr(request.scope.get("route"), "path", None)
+        if request.method == "POST" and route_path in (
+            "/strategies",
+            "/strategies/{strategy_id}/versions",
+        ):
+            try:
+                key = UUID(request.headers["Idempotency-Key"])
+                strategy_id = (
+                    UUID(request.path_params["strategy_id"])
+                    if route_path == "/strategies/{strategy_id}/versions"
+                    else None
+                )
+            except (KeyError, ValueError):
+                pass
+            else:
+                try:
+                    replay = await run_in_threadpool(
+                        store.replay_legacy_request, error.body, key, strategy_id=strategy_id
+                    )
+                except RegistryError as replay_error:
+                    return await registry_error(request, replay_error)
+                except sqlite3.Error as replay_error:
+                    return await database_error(request, replay_error)
+                if replay is not None:
+                    return JSONResponse(status_code=201, content=replay.model_dump(mode="json"))
         # Do not echo invalid payloads, which may contain accidentally submitted credentials.
         logfire.warn("Invalid registry request", status_code=422)
         return error_response(422, ErrorCode.INVALID_REQUEST, "Invalid request")

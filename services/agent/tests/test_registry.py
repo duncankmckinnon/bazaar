@@ -3,12 +3,27 @@ import itertools
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from bazaar_agent.api import create_app
-from bazaar_agent.registry_store import RegistryStore
+from bazaar_agent.registry_store import (
+    RegistryError,
+    RegistryStore,
+    _LegacyCreateStrategyRequest,
+    _LegacyCreateVersionRequest,
+    digest,
+)
+from bazaar_protocol.registry import (
+    CreateStrategyRequest,
+    CreateVersionRequest,
+    LegacyStrategyDefinition,
+    StrategyDefinition,
+    StrategyRegistration,
+    StrategyVersion,
+)
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 
 @pytest.fixture
@@ -20,7 +35,7 @@ def client(tmp_path):
 def payload(name="Alpha Trader", **updates):
     values = {
         "name": name,
-        "definition": {"model_ref": "test", "instructions": "Maximize portfolio value."},
+        "definition": {"instructions": "Maximize portfolio value."},
     }
     return values | updates
 
@@ -88,7 +103,11 @@ def test_normalized_names_and_conflict(client):
         {"name": "123-strategy"},
         {"name": "a" * 65},
         {"name": "other/name"},
-        {"definition": {"model_ref": "test", "instructions": " "}},
+        {"definition": {"instructions": " "}},
+        {"definition": {"instructions": ""}},
+        {"definition": {"instructions": "x" * 20001}},
+        {"definition": {}},
+        {"definition": {"instructions": "Trade", "artifact_ref": "reviewed:v1"}},
         {"definition": {"model_ref": "unknown", "instructions": "Trade"}},
         {"definition": {"model_ref": "test", "instructions": "Trade", "harness": "invalid"}},
         {"definition": {"model_ref": "test", "instructions": "Trade", "tools": ["secret_tool"]}},
@@ -115,13 +134,13 @@ def test_invalid_registration_has_no_side_effects(client, change):
     assert client.get("/strategies").json()["total"] == 0
 
 
-def test_model_catalog_is_configurable(tmp_path):
+def test_registration_is_independent_of_runtime_model_catalog(tmp_path):
     with TestClient(
         create_app(database_path=tmp_path / "registry.db", model_refs=frozenset({"custom"}))
     ) as client:
-        assert register(client).status_code == 422
-        body = payload(definition={"model_ref": "custom", "instructions": "Trade"})
-        assert register(client, body).status_code == 201
+        assert register(client).status_code == 201
+        body = payload("custom-model", definition={"model_ref": "custom", "instructions": "Trade"})
+        assert register(client, body).status_code == 422
 
 
 def test_required_valid_idempotency_header(client):
@@ -148,11 +167,7 @@ def test_versions_immutable_and_parent_lineage(client):
     strategy_id = initial["strategy"]["strategy_id"]
     first = initial["version"]
     body = {
-        "definition": {
-            "model_ref": "test",
-            "instructions": "New strategy",
-            "tools": ["orders", "account"],
-        },
+        "definition": {"instructions": "New strategy"},
         "hypothesis": "Better decisions",
     }
     key = uuid4()
@@ -162,8 +177,7 @@ def test_versions_immutable_and_parent_lineage(client):
     assert second["version"] == 2
     assert second["parent_version_id"] == first["version_id"]
     assert second["definition_digest"] != first["definition_digest"]
-    assert second["definition"]["tools"] == ["account", "orders"]
-    body["definition"]["tools"].reverse()
+    assert second["definition"] == {"instructions": "New strategy"}
     assert revise(client, strategy_id, body, key).json() == second
     body["hypothesis"] = "Changed request"
     assert revise(client, strategy_id, body, key).status_code == 409
@@ -282,3 +296,314 @@ def test_concurrent_requests_idempotency_and_version_numbers(client):
     assert [version["version"] for version in versions] == [1, 2, 3, 4, 5]
     for previous, current in itertools.pairwise(versions):
         assert current["parent_version_id"] == previous["version_id"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("harness", "single_shot"),
+        ("model_ref", "test"),
+        ("tools", ["account", "market_history", "orders"]),
+        ("artifact_ref", None),
+        ("artifact_ref", "reviewed:v1"),
+    ],
+)
+def test_runtime_fields_rejected_for_create_and_revision(client, field, value):
+    initial = register(client).json()
+    strategy_id = initial["strategy"]["strategy_id"]
+    definition = payload()["definition"] | {field: value}
+    assert register(client, payload("runtime", definition=definition)).status_code == 422
+    response = revise(client, strategy_id, {"definition": definition})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert client.get("/agents").json()["total"] == 1
+    assert client.get(f"/strategies/{strategy_id}").json()["version_count"] == 1
+    assert client.get(f"/strategies/{strategy_id}/versions").json()["items"] == [initial["version"]]
+
+
+def test_legacy_body_cannot_replay_or_create_instructions_only_requests(tmp_path):
+    database = tmp_path / "registry.db"
+    with TestClient(create_app(database_path=database)) as client:
+        create_key, revision_key = uuid4(), uuid4()
+        initial = register(client, key=create_key).json()
+        strategy_id = initial["strategy"]["strategy_id"]
+        assert revise(client, strategy_id, key=revision_key).status_code == 201
+        with sqlite3.connect(database) as connection:
+            before = list(connection.iterdump())
+        legacy_definition = payload()["definition"] | {"model_ref": "test"}
+        bodies = (
+            ("/strategies", payload(definition=legacy_definition), create_key),
+            (
+                f"/strategies/{strategy_id}/versions",
+                {"definition": legacy_definition},
+                revision_key,
+            ),
+        )
+        unused_key = uuid4()
+        for route, body, used_key in bodies:
+            mismatch = client.post(route, json=body, headers={"Idempotency-Key": str(used_key)})
+            assert mismatch.status_code == 409
+            assert mismatch.json()["error"]["code"] == "idempotency_conflict"
+            assert (
+                client.post(
+                    route, json=body, headers={"Idempotency-Key": str(unused_key)}
+                ).status_code
+                == 422
+            )
+        with sqlite3.connect(database) as connection:
+            assert list(connection.iterdump()) == before
+        # Failed compatibility attempts must not consume even previously unused keys.
+        assert register(client, payload("new-agent"), unused_key).status_code == 201
+        assert revise(client, strategy_id, key=unused_key).status_code == 201
+
+
+def test_definition_contract_is_frozen_and_instructions_only(client):
+    definition = StrategyDefinition(instructions="Trade")
+    assert definition.model_dump() == {"instructions": "Trade"}
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        definition.instructions = "Changed"
+    legacy = LegacyStrategyDefinition(model_ref="old-model", instructions="Trade")
+    for request_type in (CreateStrategyRequest, CreateVersionRequest):
+        values = {"name": "legacy"} if request_type is CreateStrategyRequest else {}
+        with pytest.raises(ValidationError):
+            request_type(**values, definition=legacy)
+        with pytest.raises(ValidationError):
+            request_type(**values, definition=legacy.model_dump(mode="json"))
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["StrategyDefinition"]
+    assert set(schema["properties"]) == {"instructions"}
+    assert schema["additionalProperties"] is False
+    assert schemas["CreateStrategyRequest"]["properties"]["definition"] == {
+        "$ref": "#/components/schemas/StrategyDefinition"
+    }
+    assert schemas["CreateVersionRequest"]["properties"]["definition"] == {
+        "$ref": "#/components/schemas/StrategyDefinition"
+    }
+
+
+@pytest.mark.parametrize("method", ["register", "add_version"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "legacy_subclass",
+        "copy_legacy",
+        "construct_legacy",
+        "copy_invalid",
+        "construct_invalid",
+        "copy_unsafe_utf8",
+        "construct_unsafe_utf8",
+    ],
+)
+def test_public_write_methods_revalidate_before_transactions(
+    client, monkeypatch, capfire, method, kind
+):
+    store = client.app.state.registry
+    initial = register(client).json()
+    strategy_id = UUID(initial["strategy"]["strategy_id"])
+    key = uuid4()
+    request_type = CreateStrategyRequest if method == "register" else CreateVersionRequest
+    legacy_type = (
+        _LegacyCreateStrategyRequest if method == "register" else _LegacyCreateVersionRequest
+    )
+    values = {"name": "direct-write"} if method == "register" else {}
+    valid = request_type(**values, definition=StrategyDefinition(instructions="Trade"))
+    legacy = LegacyStrategyDefinition(
+        instructions="PRIVATE-WRITE-STRATEGY",
+        model_ref="retired-model",
+        harness="research",
+        tools=("news",),
+    )
+    if kind == "legacy_subclass":
+        request = legacy_type(**values, definition=legacy)
+    else:
+        definition = (
+            legacy
+            if kind.endswith("legacy")
+            else StrategyDefinition.model_construct(
+                instructions=b"PRIVATE-WRITE-STRATEGY\xff" if kind.endswith("unsafe_utf8") else " "
+            )
+        )
+        request = (
+            valid.model_copy(update={"definition": definition})
+            if kind.startswith("copy")
+            else request_type.model_construct(**values, definition=definition)
+        )
+
+    with sqlite3.connect(store.database_path) as connection:
+        before = list(connection.iterdump())
+
+    def unexpected_connection():
+        pytest.fail("Invalid public write input opened a database transaction")
+
+    # Invalid DTOs must fail before fingerprinting/replay lookup or opening any connection.
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "connect", unexpected_connection)
+        with pytest.raises(RegistryError) as error:
+            if method == "register":
+                store.register(request, key)
+            else:
+                store.add_version(strategy_id, request, key)
+        assert error.value.status_code == 422
+        assert error.value.code.value == "invalid_request"
+        assert str(error.value) == "Invalid request"
+    assert "PRIVATE-WRITE-STRATEGY" not in json.dumps(
+        capfire.exporter.exported_spans_as_dict(), default=str
+    )
+
+    with sqlite3.connect(store.database_path) as connection:
+        assert list(connection.iterdump()) == before
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM registry_requests WHERE request_key = ?", (str(key),)
+            ).fetchone()[0]
+            == 0
+        )
+
+    # The failed call must not consume its key: a valid call with that key succeeds and replays.
+    if method == "register":
+        result = store.register(valid, key)
+        assert store.register(valid, key) == result
+        assert store.list_agents(100, 0).total == 2
+    else:
+        result = store.add_version(strategy_id, valid, key)
+        assert store.add_version(strategy_id, valid, key) == result
+        assert store.get_strategy(strategy_id).version_count == 2
+    version = result.version if isinstance(result, StrategyRegistration) else result
+    assert type(version.definition) is StrategyDefinition
+    assert version.definition.model_dump() == {"instructions": "Trade"}
+
+
+@pytest.mark.parametrize("custom_runtime", [False, True])
+def test_legacy_snapshots_digests_and_replay_survive_restart(tmp_path, custom_runtime):
+    database = tmp_path / "registry.db"
+    create_key, revision_key = uuid4(), uuid4()
+    with TestClient(create_app(database_path=database)) as client:
+        initial = register(client, key=create_key).json()
+        strategy_id = initial["strategy"]["strategy_id"]
+        second = revise(client, strategy_id, key=revision_key).json()
+
+    # Seed the exact pre-PR39 wire shape, including its normalized defaults.
+    # Do not derive the expected snapshots or hashes from the compatibility model.
+    legacy = {
+        "harness": "research" if custom_runtime else "single_shot",
+        "model_ref": "retired-model" if custom_runtime else "test",
+        "instructions": "Maximize portfolio value.",
+        "tools": ["news", "reports"] if custom_runtime else ["account", "market_history", "orders"],
+        "artifact_ref": "reviewed:旧-strategy" if custom_runtime else None,
+    }
+    encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    old_digest = hashlib.sha256(encoded.encode()).hexdigest()
+    for version in (initial["version"], second):
+        version["definition"] = legacy
+        version["definition_digest"] = old_digest
+    historical_create = payload() | {
+        "name": "alpha-trader",
+        "description": "",
+        "definition": legacy,
+        "parent_version_id": None,
+    }
+    historical_revision = {"definition": legacy, "hypothesis": "", "parent_version_id": None}
+    replay_entries = (
+        ("create", create_key, historical_create, initial, StrategyRegistration),
+        (strategy_id, revision_key, historical_revision, second, StrategyVersion),
+    )
+    with sqlite3.connect(database) as connection:
+        for version in (initial["version"], second):
+            connection.execute(
+                "UPDATE registry_versions SET definition = ?, definition_digest = ? WHERE version_id = ?",
+                (json.dumps(legacy), old_digest, version["version_id"]),
+            )
+        for scope, key, request, response, _ in replay_entries:
+            connection.execute(
+                "UPDATE registry_requests SET fingerprint = ?, response = ? WHERE scope = ? AND request_key = ?",
+                (digest(request), json.dumps(response), scope, str(key)),
+            )
+        before = list(connection.iterdump())
+
+    with TestClient(create_app(database_path=database, model_refs=frozenset())) as client:
+        store = client.app.state.registry
+        for version in (initial["version"], second):
+            path = f"/strategies/{strategy_id}/versions/{version['version_id']}"
+            assert client.get(path).json() == version
+        assert client.get(f"/strategies/{strategy_id}/versions").json()["items"] == [
+            initial["version"],
+            second,
+        ]
+        for scope, key, request, response, response_type in replay_entries:
+            legacy_strategy_id = None if scope == "create" else UUID(scope)
+            restored = store.replay_legacy_request(request, key, strategy_id=legacy_strategy_id)
+            assert isinstance(restored, response_type)
+            assert restored.model_dump(mode="json") == response
+            version = restored.version if isinstance(restored, StrategyRegistration) else restored
+            assert isinstance(version.definition, LegacyStrategyDefinition)
+            assert version.definition_digest == old_digest
+
+            route = "/strategies" if scope == "create" else f"/strategies/{scope}/versions"
+            headers = {"Idempotency-Key": str(key)}
+            exact = client.post(route, json=request, headers=headers)
+            assert exact.status_code == 201
+            assert exact.json() == response
+
+            # Historical request defaults, name normalization and tool sorting must
+            # produce the old fingerprint, not one based on stripped runtime fields.
+            normalized_retry = {"definition": legacy | {"tools": list(reversed(legacy["tools"]))}}
+            if scope == "create":
+                normalized_retry["name"] = "  ALPHA___Trader  "
+            if not custom_runtime:
+                normalized_retry["definition"] = {
+                    "model_ref": "test",
+                    "instructions": legacy["instructions"],
+                }
+            retry = client.post(route, json=normalized_retry, headers=headers)
+            assert retry.status_code == 201
+            assert retry.json() == response
+
+            unused = client.post(route, json=request, headers={"Idempotency-Key": str(uuid4())})
+            assert unused.status_code == 422
+            changed = request | {"definition": legacy | {"model_ref": "different-model"}}
+            conflict = client.post(route, json=changed, headers=headers)
+            assert conflict.status_code == 409
+            assert conflict.json()["error"]["code"] == "idempotency_conflict"
+            for invalid in (
+                request | {"credentials": "secret-value"},
+                request | {"definition": legacy | {"tools": ["orders", "orders"]}},
+                request | {"definition": legacy | {"harness": "unknown"}},
+                request | {"definition": legacy | {"instructions": " "}},
+                request | {"parent_version_id": "bad-uuid"},
+                request | {"definition": legacy | {"runtime_settings": {}}},
+            ):
+                rejected = client.post(route, json=invalid, headers=headers)
+                assert rejected.status_code == 422
+                assert "secret-value" not in rejected.text
+            for invalid_headers in ({}, {"Idempotency-Key": "bad-uuid"}):
+                assert client.post(route, json=request, headers=invalid_headers).status_code == 422
+            assert client.post(route, content="{", headers=headers).status_code == 422
+
+        # The creation key cannot replay the revision scope or another strategy.
+        assert revise(client, strategy_id, historical_revision, create_key).status_code == 422
+        assert revise(client, uuid4(), historical_revision, revision_key).status_code == 422
+        assert revise(client, "bad-uuid", historical_revision, revision_key).status_code == 422
+        assert (
+            client.put(
+                "/strategies", json=historical_create, headers={"Idempotency-Key": str(create_key)}
+            ).status_code
+            == 405
+        )
+        assert register(client, key=create_key).status_code == 409
+        assert revise(client, strategy_id, key=revision_key).status_code == 409
+        with sqlite3.connect(database) as connection:
+            assert list(connection.iterdump()) == before
+
+        new_version = revise(client, strategy_id).json()
+        assert new_version["version"] == 3
+        assert new_version["parent_version_id"] == second["version_id"]
+        assert new_version["definition"] == payload()["definition"]
+        assert new_version["definition_digest"] != old_digest
+        versions = client.get(f"/strategies/{strategy_id}/versions").json()["items"]
+        assert versions == [initial["version"], second, new_version]
+        with sqlite3.connect(database) as connection:
+            after_revision = list(connection.iterdump())
+        assert register(client, historical_create, create_key).json() == initial
+        assert revise(client, strategy_id, historical_revision, revision_key).json() == second
+        with sqlite3.connect(database) as connection:
+            assert list(connection.iterdump()) == after_revision
