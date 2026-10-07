@@ -156,6 +156,8 @@ uv run logfire projects use --org logfire bazaar-demo
 ```
 
 Setting `LOGFIRE_TOKEN` (a project write token) in both processes' environment also works.
+Run `uv sync --all-packages` first; the logfire CLI is only installed then. Alternative: put
+`LOGFIRE_TOKEN=<write token>` in `.env` and start both processes with `uv run --env-file .env`.
 Each run is one trace (run, decision, order and mark spans), and the evaluator adds one span per
 trade. The trace id is stored in `record.json` and shown on the leaderboard.
 
