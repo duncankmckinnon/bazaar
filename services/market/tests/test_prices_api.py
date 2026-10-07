@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 import pytest
+from bazaar_market.clock import Experiment, UnknownExperiment
 from bazaar_market.prices import Bar, SqliteMarketData, close_at, import_bars
 from bazaar_market.prices_api import router
 from bazaar_protocol import PriceHistory
@@ -16,13 +17,14 @@ MON, TUE, WED = date(2026, 2, 2), date(2026, 2, 3), date(2026, 2, 4)
 
 
 class FakeClock:
-    def __init__(self, cutoff: datetime) -> None:
+    def __init__(self, cutoff: datetime, data_version: str = "synthetic-v1") -> None:
         self.at = cutoff
+        self.data_version = data_version
 
-    def cutoff(self, experiment_id: UUID) -> datetime:
+    def experiment(self, experiment_id: UUID) -> Experiment:
         if experiment_id != EXPERIMENT:
-            raise LookupError(str(experiment_id))
-        return self.at
+            raise UnknownExperiment(str(experiment_id))
+        return Experiment(experiment_id, self.data_version, "exec-v1", self.at, 1)
 
 
 @pytest.fixture
@@ -57,7 +59,7 @@ def test_history_up_to_the_cutoff_includes_the_close_at_the_boundary_instant(app
     assert (history.cutoff_at, history.data_version, history.source) == (
         close_at(TUE),
         "synthetic-v1",
-        "synthetic",
+        "synthetic/synthetic-v1",
     )
 
 
@@ -115,3 +117,13 @@ def test_a_timestamp_that_is_not_utc_is_rejected_as_the_protocol_requires(app):
     )
 
     assert response.status_code == 422
+
+
+def test_a_bundle_experiment_reports_its_bundle_version_and_the_bars_as_the_source(app):
+    app.state.clock.data_version = "demo-bundle-v1"
+
+    response = get(app, close_at(MON), close_at(TUE))
+
+    history = PriceHistory.model_validate(response.json())
+    assert (history.data_version, history.source) == ("demo-bundle-v1", "synthetic/synthetic-v1")
+    assert [str(o.price) for o in history.observations] == ["100.00", "101.50"]

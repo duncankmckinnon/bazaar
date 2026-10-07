@@ -86,7 +86,7 @@ class SqliteClock:
                     "INSERT INTO acct_experiments VALUES (?, ?, ?, ?, 1)",
                     (str(experiment_id), data_version, execution_rule_version, stored_cutoff),
                 )
-                return load_experiment(connection, experiment_id)
+                return _record(connection, experiment_id)
             if (data_version is not None and data_version != current.data_version) or (
                 execution_rule_version is not None
                 and execution_rule_version != current.execution_rule_version
@@ -105,4 +105,29 @@ class SqliteClock:
                 "WHERE experiment_id = ?",
                 (stored_cutoff, str(experiment_id)),
             )
-            return load_experiment(connection, experiment_id)
+            return _record(connection, experiment_id)
+
+    def cutoff_history(self, experiment_id: UUID) -> tuple[Experiment, list[datetime] | None]:
+        """Every cutoff the experiment has had, oldest first, or None when the record is
+        incomplete (an experiment created before the history table existed).
+        """
+        with db.read_connection(self.database_path) as connection:
+            experiment = load_experiment(connection, experiment_id)
+            rows = connection.execute(
+                "SELECT cutoff_at FROM acct_cutoff_history WHERE experiment_id = ? "
+                "ORDER BY cutoff_seq",
+                (str(experiment_id),),
+            ).fetchall()
+        if len(rows) != experiment.cutoff_seq:
+            return experiment, None
+        return experiment, [db.parse_time(row["cutoff_at"]) for row in rows]
+
+
+def _record(connection: sqlite3.Connection, experiment_id: UUID) -> Experiment:
+    """Append the experiment's new cutoff to its history, in the caller's transaction."""
+    experiment = load_experiment(connection, experiment_id)
+    connection.execute(
+        "INSERT INTO acct_cutoff_history VALUES (?, ?, ?)",
+        (str(experiment_id), experiment.cutoff_seq, db.format_time(experiment.cutoff_at)),
+    )
+    return experiment

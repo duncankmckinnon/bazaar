@@ -58,6 +58,7 @@ class NewsItem(_Record):
     body: str
     created_at: AwareDatetime
     updated_at: AwareDatetime
+    summary: str = ""
 
     @property
     def has_body(self) -> bool:

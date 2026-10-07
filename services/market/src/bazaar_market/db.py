@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS acct_experiments (
     cutoff_at TEXT NOT NULL,
     cutoff_seq INTEGER NOT NULL CHECK (cutoff_seq >= 1)
 );
+CREATE TABLE IF NOT EXISTS acct_cutoff_history (
+    experiment_id TEXT NOT NULL REFERENCES acct_experiments(experiment_id),
+    cutoff_seq INTEGER NOT NULL CHECK (cutoff_seq >= 1),
+    cutoff_at TEXT NOT NULL,
+    PRIMARY KEY (experiment_id, cutoff_seq),
+    UNIQUE (experiment_id, cutoff_at)
+);
+CREATE TRIGGER IF NOT EXISTS acct_cutoff_history_immutable_update
+BEFORE UPDATE ON acct_cutoff_history
+BEGIN SELECT RAISE(ABORT, 'cutoff history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS acct_cutoff_history_immutable_delete
+BEFORE DELETE ON acct_cutoff_history
+BEGIN SELECT RAISE(ABORT, 'cutoff history is append-only'); END;
 """
 
 
