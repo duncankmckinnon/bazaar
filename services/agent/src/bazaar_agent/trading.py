@@ -20,8 +20,8 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness import CodeMode
 
-from bazaar_agent.monty import CalculationRecord, CalculationSnapshot, MontyCalculator
 from bazaar_agent.research import PrivateHistoryReader, ResearchContext, ResearchTools, ToolError
 
 # Trusted injection only. Never resolve a provider/model/URL from candidate text.
@@ -48,8 +48,6 @@ BUILTIN_TOOLS = (
     "filings",
     "private_history",
     "orders",
-    "monty_inputs",
-    "monty_calculate",
 )
 
 
@@ -89,6 +87,7 @@ class RuntimeConfig(WireModel):
     harness: Literal["builtin"] = "builtin"
     model_ref: Reference = "fixture"
     model_settings: RuntimeModelSettings = RuntimeModelSettings()
+    code_mode: bool = False
 
 
 class DecisionBudget(WireModel):
@@ -112,13 +111,13 @@ class DecisionResult(WireModel):
     decision: Decision | None = None
     error: ToolError | None = None
     usage: DecisionUsage = DecisionUsage()
-    calculations: tuple[CalculationRecord, ...] = ()
     # Settlement/reconciliation evidence survives invalid final output or a budget failure.
     order_request: OrderRequest | None = None
     order_result: OrderResult | None = None
 
 
-class _StopDecision(Exception):
+class _StopDecision(BaseException):
+    # Terminal failures must escape Code Mode rather than become sandbox retry feedback.
     def __init__(self, error: ToolError) -> None:
         self.error = error
 
@@ -163,7 +162,6 @@ async def run_decision(
     runtime: RuntimeConfig | None = None,
     model_factory: ModelFactory | None = None,
     private_history: PrivateHistoryReader | None = None,
-    calculator: MontyCalculator | None = None,
 ) -> DecisionResult:
     """Run once with fresh messages/cursors and at most one immutable market order.
 
@@ -178,7 +176,6 @@ async def run_decision(
     decision: Decision | None = None
     error: ToolError | None = None
     cancelled = False
-    calculation_start = len(calculator.records) if calculator else 0
     with logfire.span("trading decision", _span_name="trading.decision", _tags=["trading"]) as span:
         try:
             # Revalidate even frozen DTOs: model_copy/model_construct can bypass validation.
@@ -243,38 +240,18 @@ async def run_decision(
             }:
                 _stop("invalid_response", "Initial account and portfolio snapshots disagree")
 
-            # Builtin calculation tools never depend on strategy flags. By default they
-            # see the market API's immutable initial financial state. The optional trusted
-            # runner calculator adds eligible historical prices, never new balances.
-            if calculator is None:
-                calculator = MontyCalculator(CalculationSnapshot(context=ctx))
-            if calculator.snapshot.context != ctx:
-                _stop("invalid_request", "Calculation snapshot context mismatch")
-            try:
-                calculator.bind_market_state(account, portfolio)
-            except ValueError:
-                _stop("invalid_request", "Calculation inputs must match fresh market binding")
-            if not calculator.reserve():
-                _stop("invalid_request", "A fresh calculator is required for each decision")
-
             def wrap(name: str) -> Tool:
                 # Preserve shared DTO signatures; no duplicated argument schemas.
-                fn = getattr(calculator if name.startswith("monty_") else tools, name)
+                fn = getattr(tools, name)
 
                 async def invoke(*args, **kwargs):
                     nonlocal calls
                     calls += 1
                     if calls > budget.tool_calls:
-                        raise UsageLimitExceeded("Tool budget exhausted")
+                        _stop("conflict", "Decision tool budget exhausted; do not retrade")
                     result = await fn(*args, **kwargs)
-                    # Full private diagnostics let the model correct ordinary math/code
-                    # errors within the SAME budget. Host/scope/IPC/order failures stop.
-                    if result.error is not None and not (
-                        name == "monty_calculate"
-                        and result.data is not None
-                        and result.data.status in ("syntax", "runtime", "serialization")
-                    ):
-                        raise _StopDecision(result.error)
+                    # Scoped read errors are safe feedback, never invalid data. The model
+                    # may correct arguments or retry within the same decision-wide budget.
                     return result
 
                 # functools.wraps exposes the bound method signature to PydanticAI.
@@ -321,9 +298,19 @@ async def run_decision(
                         instructions=TRADING_ROLE,
                         tools=registered,
                         retries=1,
-                        output_retries=1,
-                        instrument=False,
+                        capabilities=[
+                            CodeMode(
+                                tools=list(BUILTIN_TOOLS),
+                                max_retries=1,
+                                max_tool_calls=max(1, budget.tool_calls),
+                                resource_limits={"max_duration_secs": budget.timeout_seconds},
+                            )
+                        ]
+                        if runtime.code_mode
+                        else [],
                     )
+
+                    agent.instrument = False
 
                     @agent.output_validator
                     def consistent_output(run: RunContext[None], output: Decision) -> Decision:
@@ -384,5 +371,4 @@ async def run_decision(
         ),
         order_request=submitted,
         order_result=settled,
-        calculations=tuple(calculator.records[calculation_start:]) if calculator else (),
     )

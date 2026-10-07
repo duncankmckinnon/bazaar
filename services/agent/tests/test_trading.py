@@ -56,8 +56,6 @@ ALL_TOOLS = {
     "private_history",
     "orders",
     "market_order",
-    "monty_inputs",
-    "monty_calculate",
 }
 
 
@@ -344,10 +342,15 @@ async def test_ambiguous_order_aborts_without_model_retry(failure):
         (query(), page([news(available_at=FUTURE)]), "invalid_response"),
     ],
 )
-async def test_scoped_failure_never_advances_to_another_model_call(query_args, payload, code):
-    model, calls = script([ToolCallPart("news", query_args)])
+async def test_scoped_read_failure_returns_safe_feedback(query_args, payload, code):
+    def finish(info):
+        return [output(info)]
+
+    model, calls = script([ToolCallPart("news", query_args)], finish)
     result, _ = await invoke(model, payload=payload, tools=("news",))
-    assert result.error.code == code and len(calls) == 1 and result.decision is None
+    assert result.error is None and len(calls) == 2
+    feedback = calls[1][0][-1].parts[0].content
+    assert feedback.error.code == code and feedback.data is None
 
 
 async def test_cursor_issued_this_run_only_and_no_automatic_page_walking():
@@ -365,9 +368,12 @@ async def test_cursor_issued_this_run_only_and_no_automatic_page_walking():
 
     result, calls = await invoke(model, handler=handler, tools=("news",))
     assert result.error is None and len(calls) == 2
-    second, _ = script([ToolCallPart("news", query(cursor="next"))])
+    second, model_calls = script(
+        [ToolCallPart("news", query(cursor="next"))], lambda info: [output(info)]
+    )
     result, calls = await invoke(second, handler=handler, tools=("news",))
-    assert result.error.code == "invalid_request" and not calls
+    assert result.error is None and not calls
+    assert model_calls[1][0][-1].parts[0].content.error.code == "invalid_request"
 
 
 @pytest.mark.parametrize(
@@ -488,7 +494,7 @@ async def test_payload_safe_with_production_httpx_and_global_genai_instrumentati
             result = await run_decision(
                 client=client, model_factory=lambda ref: model, **inputs(tools=("news",))
             )
-        assert result.error.code == "network"
+        assert result.error is None and result.decision.action == "hold"
         spans = capfire.exporter.exported_spans_as_dict()
         assert "trading.decision" in {span["name"] for span in spans}
         assert SECRET not in json.dumps(spans, default=str) + caplog.text
@@ -577,7 +583,7 @@ async def test_model_budget_after_order_retains_evidence():
     assert result.order_result.status == "filled" and len(calls) == 1
 
 
-async def test_sequential_batch_error_prevents_later_order():
+async def test_read_error_does_not_turn_order_failure_into_retry():
     model, _ = script(
         [
             ToolCallPart("account", {}),
@@ -585,8 +591,8 @@ async def test_sequential_batch_error_prevents_later_order():
         ]
     )
     result, calls = await invoke(model, payload=account(account_id=str(UUID(int=999))))
-    assert result.error.code == "invalid_response" and len(calls) == 1
-    assert result.order_request is None
+    assert result.error.code == "invalid_response" and len(calls) == 2
+    assert result.order_request == order_request() and result.order_result is None
 
 
 @pytest.mark.parametrize("kind", ["filing", "private", "order", "model_failure", "invalid_output"])
@@ -1085,3 +1091,218 @@ async def test_initial_market_payload_is_not_logged(capfire, caplog):
         SECRET
         not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str) + caplog.text
     )
+
+
+def code_call(code):
+    return ToolCallPart("run_code", {"code": code})
+
+
+def code_runtime(**kwargs):
+    return {"runtime": RuntimeConfig(code_mode=True), **kwargs}
+
+
+def news_code(**updates):
+    return "news(" + ", ".join(f"{key}={value!r}" for key, value in query(**updates).items()) + ")"
+
+
+async def test_code_mode_research_and_computation_keep_order_native():
+    model, calls = script(
+        [
+            code_call(
+                "snapshot = account()\nassert snapshot['data'] is not None\nfloat(snapshot['data']['cash']) / 2"
+            )
+        ],
+        [ToolCallPart("market_order", order_request().model_dump(mode="json"))],
+        lambda info: [output(info, "ordered")],
+    )
+    result, requests = await invoke(
+        model,
+        handler=lambda request: httpx.Response(
+            200, json=order() if request.method == "POST" else account()
+        ),
+        overrides=code_runtime(),
+    )
+    assert result.error is None and result.order_result.status == "filled"
+    assert {t.name for t in calls[0][1].function_tools} == {"run_code", "market_order"}
+    feedback = calls[1][0][-1].parts[0].content
+    assert feedback == float(account()["cash"]) / 2
+    assert [r.method for r in requests] == ["GET", "POST"]
+    assert result.usage.tool_calls == 2
+
+
+async def test_code_mode_read_error_can_be_corrected():
+    model, calls = script(
+        [code_call(news_code(end_at=FUTURE))],
+        [code_call(news_code())],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(model, payload=page(), overrides=code_runtime())
+    assert result.error is None and len(requests) == 1
+    assert calls[1][0][-1].parts[0].content["error"]["code"] == "invalid_request"
+    assert result.usage.tool_calls == 2
+
+
+@pytest.mark.parametrize("code", ["1 +", "1 / 0", "open('/etc/passwd').read()"])
+async def test_code_mode_error_feedback_allows_correction(code):
+    model, calls = script([code_call(code)], [code_call("1 + 2")], lambda info: [output(info)])
+    result, requests = await invoke(model, overrides=code_runtime())
+    assert result.error is None and not requests and len(calls) == 3
+    assert calls[2][0][-1].parts[0].content == 3
+
+
+async def test_code_mode_nested_reads_share_budget_across_snippets():
+    model, calls = script(
+        [code_call("account()")],
+        [code_call("account()\naccount()\naccount()")],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(
+        model,
+        overrides=code_runtime(budget=DecisionBudget(tool_calls=3)),
+    )
+    assert result.error.code == "conflict" and result.decision is None
+    assert len(requests) <= 3 and len(calls) == 2
+
+
+async def test_code_mode_zero_budget_can_hold_without_tools():
+    model, _ = script(lambda info: [output(info)])
+    result, requests = await invoke(
+        model, overrides=code_runtime(budget=DecisionBudget(tool_calls=0))
+    )
+    assert result.error is None and not requests
+
+
+async def test_code_mode_cannot_submit_order_from_sandbox():
+    model, calls = script(
+        [code_call(f"await market_order(**{order_request().model_dump(mode='json')!r})")],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(model, overrides=code_runtime())
+    assert result.error is None and not requests and result.order_request is None
+    assert len(calls) == 2
+
+
+async def test_code_mode_state_and_cursor_isolation_under_concurrency():
+    async def run(marker):
+        model, calls = script(
+            [code_call(f"marker = {marker!r}\n{news_code()}")],
+            [code_call(f"assert marker == {marker!r}\n{news_code(cursor='next')}")],
+            lambda info: [output(info)],
+        )
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json=page()
+                if "cursor" in request.url.params
+                else page([news()], next_cursor="next"),
+            )
+
+        result, requests = await invoke(
+            model, handler=handler, instructions=marker, overrides=code_runtime()
+        )
+        assert result.error is None and len(requests) == 2
+        assert marker in "\n".join(user_prompts(calls[0][0]))
+        return calls
+
+    left, right = await asyncio.gather(run("left-strategy"), run("right-strategy"))
+    assert "right-strategy" not in "\n".join(user_prompts(left[0][0]))
+    assert "left-strategy" not in "\n".join(user_prompts(right[0][0]))
+
+
+async def test_code_mode_content_excluded_from_telemetry(capfire, caplog):
+    Agent.instrument_all(True)
+    try:
+        model, _ = script(
+            [code_call(f"print({SECRET!r})\n{news_code()}")],
+            lambda info: [output(info)],
+        )
+        result, _ = await invoke(model, payload=page([news(text=SECRET)]), overrides=code_runtime())
+        assert result.error is None
+        assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+        assert SECRET not in caplog.text
+    finally:
+        Agent.instrument_all(False)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import os\nos.getenv('LOGFIRE_TOKEN')",
+        "import datetime\ndatetime.datetime.now()",
+        "import subprocess\nsubprocess.run(['echo', 'unsafe'])",
+    ],
+)
+async def test_code_mode_has_no_host_grants(code):
+    model, calls = script([code_call(code)], lambda info: [output(info)])
+    result, requests = await invoke(model, overrides=code_runtime())
+    assert result.error is None and not requests
+    assert calls[1][0][-1].parts[0].part_kind == "retry-prompt"
+
+
+async def test_code_mode_read_retry_can_recover_from_transport_error():
+    count = 0
+
+    def handler(request):
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise httpx.ReadTimeout(SECRET, request=request)
+        return httpx.Response(200, json=account())
+
+    model, calls = script(
+        [code_call("account()")], [code_call("account()")], lambda info: [output(info)]
+    )
+    result, requests = await invoke(model, handler=handler, overrides=code_runtime())
+    assert result.error is None and len(requests) == 2
+    assert calls[1][0][-1].parts[0].content["error"]["code"] == "network"
+    assert calls[2][0][-1].parts[0].content["data"]["account_id"] == str(IDS["account_id"])
+
+
+async def test_code_mode_ambiguous_native_order_stays_terminal():
+    def handler(request):
+        raise httpx.ReadTimeout(SECRET, request=request)
+
+    model, calls = script(
+        [ToolCallPart("market_order", order_request().model_dump(mode="json"))],
+        lambda info: [output(info)],
+    )
+    result, requests = await invoke(model, handler=handler, overrides=code_runtime())
+    assert result.error.code == "network" and len(calls) == len(requests) == 1
+    assert result.order_request == order_request() and result.order_result is None
+
+
+async def test_code_mode_pure_computation_consumes_sdk_tool_budget():
+    model, calls = script([code_call("1 + 2")], lambda info: [output(info)])
+    result, requests = await invoke(
+        model, overrides=code_runtime(budget=DecisionBudget(tool_calls=0))
+    )
+    assert result.error.code == "conflict" and not requests and len(calls) == 1
+
+
+async def test_code_mode_loop_is_bounded_by_decision_deadline():
+    model, _ = script([code_call("while True:\n    pass")], lambda info: [output(info)])
+    result, requests = await invoke(
+        model, overrides=code_runtime(budget=DecisionBudget(timeout_seconds=0.2))
+    )
+    assert result.error.code == "conflict" and result.decision is None and not requests
+
+
+async def test_code_mode_cancellation_propagates():
+    started = asyncio.Event()
+
+    def model(messages, info):
+        started.set()
+        return ModelResponse([code_call("while True:\n    pass")])
+
+    task = asyncio.create_task(
+        invoke(
+            FunctionModel(model),
+            overrides=code_runtime(budget=DecisionBudget(timeout_seconds=0.5)),
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)

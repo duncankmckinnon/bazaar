@@ -2,8 +2,9 @@
 
 Bazaar's target is historical stock strategy experimentation with fake-money accounts in a market
 DB. Agents buy and sell through simulated market execution using point-in-time prices, news,
-prior-cycle company reports and Pydantic Monty. An orchestrator proposes the next strategy/test plan
-for human approval, supported by Logfire + AI Gateway traces, evaluations, datasets and oversight.
+prior-cycle company reports and optional sandboxed Code Mode. An orchestrator proposes the next
+strategy/test plan for human approval, supported by Logfire + AI Gateway traces, evaluations,
+datasets and oversight.
 The agent-side FastAPI interface registers strategies as new named agents; registration does not
 start an experiment.
 
@@ -14,8 +15,11 @@ named `seller` and `buyer`.
 versioning, scoped research clients and a bounded PydanticAI decision loop are implemented.
 The [trading harness guide](docs/trading-agent.md) describes local fixture usage, tool capabilities,
 budgets and order recovery. Registration and the placeholder processes still do not execute
-strategies. A model-callable [Monty calculation tool](docs/monty-calculations.md) computes
-from runner-owned historical snapshots without Monty-specific quotas or truncation.
+strategies. Optional Code Mode replaces the custom calculation surface: it can call scoped
+sequential research reads and compute from their returned data, while `market_order` remains a
+native tool. Sandbox research stubs are synchronous functions called without `await`.
+Enable it with trusted `RuntimeConfig(code_mode=True)`; it is off by default and shares the
+existing decision budgets.
 Live market handlers, historical experiments, gateway binding and approvals
 are not implemented yet. The target design is in
 `docs/superpowers/specs/`; `docs/superpowers/plans/` contains an archived skeleton plan.
