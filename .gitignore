@@ -10,3 +10,6 @@ data/*.db
 data/*.sqlite3*
 skills-lock.json
 .claude/
+
+# Frozen source snapshots written by bazaar_market.sources
+data/raw/

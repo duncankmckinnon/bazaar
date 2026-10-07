@@ -82,6 +82,8 @@ source = { editable = "services/market" }
 dependencies = [
     { name = "bazaar-protocol" },
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
     { name = "uvicorn" },
 ]
 
@@ -89,6 +91,8 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-protocol", editable = "packages/protocol" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.8" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
