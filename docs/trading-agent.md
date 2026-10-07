@@ -133,7 +133,7 @@ runner-owned calculation snapshot or calculator injection. The custom `monty.py`
 `monty_calculate`, and `DecisionResult.calculations`.
 
 The SDK capability is configured with `max_retries=1`,
-`max_tool_calls=max(1, budget.tool_calls)`, and
+`max_tool_calls=budget.tool_calls + 1`, and
 `resource_limits={"max_duration_secs": budget.timeout_seconds}`. It retains the SDK's default
 256 MiB memory limit. No OS access, filesystem mounts, environment access or clock grants are
 provided. No eager execution or speculation is enabled. Research access remains mediated by the
@@ -185,14 +185,17 @@ Schema-invalid/unknown calls do not execute tools; their retries consume model r
 limits are checked **after** responses using SDK-reported/fixture-estimated usage, not exact
 preflight cost or billing guarantees.
 
-With Code Mode enabled, there are two tool-budget checks: the outer SDK `UsageLimits` counts
-model-dispatched `run_code` calls and native `market_order` calls, while the shared wrapper counter
-counts nested research read executions and native order executions against `budget.tool_calls`.
+With Code Mode enabled, there are two independent tool-budget checks: a harness capability counts
+model-dispatched `run_code` executions and native `market_order` executions, while the shared wrapper
+counter counts nested research read executions and native order executions against `budget.tool_calls`.
+The SDK's aggregate tool-call limit is disabled in this mode because it counts both outer and nested
+calls; using it here would charge a research read twice. SDK model-request and token limits remain active.
 `DecisionResult.usage.tool_calls` reports that wrapper counter, not the number of outer `run_code`
 calls. Nested reads, including failed reads and model-requested retries, do not bypass or reset the
-wrapper budget. CodeMode's `max_tool_calls` additionally bounds nested tool calls per code execution;
-`max(1, budget.tool_calls)` does not permit reads when the decision budget is zero. The outer SDK
-budget still applies to `run_code` even if its code performs no reads. Code execution, corrections
+wrapper budget. CodeMode's reservation cap allows one excess nested call to reach the terminal
+shared admission guard, rather than turning decision-budget exhaustion into retryable sandbox
+feedback. Rejected over-budget calls are not counted as executions. The outer harness guard blocks
+`run_code` when the decision budget is zero and counts it even if its code performs no reads. Code execution, corrections
 and research retries also share the decision-wide model-request, token and wall-time limits; the
 sandbox duration limit does not restart the overall deadline. Cancellation propagates, but SDK
 cleanup of an active sandbox feed may wait for its configured duration limit; it is not an

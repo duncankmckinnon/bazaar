@@ -1161,7 +1161,37 @@ async def test_code_mode_nested_reads_share_budget_across_snippets():
         overrides=code_runtime(budget=DecisionBudget(tool_calls=3)),
     )
     assert result.error.code == "conflict" and result.decision is None
-    assert len(requests) <= 3 and len(calls) == 2
+    assert result.usage.tool_calls == len(requests) == 3 and len(calls) == 2
+
+
+async def test_code_mode_one_read_and_order_fit_two_independent_tool_budgets():
+    model, _ = script(
+        [code_call("account()")],
+        [ToolCallPart("market_order", order_request().model_dump(mode="json"))],
+        lambda info: [output(info, "ordered")],
+    )
+    result, requests = await invoke(
+        model,
+        handler=lambda request: httpx.Response(
+            200, json=order() if request.method == "POST" else account()
+        ),
+        overrides=code_runtime(budget=DecisionBudget(tool_calls=2)),
+    )
+    assert result.error is None and result.order_result.status == "filled"
+    assert result.usage.tool_calls == len(requests) == 2
+
+
+@pytest.mark.parametrize("catch", [False, True])
+async def test_code_mode_single_snippet_overflow_is_terminal_even_if_caught(catch):
+    code = "account()\naccount()"
+    if catch:
+        code = "try:\n    account()\n    account()\nexcept Exception:\n    pass"
+    model, calls = script([code_call(code)], lambda info: [output(info)])
+    result, requests = await invoke(
+        model, overrides=code_runtime(budget=DecisionBudget(tool_calls=1))
+    )
+    assert result.error.code == "conflict" and result.decision is None
+    assert result.usage.tool_calls == len(requests) == len(calls) == 1
 
 
 async def test_code_mode_zero_budget_can_hold_without_tools():
