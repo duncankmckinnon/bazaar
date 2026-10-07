@@ -63,7 +63,8 @@ never changes a balance except by placing an order, and never sees its scores.
 
 ## Quickstart (synthetic prices, no keys)
 
-Run from the repository root. Tested on this branch at `5d345bc`.
+Run from the repository root. Tested on this branch at `ac4f9cf` (2026-10-07, fresh clone, followed
+literally).
 
 ```sh
 uv sync --all-packages
@@ -131,7 +132,15 @@ Which imports the bundle needs:
 - **Filings are optional.** Without them `GET /fiscal-cycles` returns `[]`, and the agent's
   `filings()` is unsupported. Nothing else changes.
 
-Then run step 4 with `--data-version demo-bundle-v1` (the default). On 2026-10-06 at `f697d06` that gave: cash-only 0.00%, agent-fixture -0.37% (1 fill: 10 AAPL
+For the bundle run, repeat steps 2-4 of the quickstart in a new shell:
+
+1. Make new ids (step 2). An experiment keeps the `data_version` of its first cutoff, so ids
+   already used for a `synthetic-v1` run fail with `invalid_request` under the bundle.
+2. Stop the first market (it still holds port 8000, for example `kill %1` in its shell), then start
+   it again (step 3) so it reads the new `BAZAAR_DEV_APPROVAL_IDS`.
+3. Run step 4 with `--data-version demo-bundle-v1` (the default) and a new `--runs-dir`.
+
+On 2026-10-06 at `f697d06` that gave: cash-only 0.00%, agent-fixture -0.37% (1 fill: 10 AAPL
 at 259.48, placed by the agent), buy-and-hold -0.98%, scripted momentum -1.36% (15 fills). Every run
 reconciled to the cent. The baselines and momentum match the earlier bars-only run exactly, also
 after the market's fill-rule change in `3d7af80`.
