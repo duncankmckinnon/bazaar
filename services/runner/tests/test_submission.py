@@ -233,28 +233,32 @@ def test_three_concurrent_submissions_do_not_cross(
     markets, tmp_path, monkeypatch, capfire, online_evaluation
 ):
     if online_evaluation:
+        import httpx2
         from bazaar_agent import strategy_evaluation
-        from pydantic_ai.messages import ModelResponse, ToolCallPart
-        from pydantic_ai.models.function import FunctionModel
 
-        async def grade(messages, info):
+        async def grade(request):
             # Keep the last evaluation pending when the trading loop finishes.
             await asyncio.sleep(0.01)
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        info.output_tools[0].name,
-                        {
-                            "pass": True,
-                            "score": 1.0,
-                            "reason": "The fixture followed its strategy.",
-                        },
-                    )
-                ]
+            return httpx2.Response(
+                200,
+                json={
+                    "model": "jev-1.13.0",
+                    "answers": {"pass": {"type": "noul", "noul": 0.9}},
+                    "usage": {"input_tokens": 120, "output_tokens": 1},
+                },
             )
 
+        provider = strategy_evaluation.TypeSafeProvider
         monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-        monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+        monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
+        monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", "https://gateway.test/proxy")
+        monkeypatch.setattr(
+            strategy_evaluation,
+            "TypeSafeProvider",
+            lambda **kwargs: provider(
+                **kwargs, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(grade))
+            ),
+        )
     ids = ["alpha", "bravo", "charlie"]
     for sid in ids:
         markets[f"http://{sid}"] = GrantingMarket()
