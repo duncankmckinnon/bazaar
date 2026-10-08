@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS events (
     text TEXT NOT NULL,
     submission_id TEXT
 );
+-- Marked portfolio value after each session of a running submission, for the live chart.
+CREATE TABLE IF NOT EXISTS submission_progress (
+    submission_id TEXT NOT NULL,
+    day INTEGER NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (submission_id, day)
+);
 """
 
 Now = Callable[[], datetime]
@@ -267,7 +274,29 @@ class Store:
                 "WHERE id = ? AND day IS NOT ?",
                 (day, None if value is None else str(value), submission_id, day),
             ).rowcount
+            if value is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO submission_progress (submission_id, day, value) "
+                    "VALUES (?, ?, ?)",
+                    (submission_id, day, str(value)),
+                )
         return bool(changed)
+
+    def progress(self, submission_ids: list[str]) -> dict[str, list[tuple[int, str]]]:
+        """(day, value) pairs in day order for each submission that reported values."""
+        if not submission_ids:
+            return {}
+        marks = ", ".join("?" * len(submission_ids))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT submission_id, day, value FROM submission_progress "
+                f"WHERE submission_id IN ({marks}) ORDER BY submission_id, day",
+                submission_ids,
+            ).fetchall()
+        found: dict[str, list[tuple[int, str]]] = {}
+        for row in rows:
+            found.setdefault(row["submission_id"], []).append((row["day"], row["value"]))
+        return found
 
     def finish(self, submission_id: str, *, run_dir: str | None, error: str | None) -> None:
         status = "failed" if error else "scored"
@@ -300,6 +329,10 @@ class Store:
                 "latest_value = NULL "
                 "WHERE id = ? AND status = 'running'",
                 (submission_id,),
+            )
+            # The run starts over, so its chart line does too.
+            conn.execute(
+                "DELETE FROM submission_progress WHERE submission_id = ?", (submission_id,)
             )
 
     def in_flight(self) -> list[dict[str, Any]]:

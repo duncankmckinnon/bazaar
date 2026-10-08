@@ -27,6 +27,7 @@ from bazaar_web.store import (
     StillInFlight,
     Store,
 )
+from bazaar_web.tickers import TickerSource
 from bazaar_web.worker import RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -104,6 +105,7 @@ def create_app(
 
     app = FastAPI(title="Bazaar web", lifespan=lifespan)
     app.state.on_scored = on_scored
+    tickers = TickerSource(settings.market_db, settings.ticker_data_version)
 
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(request.app.state.board, request.app.state.store, settings.logfire_url)
@@ -182,6 +184,11 @@ def create_app(
                 "provisional": provisional,
                 "logfire_url": settings.logfire_url(submission["name"]),
             }
+
+    @app.get("/api/tickers")
+    def ticker_days() -> dict[str, Any]:
+        with logfire.suppress_instrumentation():  # polled; see submission_status
+            return tickers.payload()
 
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:

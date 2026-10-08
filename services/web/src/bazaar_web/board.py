@@ -11,7 +11,7 @@ from bazaar_replay.leaderboard import Entry, Leaderboard, load_board
 
 from bazaar_web.store import Store
 
-SYMBOLS = ["AAPL", "MSFT", "KO"]
+SYMBOLS = ["AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM"]
 DAYS = 10
 DEFAULT_STARTING_CASH = Decimal(10000)
 DEFAULT_WINDOW = {"start": "2026-02-02", "end": "2026-02-13", "starting_cash": 10000.0}
@@ -25,17 +25,30 @@ def percent(fraction: Decimal | None) -> float | None:
     return float(round(fraction * 100, 2))
 
 
-def history(run_dir: Path) -> list[float] | None:
-    """Cumulative return in percent at each mark, from the run's record.json."""
+def money(value: Decimal) -> float:
+    return float(round(value, 2))
+
+
+def points(values: list[tuple[int, Decimal]]) -> list[dict[str, Any]] | None:
+    """Chart points: portfolio value in dollars after each trading day."""
+    return [{"day": day, "value": money(value)} for day, value in values] or None
+
+
+def history(run_dir: Path) -> list[dict[str, Any]] | None:
+    """Portfolio value after each session close (day 1..n), from the run's record.json marks."""
     try:
         record = json.loads((run_dir / "record.json").read_text())
-        cash = Decimal(record["manifest"]["starting_cash"])
         values = [Decimal(mark["snapshot"]["portfolio_value"]) for mark in record["marks"]]
     except (OSError, ValueError, KeyError, TypeError, InvalidOperation):
         return None
-    if not values or cash <= 0:
+    return points(list(enumerate(values, start=1)))
+
+
+def live_history(progress: list[tuple[int, str]]) -> list[dict[str, Any]] | None:
+    try:
+        return points([(day, Decimal(value)) for day, value in progress])
+    except InvalidOperation:
         return None
-    return [percent(value / cash - 1) for value in values]
 
 
 class BoardSource:
@@ -99,8 +112,13 @@ def provisional_return(submission: dict[str, Any], starting_cash: Decimal) -> fl
         return None
 
 
-def submission_row(submission: dict[str, Any], starting_cash: Decimal) -> dict[str, Any]:
+def submission_row(
+    submission: dict[str, Any],
+    starting_cash: Decimal,
+    progress: list[tuple[int, str]] | None = None,
+) -> dict[str, Any]:
     live = provisional_return(submission, starting_cash)
+    running = submission["status"] == "running"
     return {
         "id": submission["id"],
         "name": submission["name"],
@@ -111,7 +129,7 @@ def submission_row(submission: dict[str, Any], starting_cash: Decimal) -> dict[s
         "return_pct": live,
         "excess_pct": None,
         "fills": None,
-        "history": None,
+        "history": live_history(progress) if running and progress else None,
         "trace_id": None,
         "provisional": live is not None,
     }
@@ -130,7 +148,9 @@ def build_board(
                 continue
             rows.append(entry_row(entry, status, submission, histories.get(entry.run_id)))
     starting_cash = board.header.starting_cash if board.header else DEFAULT_STARTING_CASH
-    rows += [submission_row(s, starting_cash) for s in store.in_flight()]
+    in_flight = store.in_flight()
+    progress = store.progress([s["id"] for s in in_flight if s["status"] == "running"])
+    rows += [submission_row(s, starting_cash, progress.get(s["id"])) for s in in_flight]
 
     # Stable sorts: scored by return (null last), then running, queued (FIFO) and failed.
     rows.sort(key=lambda r: -r["return_pct"] if r["status"] == "scored" and r["return_pct"] else 0)

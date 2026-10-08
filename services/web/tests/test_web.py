@@ -166,7 +166,7 @@ def test_submission_runs_to_scored_and_ranks_on_the_board(seeded, helpers):
         1,
     )
     assert top["excess_pct"] == 1.4
-    assert top["history"] == [0.0, 1.2]
+    assert top["history"] == [{"day": 1, "value": 10000.0}, {"day": 2, "value": 10120.0}]
     assert any("alice-bot finished at +4.50%" == e["text"] for e in board["events"])
     day_events = [e for e in board["events"] if "day" in e["text"]]
     assert len(day_events) == 10
@@ -177,7 +177,12 @@ def test_percent_is_applied_exactly_once(seeded, helpers):
         agent = {r["id"]: r for r in rows(client)}["seed-agent"]
 
     assert agent["return_pct"] == 0.6  # evaluator fraction 0.006011
-    assert agent["history"] == [0.0, 0.26, 0.6]
+    # history is portfolio dollars per trading day (marks), not percent.
+    assert agent["history"] == [
+        {"day": 1, "value": 10000.0},
+        {"day": 2, "value": 10025.5},
+        {"day": 3, "value": 10060.11},
+    ]
     assert agent["excess_pct"] == -2.5  # 0.006011 - 0.0310
     assert agent["fills"] == 3
     assert agent["trace_id"] == "0af7651916cd43dd8448eb211c80319c"
@@ -429,7 +434,20 @@ def test_empty_runs_dir_gives_default_window(settings, helpers):
         "start": "2026-02-02",
         "end": "2026-02-13",
         "starting_cash": 10000.0,
-        "symbols": ["AAPL", "MSFT", "KO"],
+        "symbols": [
+            "AAPL",
+            "AMZN",
+            "EA",
+            "FISV",
+            "JNJ",
+            "JPM",
+            "KO",
+            "META",
+            "MSFT",
+            "NVDA",
+            "WMT",
+            "XOM",
+        ],
         "days": 10,
     }
     assert payload["rows"] == []
@@ -448,7 +466,9 @@ def test_numeric_fields_are_json_numbers(seeded, helpers):
             assert row[field] is None or isinstance(row[field], float), (field, row)
         assert row["fills"] is None or isinstance(row["fills"], int)
         assert row["rank"] is None or isinstance(row["rank"], int)
-        assert row["history"] is None or all(isinstance(v, float) for v in row["history"])
+        assert row["history"] is None or all(
+            isinstance(p["day"], int) and isinstance(p["value"], float) for p in row["history"]
+        )
     assert isinstance(done["return_pct"], float)
     assert isinstance(done["rank"], int)
 

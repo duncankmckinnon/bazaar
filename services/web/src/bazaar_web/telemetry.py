@@ -11,6 +11,7 @@ SERVICE_NAME = "bazaar-web"
 # an id segment: POST /api/submissions and /api/admin/submissions/{id}/hide stay traced.
 EXCLUDED_URLS = (
     r"/api/board(\?|$)",
+    r"/api/tickers(\?|$)",
     r"/api/submissions/[^/?]+(\?|$)",
     r"/fonts/",
     r"/static/",
