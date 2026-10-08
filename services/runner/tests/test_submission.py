@@ -136,7 +136,7 @@ def test_a_refused_grant_raises_and_leaves_nothing(markets, tmp_path):
     with pytest.raises(SubmissionFailed) as error:
         submit(tmp_path, "http://m1")
     assert "the market refused the run" in str(error.value)
-    assert TOKEN not in str(error.value) and "[redacted]" in str(error.value)
+    assert TOKEN not in str(error.value) and "[REDACTED]" in str(error.value)
     assert list(tmp_path.iterdir()) == []
 
 

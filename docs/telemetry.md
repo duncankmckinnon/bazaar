@@ -39,11 +39,41 @@ agent launch, which set `RuntimeConfig(instrument=True)`. They include message c
 the submitter's strategy text, tool arguments and results, and outputs. Other callers of
 `run_decision` keep the default `instrument=False`, which suppresses them.
 
+## Configuration
+
+Every service configures Logfire through `bazaar_protocol.telemetry.configure(service_name)`. It
+configures once per process (`send_to_logfire="if-token-present"`, distributed tracing, the shared
+scrubbing) and never replaces a configuration that is already in place, whether it came from this
+helper or from a direct `logfire.configure` call. So a submission run inside the web app keeps the
+web app's service name. Library code (`run_submission`, `record_run`, `run_demo`) never takes over
+a configured process: `run_submission` configures only a process nobody has configured.
+
 ## What is never sent
 
 The runner token, the Gateway key, the admin token and the Logfire token never enter the agent's
-messages or any span. Tests check this with sentinel values (`test_observability.py`). Logfire's
-default scrubbing stays on in the runner and the market, with one exception: a value whose only
-match is the word "session" (as in "trading session") is kept (`keep_trading_sessions`). Logfire's
-patterns match secret names (`api_key`, `auth`, `secret`), not bare secret values, so keeping
-secrets out of spans in the first place is the protection that matters.
+messages or any span. Tests check this with sentinel values (`test_observability.py`).
+
+Scrubbing (`bazaar_protocol.telemetry.scrubbing_options()`) keeps Logfire's default patterns and
+adds `runner[._ -]?token`, `admin[._ -]?token` and `x[._ -]?bazaar[._ -]?approval`, so the
+`X-Bazaar-Runner-Token`, `X-Bazaar-Admin-Token` and `X-Bazaar-Approval` headers are scrubbed if
+headers are ever captured. It is never a bare "token" (that would scrub `gen_ai.usage.*_tokens`).
+One exception to the defaults: a value whose only match is the word "session" (as in "trading
+session") is kept (`keep_trading_sessions`).
+
+Logfire's patterns match secret names, not secret values, and Logfire never scrubs
+`exception.message` or `exception.stacktrace`. So exception text is redacted before a span records
+it. `redact` replaces the values of `PYDANTIC_AI_GATEWAY_API_KEY`, `BAZAAR_RUNNER_TOKEN`,
+`BAZAAR_ADMIN_TOKEN` and `LOGFIRE_TOKEN` (read once, kept in memory), the runner token it was
+given, and any value written as `name=value` or `name: value` under a secret-like name, with
+`[REDACTED]`. In the runner:
+
+- every runner span (`runner.run`, `runner.decision`, `runner.mark`, `runner.order`,
+  `runner.evaluate`) wraps its body in `redacted_exceptions()`: an error whose text, or printed
+  chain, holds a secret leaves as a `RedactedError` raised `from None`; any other error keeps its
+  type;
+- the agent's model is wrapped the same way (`redacting_model_factory`), because the agent's own
+  `chat` and `invoke_agent` spans record a model error before the runner sees it;
+- market errors, the run's `failure` text and `SubmissionFailed` messages are redacted.
+
+The market uses the shared configuration and scrubbing; redacting its own exceptions is the market
+team's work.

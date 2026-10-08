@@ -21,6 +21,7 @@ from bazaar_protocol import (
     Version,
     WireModel,
 )
+from bazaar_protocol.telemetry import redact, redacted_exceptions
 from pydantic import AwareDatetime, Field
 
 from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule, utc_z
@@ -238,9 +239,15 @@ async def submit_order(
     order: OrderRequest,
     orders: list[OrderRecord],
 ) -> None:
-    with logfire.span(
-        "runner.order", symbol=order.symbol, side=order.side.value, quantity=str(order.quantity)
-    ) as span:
+    with (
+        logfire.span(
+            "runner.order",
+            symbol=order.symbol,
+            side=order.side.value,
+            quantity=str(order.quantity),
+        ) as span,
+        redacted_exceptions(),
+    ):
         result = await market.submit(ctx, order)
         span.set_attribute("status", result.status)
         if isinstance(result, RejectedOrder):
@@ -314,13 +321,13 @@ async def run_strategy(
             at = {"event_sequence": event.event_sequence, "simulated_at": event.simulated_at}
             step = _at(event.kind.value, event.event_sequence, event.simulated_at)
             if event.kind is EventKind.MARK:
-                with logfire.span("runner.mark", **at) as span:
+                with logfire.span("runner.mark", **at) as span, redacted_exceptions():
                     await set_cutoff(event.simulated_at)
                     snapshot = await market.portfolio(ctx)
                     span.set_attribute("portfolio_value", str(snapshot.portfolio_value))
                 marks.append(MarkRecord(event_sequence=event.event_sequence, snapshot=snapshot))
                 continue
-            with logfire.span("runner.decision", **at) as span:
+            with logfire.span("runner.decision", **at) as span, redacted_exceptions():
                 await set_cutoff(event.simulated_at)
                 account = await market.account(ctx)
                 settled = len(orders)
@@ -341,14 +348,14 @@ async def run_strategy(
         state = RunState.COMPLETED
     except Exception as exc:  # noqa: BLE001 - any policy or market failure ends the run as failed
         state, code = RunState.FAILED, failure_code(exc)
-        failure = describe_failure(exc, spec, step, account)
+        failure = redact(describe_failure(exc, spec, step, account))
 
     if account is not None:
         try:
             account = await market.close_account(spec.experiment_id, account.account_id)
         except Exception as exc:  # noqa: BLE001 - keep the run's record even if closing fails
             state, code = RunState.FAILED, code or failure_code(exc)
-            closing = describe_failure(exc, spec, "while closing the account", account)
+            closing = redact(describe_failure(exc, spec, "while closing the account", account))
             failure = f"{failure}; then {closing}" if failure else closing
             failure += f"; account {account.account_id} was left open"
 

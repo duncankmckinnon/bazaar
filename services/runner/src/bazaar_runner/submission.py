@@ -9,7 +9,6 @@ import asyncio
 import logging
 import os
 import shutil
-import threading
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +18,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import httpx
 from bazaar_agent.strategy_evaluation import strategy_evaluation_session
 from bazaar_agent.trading import DecisionBudget, RuntimeConfig
+from bazaar_protocol.telemetry import redact
 
 from bazaar_runner.demo import DEMO_SYMBOLS, Launch, demo_spec
 from bazaar_runner.http_market import HttpMarketPort
@@ -43,8 +43,6 @@ SUBMISSION_BUDGET = DecisionBudget().model_copy(
 # token. Code mode is pinned off here and never taken from env, arguments or the submission.
 # Tracing with message content is on (Anthony 10-08): secrets never enter the agent's context.
 SUBMISSION_RUNTIME = RuntimeConfig(code_mode=False, instrument=True)
-
-_telemetry_lock = threading.Lock()
 
 
 class SubmissionFailed(Exception):
@@ -108,8 +106,8 @@ def run_submission(
     The run directory appears in runs_dir all at once (record.json and evaluation.json) or not
     at all. Any failure raises SubmissionFailed with a readable message and leaves nothing behind.
     """
-    with _telemetry_lock:
-        configure_telemetry()
+    # Configures Logfire only if nothing in this process has (the web app usually has).
+    configure_telemetry()
     staging = runs_dir / f".tmp-{uuid4().hex}"
     try:
         run_dir = asyncio.run(
@@ -127,10 +125,10 @@ def run_submission(
             )
         )
     except SubmissionFailed as exc:
-        raise SubmissionFailed(_redact(str(exc), runner_token)) from None
+        raise SubmissionFailed(redact(str(exc), runner_token)) from None
     except MarketError as exc:
         message = f"the market refused the run: {exc.detail.message}"
-        raise SubmissionFailed(_redact(message, runner_token)) from None
+        raise SubmissionFailed(redact(message, runner_token)) from None
     except Exception as exc:  # noqa: BLE001 - only the type: details could quote configuration
         raise SubmissionFailed(f"the run could not complete ({type(exc).__name__})") from None
     finally:
@@ -206,7 +204,3 @@ async def _run(
     run_dir = runs_dir / str(spec.run_id)
     os.replace(staging / str(spec.run_id), run_dir)
     return run_dir
-
-
-def _redact(message: str, token: str) -> str:
-    return message.replace(token, "[redacted]") if token else message
