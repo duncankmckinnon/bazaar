@@ -2,10 +2,19 @@
 
 import json
 
+import httpx
+import logfire
 import pytest
+from bazaar_protocol import telemetry as protocol_telemetry
+from bazaar_protocol.telemetry import scrubbing_options
 from bazaar_runner import submission
 from bazaar_runner.agent import fixture_model_factory
-from bazaar_runner.submission import run_submission, submission_experiment_id
+from bazaar_runner.submission import SubmissionFailed, run_submission, submission_experiment_id
+from logfire._internal.integrations.httpx import make_async_request_hook, make_async_response_hook
+from logfire.testing import TestExporter
+from opentelemetry.instrumentation.httpx import AsyncOpenTelemetryTransport
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 from .market_fakes import TOKEN
@@ -126,3 +135,361 @@ def test_no_secret_reaches_any_span_or_the_agent(traced_submission):
     assert TOKEN not in json.dumps([repr(m) for m in messages])
     for path in run_dir.rglob("*"):
         assert TOKEN not in path.read_text()
+
+
+# HTTP spans: a process that instruments httpx records one per runner market request (the agent
+# harness suppresses its own). These runs wrap the market transport in OTel's httpx
+# instrumentation (logfire.instrument_httpx() never patches the MockTransport used offline) and
+# configure Logfire with the shared production scrubbing.
+AUTHORIZATION = "Bearer sentinel-authorization-6e7f"
+HEADER_KEYS = ("http.request.header.", "http.response.header.")
+
+
+class WithHeaders(httpx.AsyncBaseTransport):
+    """A client that also carries the admin token and an Authorization header (hostile case)."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, headers: dict[str, str]) -> None:
+        self.inner = inner
+        self.headers = headers
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers.update(self.headers)
+        return await self.inner.handle_async_request(request)
+
+
+def http_traced_submission(monkeypatch, tmp_path, *, capture_headers: bool):
+    for name, value in SENTINELS.items():
+        monkeypatch.setenv(name, value)
+    exporter = TestExporter()
+    logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        scrubbing=scrubbing_options(),
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+    )
+    market = GrantingMarket()
+    hooks = {}
+    if capture_headers:
+        # Logfire's own header capture, as instrument_httpx(capture_headers=True) installs it.
+        hooks = {
+            "request_hook": make_async_request_hook(None, True, False),
+            "response_hook": make_async_response_hook(
+                None, True, False, logfire.DEFAULT_LOGFIRE_INSTANCE
+            ),
+        }
+    transport = AsyncOpenTelemetryTransport(market.transport(), **hooks)
+    if capture_headers:
+        transport = WithHeaders(
+            transport,
+            {
+                "X-Bazaar-Admin-Token": SENTINELS["BAZAAR_ADMIN_TOKEN"],
+                "Authorization": AUTHORIZATION,
+            },
+        )
+    monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    run_submission(
+        submission_id="obs-http",
+        name="http",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+    (approval,) = market.grants
+    return exporter.exported_spans_as_dict(), approval
+
+
+def http_spans(spans):
+    return [
+        s
+        for s in spans
+        if "http.request.method" in s["attributes"] or "http.method" in s["attributes"]
+    ]
+
+
+def header_attributes(spans) -> dict[str, list[str]]:
+    by_key: dict[str, list[str]] = {}
+    for span in spans:
+        for key, value in span["attributes"].items():
+            if key.startswith(HEADER_KEYS):
+                by_key.setdefault(key, []).append(str(value))
+    return by_key
+
+
+def assert_no_secret(spans):
+    exported = json.dumps(spans, default=str)
+    for secret in (*SENTINELS.values(), TOKEN, AUTHORIZATION, AUTHORIZATION.split()[1]):
+        assert secret not in exported
+
+
+def test_http_spans_carry_no_header_values(monkeypatch, tmp_path):
+    spans, approval = http_traced_submission(monkeypatch, tmp_path, capture_headers=False)
+    assert http_spans(spans), "the market requests are traced"
+    assert any(s["attributes"].get("http.url", "").endswith("/control/grants") for s in spans)
+    assert header_attributes(spans) == {}
+    # The approval id is not a secret (the evaluator's span carries approval_id), but no
+    # header-named attribute carries it.
+    names = ("header", "x-bazaar")
+    assert not [
+        (s["name"], k)
+        for s in spans
+        for k, v in s["attributes"].items()
+        if any(n in k.lower() for n in names) and approval in str(v)
+    ]
+    assert_no_secret(spans)
+    # The production patterns leave token usage alone.
+    assert any(isinstance(s["attributes"].get("gen_ai.usage.input_tokens"), int) for s in spans)
+
+
+def test_captured_headers_have_their_secrets_scrubbed(monkeypatch, tmp_path):
+    """Hostile case: an httpx instrumentation with capture_headers=True, and requests that also
+    carry the admin token and an Authorization header."""
+    spans, approval = http_traced_submission(monkeypatch, tmp_path, capture_headers=True)
+    by_key = header_attributes(spans)
+    # Capture is on (the header attributes exist), and every capability or secret header is
+    # scrubbed, the approval header included.
+    for key in (
+        "http.request.header.x-bazaar-approval",
+        "http.request.header.x-bazaar-runner-token",
+        "http.request.header.x-bazaar-admin-token",
+        "http.request.header.authorization",
+    ):
+        assert by_key[key] and all("[Scrubbed due to" in v for v in by_key[key]), key
+    assert not [v for values in by_key.values() for v in values if approval in v]
+    assert_no_secret(spans)
+    assert any(isinstance(s["attributes"].get("gen_ai.usage.input_tokens"), int) for s in spans)
+    # The strategy attributes survive the extra patterns.
+    (run,) = named(spans, "runner.run")
+    assert run["attributes"]["bazaar.experiment_id"] == str(submission_experiment_id("obs-http"))
+    assert {run["attributes"][k] for k in ("bazaar.strategy_name", "bazaar.policy_kind")} == {
+        "http",
+        "agent",
+    }
+    # The runner token header goes on the control routes only (grants, cutoff, accounts, close).
+    token_routes = {
+        httpx.URL(s["attributes"]["http.url"]).path.rsplit("/", 1)[-1]
+        for s in spans
+        if "http.request.header.x-bazaar-runner-token" in s["attributes"]
+    }
+    assert token_routes and token_routes <= {"grants", "cutoff", "accounts", "close"}
+
+
+def test_a_process_configured_by_the_web_keeps_its_service_name(monkeypatch, tmp_path):
+    """The web app configures Logfire first; run_submission must not take the process over."""
+    monkeypatch.delenv("LOGFIRE_TOKEN", raising=False)
+    exporter = TestExporter()
+    logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        service_name="bazaar-web",
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+    )
+    configured = []
+    real_configure = protocol_telemetry.configure
+
+    def spy(service_name, service_version=None):
+        configured.append((service_name, real_configure(service_name, service_version)))
+        return configured[-1][1]
+
+    monkeypatch.setattr(protocol_telemetry, "configure", spy)
+    market = GrantingMarket()
+    transport = market.transport()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    # configure_telemetry is not replaced: run_submission really asks to configure.
+    run_submission(
+        submission_id="web-1",
+        name="web",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+    assert configured == [("bazaar-runner", False)]
+    spans = exporter.exported_spans_as_dict(include_resources=True)
+    assert named(spans, "runner.run")
+    assert {s["resource"]["attributes"]["service.name"] for s in spans} == {"bazaar-web"}
+
+
+# Exception text is never scrubbed by Logfire (exception.message and exception.stacktrace are
+# safe keys), so a secret raised inside an error must be redacted before any span records it.
+EXCEPTION_SECRETS = (*SENTINELS.values(), TOKEN)
+HISTORY_END = "2026-02-01T00:00:00Z"
+
+
+@pytest.fixture
+def secret_env(monkeypatch, capfire):
+    for name, value in SENTINELS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("BAZAAR_RUNNER_TOKEN", TOKEN)
+    monkeypatch.setattr(protocol_telemetry, "_secrets", None)  # read the env above, once
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    return capfire
+
+
+def leaky_message() -> str:
+    return f"upstream said key={SENTINELS['PYDANTIC_AI_GATEWAY_API_KEY']} token {TOKEN}"
+
+
+def exception_messages(spans) -> list[str]:
+    return [
+        str(event["attributes"].get("exception.message"))
+        for span in spans
+        for event in span.get("events", [])
+        if event["name"] == "exception"
+    ]
+
+
+def assert_nowhere(spans, *texts: str) -> None:
+    exported = json.dumps(spans, default=str)
+    for secret in EXCEPTION_SECRETS:
+        assert secret not in exported
+        for text in texts:
+            assert secret not in text
+
+
+def test_a_model_and_market_client_raising_secrets_leave_no_secret(
+    secret_env, monkeypatch, tmp_path
+):
+    """The agent's market read and then its model raise with the Gateway key and runner token."""
+    market = GrantingMarket()
+    inner = market.transport()
+
+    class LeakyReads(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if request.url.path.endswith("/history"):
+                raise httpx.ConnectError(leaky_message())
+            return await inner.handle_async_request(request)
+
+    leaky = LeakyReads()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: leaky)
+
+    def raising_factory(model):
+        def build(model_ref):
+            calls = []
+
+            def call(messages, info):
+                calls.append(messages)
+                if len(calls) == 1:
+                    args = {"request": {"start_at": "2026-01-01T00:00:00Z", "end_at": HISTORY_END}}
+                    return ModelResponse([ToolCallPart("account_history", args)])
+                raise RuntimeError(leaky_message())
+
+            return FunctionModel(call)
+
+        return build
+
+    monkeypatch.setattr(submission, "_model_factory", raising_factory)
+    run_dir = run_submission(
+        submission_id="leak-1",
+        name="leaky",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+    spans = secret_env.exporter.exported_spans_as_dict()
+    messages = exception_messages(spans)
+    # The model's error was recorded on the agent's spans, redacted.
+    assert any(m.startswith("RuntimeError: upstream said key=[REDACTED]") for m in messages)
+    assert any(s["name"].startswith("chat ") and s.get("events") for s in spans)
+    assert_nowhere(spans, *(p.read_text() for p in run_dir.rglob("*") if p.is_file()))
+
+
+def test_a_runner_market_error_holding_secrets_leaves_no_secret(secret_env, monkeypatch, tmp_path):
+    """The runner's own control call fails with the key and token in the error."""
+    market = GrantingMarket()
+    inner = market.transport()
+    cutoffs = []
+
+    class LeakyCutoff(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if request.url.path.endswith("/cutoff"):
+                cutoffs.append(request)
+                if len(cutoffs) == 3:
+                    raise httpx.ConnectError(leaky_message())
+            return await inner.handle_async_request(request)
+
+    leaky = LeakyCutoff()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: leaky)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    with pytest.raises(SubmissionFailed) as failed:
+        run_submission(
+            submission_id="leak-2",
+            name="leaky",
+            instructions=INSTRUCTIONS,
+            market_url="http://market",
+            runner_token=TOKEN,
+            runs_dir=tmp_path,
+        )
+    spans = secret_env.exporter.exported_spans_as_dict()
+    assert "[REDACTED]" in str(failed.value)
+    # The third cutoff is the first mark's: that span records the redacted market error.
+    (mark,) = [s for s in named(spans, "runner.mark") if s.get("events")]
+    assert "[REDACTED]" in json.dumps(mark["events"], default=str)
+    assert str(failed.value).startswith("the run failed: during the mark at")
+    assert_nowhere(spans, str(failed.value))
+
+
+def judged_submission(monkeypatch, tmp_path, grade):
+    """A submission with the online strategy judge on, graded by a local function model."""
+    from bazaar_agent import strategy_evaluation
+
+    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    market = GrantingMarket()
+    transport = market.transport()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    return run_submission(
+        submission_id="judged-1",
+        name="judged",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+
+
+def evaluation_logs(capfire):
+    return [
+        log
+        for log in capfire.log_exporter.exported_logs_as_dicts()
+        if "gen_ai.evaluation.name" in log["attributes"]
+        or "StrategyAdherence" in str(log.get("body"))
+    ]
+
+
+def test_the_strategy_judge_spans_and_events_carry_the_bazaar_attributes(
+    monkeypatch, capfire, tmp_path
+):
+    def grade(messages, info):
+        verdict = {"pass": True, "score": 1.0, "reason": "Followed the strategy."}
+        return ModelResponse([ToolCallPart(info.output_tools[0].name, verdict)])
+
+    judged_submission(monkeypatch, tmp_path, grade)
+    spans = capfire.exporter.exported_spans_as_dict()
+    judged = [s for s in spans if s["name"].startswith(("trading.decision.evaluated", "evaluator"))]
+    assert judged
+    expected = {"bazaar.submission_id": "judged-1", "bazaar.strategy_name": "judged"}
+    for span in judged:
+        assert {k: span["attributes"].get(k) for k in expected} == expected, span["name"]
+    events = evaluation_logs(capfire)
+    assert len(events) >= 10
+    for event in events:
+        assert {k: event["attributes"].get(k) for k in expected} == expected
+
+
+def test_a_judge_failure_holding_secrets_leaves_no_secret(secret_env, monkeypatch, tmp_path):
+    def grade(messages, info):
+        raise RuntimeError(leaky_message())
+
+    run_dir = judged_submission(monkeypatch, tmp_path, grade)
+    spans = secret_env.exporter.exported_spans_as_dict()
+    events = evaluation_logs(secret_env)
+    assert any("[REDACTED]" in json.dumps(event, default=str) for event in events)
+    files = [p.read_text() for p in run_dir.rglob("*") if p.is_file()]
+    assert_nowhere(spans, json.dumps(events, default=str), *files)

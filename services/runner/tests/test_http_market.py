@@ -392,7 +392,7 @@ async def test_the_token_never_appears_in_an_error():
     with pytest.raises(MarketError) as error:
         await port.set_cutoff(EID, OPEN, "synthetic-v1", "exec-v1")
     assert TOKEN not in str(error.value) and TOKEN not in error.value.detail.message
-    assert "[redacted]" in str(error.value)
+    assert "[REDACTED]" in str(error.value)
 
     def echo(request):
         raise httpx.ConnectError(f"refused with {request.headers[RUNNER_TOKEN_HEADER]}")

@@ -28,6 +28,7 @@ from bazaar_protocol import (
     RejectedOrder,
     order_result_adapter,
 )
+from bazaar_protocol.telemetry import redact
 from pydantic import ValidationError
 
 from bazaar_runner.clock import utc_z
@@ -121,9 +122,10 @@ class HttpMarketPort:
         return cls(client, experiment_id, approval_id, token)
 
     def _redact(self, error: MarketError) -> MarketError:
-        if self._token not in error.detail.message:
+        # The runner token and every configured secret value (bazaar_protocol.telemetry).
+        message = redact(error.detail.message, self._token)
+        if message == error.detail.message:
             return error
-        message = error.detail.message.replace(self._token, "[redacted]")
         if type(error) is MarketError:
             return MarketError(error.detail.model_copy(update={"message": message}))
         return type(error)(message)

@@ -11,6 +11,7 @@ from uuid import UUID
 
 import logfire
 from bazaar_protocol import AccountSnapshot, NonNegativeAmount, Version, WireModel
+from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 from bazaar_runner.clock import build_schedule, schedule_digest
@@ -163,6 +164,7 @@ async def record_run(
             policy_ref=policy_ref,
             **attributes,
         ) as span,
+        redacted_exceptions(),
     ):
         result = await run_strategy(spec, market, policy)
         record = build_record(spec, result, policy_ref, _trace_id(span), submission_id)
@@ -221,7 +223,7 @@ def scored(record: RunRecord, evaluation: BaseModel) -> dict[str, float | int]:
 def _evaluate(evaluate: Evaluate, record: RunRecord) -> BaseModel | None:
     # Inside runner.run, so evals' own spans join the run's trace.
     try:
-        with logfire.span("runner.evaluate"):
+        with logfire.span("runner.evaluate"), redacted_exceptions():
             return evaluate(record.model_dump(mode="json"))
     except Exception:
         logger.exception("evaluation failed for experiment %s", record.manifest.experiment_id)

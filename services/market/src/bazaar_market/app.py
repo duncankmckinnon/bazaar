@@ -6,18 +6,15 @@ Run locally:
 
 import logging
 import os
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, closing
 from functools import cache
-from importlib.metadata import version
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import logfire
+from bazaar_protocol import telemetry
 from fastapi import Depends, FastAPI
-from logfire._internal.scrubbing import DEFAULT_PATTERNS
 
 from bazaar_market import (
     bundles,
@@ -38,35 +35,11 @@ from bazaar_market.ledger_api import GrantChecker
 DEFAULT_DB = Path("data/market.sqlite3")
 
 
-# Logfire scrubs any value or key matching its default patterns. "session" is everyday trading
-# language ("trading session"), so a value whose only match is "session" is kept. Logfire hands
-# the callback only the FIRST match, so the whole value and its key path are searched again for
-# every other default pattern; any hit keeps it scrubbed. Scrubbing is never turned off. The
-# runner has the same rule (bazaar_runner.telemetry); keep the two in step.
-_OTHER_SECRET_PATTERNS = re.compile(
-    "|".join(p for p in DEFAULT_PATTERNS if p != "session"), re.IGNORECASE
-)
-
-
-def keep_trading_sessions(match: logfire.ScrubMatch) -> Any:
-    if match.pattern_match.group(0).lower() != "session":
-        return None
-    text = " ".join(map(str, match.path)) + " " + str(match.value)
-    return None if _OTHER_SECRET_PATTERNS.search(text) else match.value
-
-
 @cache
 def configure_telemetry() -> None:
-    logfire.configure(
-        send_to_logfire="if-token-present",
-        service_name="bazaar-market",
-        service_version=version("bazaar-market"),
-        environment=os.getenv("BAZAAR_ENVIRONMENT", "development"),
-        console=False,
-        inspect_arguments=False,
-        distributed_tracing=True,
-        scrubbing=logfire.ScrubbingOptions(callback=keep_trading_sessions),
-    )
+    # Shared with the runner (bazaar_protocol.telemetry): one configuration per process, the
+    # trading-session and token scrubbing rules.
+    telemetry.configure("bazaar-market")
     market_logger = logging.getLogger("bazaar_market")
     market_logger.setLevel(logging.INFO)
     market_logger.addHandler(logfire.LogfireLoggingHandler())

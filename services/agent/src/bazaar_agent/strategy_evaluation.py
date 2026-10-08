@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import wraps
 
+from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic_ai.models import Model, infer_model
 from pydantic_evals.evaluators import (
     EvaluationReason,
@@ -62,6 +63,12 @@ class StrategyAdherence(Evaluator):
                 )
             }
         judge_context = replace(ctx, inputs=evidence, output=ctx.output.model_dump(mode="json"))
+        # pydantic-evals records a judge failure's text on its span and event verbatim, and
+        # Logfire never scrubs exception text: a secret in it leaves redacted, without its chain.
+        with redacted_exceptions():
+            return await self._judge(judge_context)
+
+    async def _judge(self, judge_context: EvaluatorContext) -> EvaluatorOutput:
         async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
             return await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
