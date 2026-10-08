@@ -377,9 +377,21 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   var failures = 0;
   var current = null;
 
+  // The API may send numbers or decimal strings (the repo's wire convention for Decimal).
+  function toNumber(value) {
+    if (typeof value === "string" && value.trim() !== "") { value = Number(value); }
+    return typeof value === "number" && isFinite(value) ? value : null;
+  }
+
   function percent(value) {
-    if (typeof value !== "number" || !isFinite(value)) { return null; }
-    return (value > 0 ? "+" : "") + value.toFixed(2) + "%";
+    var number = toNumber(value);
+    if (number === null) { return null; }
+    return (number > 0 ? "+" : "") + number.toFixed(2) + "%";
+  }
+
+  function rankLabel(value) {
+    var number = toNumber(value);
+    return number !== null && number > 0 && Math.floor(number) === number ? "#" + number : null;
   }
 
   function stat(label, value) {
@@ -421,9 +433,10 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   }
 
   function showScored(body) {
-    render(typeof body.rank === "number" ? "Scored: #" + body.rank : "Scored", "");
+    var rank = rankLabel(body.rank);
+    render(rank ? "Scored: " + rank : "Scored", "");
     stat("Return", percent(body.return_pct));
-    stat("Rank", typeof body.rank === "number" ? "#" + body.rank : null);
+    stat("Rank", rank);
     statusStats.hidden = !statusStats.childNodes.length;
   }
 

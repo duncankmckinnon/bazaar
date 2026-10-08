@@ -1,5 +1,10 @@
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 PAGE = Path(__file__).parents[1] / "src" / "bazaar_web" / "static" / "submit.html"
 
@@ -52,3 +57,42 @@ def test_dwight_is_loaded_from_the_server_not_embedded():
 
     assert "data:font" not in html
     assert "/fonts/DwightMedium.woff2" in html
+
+
+def run_page_function(name, calls):
+    """Run a small helper from the page's inline script in node and return its results."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    sources = re.findall(
+        r"^  function (?:toNumber|percent|rankLabel)\(.*?^  }$", page(), re.MULTILINE | re.DOTALL
+    )
+    script = (
+        "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
+    )
+    result = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=30, check=True
+    )
+    return json.loads(result.stdout)
+
+
+def test_percent_formats_numbers_and_decimal_strings():
+    calls = ["0.6011", '"0.6011"', "-1.5", '"-1.5"', "0", "null", '""', '"abc"', "Infinity"]
+
+    assert run_page_function("percent", calls) == [
+        "+0.60%",
+        "+0.60%",
+        "-1.50%",
+        "-1.50%",
+        "0.00%",
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_rank_label_accepts_positive_whole_numbers_and_digit_strings():
+    calls = ["2", '"2"', "0", "1.5", "null", '"x"']
+
+    assert run_page_function("rankLabel", calls) == ["#2", "#2", None, None, None, None]
