@@ -17,6 +17,7 @@ from bazaar_runner.clock import build_schedule, schedule_digest
 from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import DecisionPolicy
 from bazaar_runner.run import (
+    AgentUsage,
     DecisionError,
     DecisionStep,
     FailureCode,
@@ -61,7 +62,12 @@ class RunRecord(WireModel):
     orders: tuple[OrderRecord, ...] = ()
     marks: tuple[MarkRecord, ...] = ()
     final_account: AccountSnapshot | None
-    # A runner addition (evals and replay ignore unknown fields): agent decisions that erred
+    # Runner additions below; evals and replay ignore unknown fields.
+    # The web submission this run scored, so the board can join on it.
+    submission_id: str | None = None
+    # Totals over the agent's decisions (None when the policy is not an agent).
+    agent_usage: AgentUsage | None = None
+    # Agent decisions that erred
     # but were reconciled with the market, so the run continued.
     decision_errors: tuple[DecisionError, ...] = ()
 
@@ -83,7 +89,11 @@ class RunRecord(WireModel):
 
 
 def build_record(
-    spec: RunSpec, result: RunResult, policy_ref: str, trace_id: str | None
+    spec: RunSpec,
+    result: RunResult,
+    policy_ref: str,
+    trace_id: str | None,
+    submission_id: str | None = None,
 ) -> RunRecord:
     sessions = spec.script.sessions
     account = result.account
@@ -114,6 +124,8 @@ def build_record(
         marks=result.marks,
         final_account=account,
         decision_errors=result.decision_errors,
+        submission_id=submission_id,
+        agent_usage=result.agent_usage,
     )
 
 
@@ -131,6 +143,7 @@ async def record_run(
     policy_ref: str,
     runs_dir: Path,
     evaluate: Evaluate | None = None,
+    submission_id: str | None = None,
 ) -> tuple[RunRecord, BaseModel | None]:
     """Run, build the record and evaluate it inside one runner.run span, then write the files."""
     run_dir = runs_dir / str(spec.run_id)
@@ -139,7 +152,7 @@ async def record_run(
         "runner.run", experiment_id=str(spec.experiment_id), policy_ref=policy_ref
     ) as span:
         result = await run_strategy(spec, market, policy)
-        record = build_record(spec, result, policy_ref, _trace_id(span))
+        record = build_record(spec, result, policy_ref, _trace_id(span), submission_id)
         span.set_attribute("status", record.status)
         if record.status == "failed":
             span.set_attribute("failure_code", record.failure_code)

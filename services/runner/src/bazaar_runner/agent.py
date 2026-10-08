@@ -15,6 +15,7 @@ from bazaar_protocol import AccountSnapshot, ExperimentContext
 
 from bazaar_runner.agent_step import AgentDecision, DecideWithAgent
 from bazaar_runner.market import FiscalCycle
+from bazaar_runner.run import AgentUsage
 
 AGENT_FIXTURE_INSTRUCTIONS = "Inspect account and eligible prices; hold or trade once."
 # A small news page: real articles cost ~1k tokens each and run_decision's default budget is 16k
@@ -78,7 +79,12 @@ def make_agent_decider(
             model_factory=model_factory,
         )
         error = f"{result.error.code}: {result.error.message}" if result.error else None
-        return AgentDecision(result.order_request, result.order_result, error)
+        usage = AgentUsage(
+            model_requests=result.usage.model_requests,
+            tool_calls=result.usage.tool_calls,
+            total_tokens=result.usage.total_tokens,
+        )
+        return AgentDecision(result.order_request, result.order_result, error, usage)
 
     return decide
 

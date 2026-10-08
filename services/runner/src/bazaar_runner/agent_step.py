@@ -18,6 +18,7 @@ from bazaar_protocol import AccountSnapshot, ExperimentContext, OrderRequest, Or
 from bazaar_runner.http_market import ACCOUNT_HEADER, APPROVAL_HEADER
 from bazaar_runner.market import FiscalCycle, MarketPort
 from bazaar_runner.run import (
+    AgentUsage,
     DecisionError,
     DecisionStep,
     OrderRecord,
@@ -36,6 +37,8 @@ class AgentDecision(NamedTuple):
     order_result: OrderResult | None
     # A readable reason when the decision went wrong; None for a clean order or hold.
     error: str | None
+    # As the agent harness reports it; None when it reported none (it raised, or a fake).
+    usage: AgentUsage | None = None
 
 
 # (ctx, account, the agent's client, the reserved client_order_id, fiscal cycles as of ctx).
@@ -113,10 +116,18 @@ class AgentStep(DecisionStep):
         if outcome.error is None and result is None and outcome.order_request is not None:
             outcome = outcome._replace(error="the agent sent an order but reported no result")
 
+        usage = outcome.usage
+        if usage is not None:
+            attributes |= {
+                "model_requests": usage.model_requests,
+                "tool_calls": usage.tool_calls,
+                "total_tokens": usage.total_tokens,
+            }
         if outcome.error is None:
             if outcome.order_result is not None:
                 orders.append(order_record(ctx, 0, outcome.order_result))
-            return StepOutcome(attributes=attributes | {"reconcile": "not_needed"})
+            attributes["reconcile"] = "not_needed"
+            return StepOutcome(usage=usage, attributes=attributes)
 
         # An error does not mean no side effects: the market's order list is the truth.
         found = await self._find(ctx, market, reserved)
@@ -129,8 +140,11 @@ class AgentStep(DecisionStep):
             client_order_id=reserved,
             error=outcome.error,
             reconciled=reconciled,
+            usage=usage,
         )
-        return StepOutcome(error=error, attributes=attributes | {"reconcile": reconciled})
+        return StepOutcome(
+            error=error, usage=usage, attributes=attributes | {"reconcile": reconciled}
+        )
 
     async def _fiscal_cycles(
         self, ctx: ExperimentContext, market: MarketPort
