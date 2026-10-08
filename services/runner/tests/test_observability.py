@@ -431,3 +431,65 @@ def test_a_runner_market_error_holding_secrets_leaves_no_secret(secret_env, monk
     assert "[REDACTED]" in json.dumps(mark["events"], default=str)
     assert str(failed.value).startswith("the run failed: during the mark at")
     assert_nowhere(spans, str(failed.value))
+
+
+def judged_submission(monkeypatch, tmp_path, grade):
+    """A submission with the online strategy judge on, graded by a local function model."""
+    from bazaar_agent import strategy_evaluation
+
+    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    market = GrantingMarket()
+    transport = market.transport()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    return run_submission(
+        submission_id="judged-1",
+        name="judged",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+
+
+def evaluation_logs(capfire):
+    return [
+        log
+        for log in capfire.log_exporter.exported_logs_as_dicts()
+        if "gen_ai.evaluation.name" in log["attributes"]
+        or "StrategyAdherence" in str(log.get("body"))
+    ]
+
+
+def test_the_strategy_judge_spans_and_events_carry_the_bazaar_attributes(
+    monkeypatch, capfire, tmp_path
+):
+    def grade(messages, info):
+        verdict = {"pass": True, "score": 1.0, "reason": "Followed the strategy."}
+        return ModelResponse([ToolCallPart(info.output_tools[0].name, verdict)])
+
+    judged_submission(monkeypatch, tmp_path, grade)
+    spans = capfire.exporter.exported_spans_as_dict()
+    judged = [s for s in spans if s["name"].startswith(("trading.decision.evaluated", "evaluator"))]
+    assert judged
+    expected = {"bazaar.submission_id": "judged-1", "bazaar.strategy_name": "judged"}
+    for span in judged:
+        assert {k: span["attributes"].get(k) for k in expected} == expected, span["name"]
+    events = evaluation_logs(capfire)
+    assert len(events) >= 10
+    for event in events:
+        assert {k: event["attributes"].get(k) for k in expected} == expected
+
+
+def test_a_judge_failure_holding_secrets_leaves_no_secret(secret_env, monkeypatch, tmp_path):
+    def grade(messages, info):
+        raise RuntimeError(leaky_message())
+
+    run_dir = judged_submission(monkeypatch, tmp_path, grade)
+    spans = secret_env.exporter.exported_spans_as_dict()
+    events = evaluation_logs(secret_env)
+    assert any("[REDACTED]" in json.dumps(event, default=str) for event in events)
+    files = [p.read_text() for p in run_dir.rglob("*") if p.is_file()]
+    assert_nowhere(spans, json.dumps(events, default=str), *files)

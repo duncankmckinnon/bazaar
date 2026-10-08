@@ -73,7 +73,10 @@ given, and any value written as `name=value` or `name: value` under a secret-lik
   type;
 - the agent's model is wrapped the same way (`redacting_model_factory`), because the agent's own
   `chat` and `invoke_agent` spans record a model error before the runner sees it;
-- market errors, the run's `failure` text and `SubmissionFailed` messages are redacted.
+- market errors, the run's `failure` text and `SubmissionFailed` messages are redacted;
+- the strategy judge (`bazaar_agent.strategy_evaluation`) runs inside `redacted_exceptions()`,
+  because pydantic-evals records a judge failure's text on its `evaluator` span and evaluation
+  event. The judge's spans and events carry the `bazaar.*` attributes like the rest of the run.
 
 The market uses the shared configuration and scrubbing; redacting its own exceptions is the market
 team's work.
