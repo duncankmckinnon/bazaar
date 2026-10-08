@@ -16,10 +16,21 @@ from uuid import UUID
 import logfire
 from fastapi import Depends, FastAPI
 
-from bazaar_market import bundles, db, filings_api, ledger_api, news_api, prices, prices_api
+from bazaar_market import (
+    bundles,
+    db,
+    filings_api,
+    ledger_api,
+    news_api,
+    prices,
+    prices_api,
+)
+from bazaar_market import (
+    grants as grant_store,
+)
 from bazaar_market.clock import SqliteClock
 from bazaar_market.ledger import Ledger
-from bazaar_market.ledger_api import DenyAllGrants, GrantChecker
+from bazaar_market.ledger_api import GrantChecker
 
 DEFAULT_DB = Path("data/market.sqlite3")
 
@@ -51,7 +62,8 @@ def create_app(
 ) -> FastAPI:
     path = database_path or Path(os.getenv("BAZAAR_MARKET_DB", DEFAULT_DB))
     token = runner_token if runner_token is not None else os.getenv("BAZAAR_RUNNER_TOKEN")
-    grants = grants or DenyAllGrants()
+    recorded_grants = grant_store.SqliteGrants(path)
+    grants = grants or recorded_grants
     clock = SqliteClock(path)
 
     def bars_for(data_version: str) -> prices.SqliteMarketData:
@@ -65,7 +77,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        db.initialize(path, bundles.SCHEMA)
+        db.initialize(path, bundles.SCHEMA, grant_store.SCHEMA)
         ledger.initialize()
         with closing(prices.sqlite3.connect(path)) as connection:
             prices.ensure_schema(connection)
@@ -100,6 +112,7 @@ def create_app(
         filings_api.router, dependencies=[Depends(ledger_api.approval_check(grants))]
     )
     ledger_api.install(app, ledger, grants, token)
+    app.include_router(grant_store.build_router(recorded_grants, token))
     logfire.instrument_fastapi(
         app,
         capture_headers=False,
