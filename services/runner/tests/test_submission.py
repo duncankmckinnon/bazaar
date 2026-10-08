@@ -159,6 +159,20 @@ def test_a_market_failure_mid_run_raises_and_leaves_nothing(markets, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_run_that_cannot_be_scored_raises_and_leaves_nothing(markets, tmp_path, monkeypatch):
+    import bazaar_evaluation
+
+    markets["http://m1"] = GrantingMarket()
+
+    def evals_down(record):
+        raise RuntimeError("evaluator crashed")
+
+    monkeypatch.setattr(bazaar_evaluation, "evaluate_and_emit", evals_down)
+    with pytest.raises(SubmissionFailed, match="^the run could not be scored$"):
+        submit(tmp_path, "http://m1")
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_a_progress_callback_that_raises_does_not_stop_the_run(markets, tmp_path):
     markets["http://m1"] = GrantingMarket()
 

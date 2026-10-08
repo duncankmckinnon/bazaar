@@ -425,9 +425,7 @@ async def run_decision(
             # Exit the safe span without recording cancellation exception text.
             cancelled = True
         except Exception:  # noqa: BLE001 -- never expose model/factory/SDK payloads
-            error = ToolError(
-                code="server_error", message="Fixture decision model or harness failed"
-            )
+            error = ToolError(code="server_error", message="Decision model or harness failed")
     if cancelled:
         raise asyncio.CancelledError
     return DecisionResult(

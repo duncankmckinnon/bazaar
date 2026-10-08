@@ -176,7 +176,7 @@ async def _run(
             symbols=DEMO_SYMBOLS,
             transport=transport,
         )
-        record, _ = await record_run(
+        record, evaluation = await record_run(
             spec,
             _ProgressPort(port, on_progress),
             step,
@@ -187,6 +187,9 @@ async def _run(
         )
     if record.status != "completed":
         raise SubmissionFailed(f"the run failed: {record.failure}")
+    # The board shows a submission as scored from evaluation.json: no score, no published run.
+    if evaluation is None:
+        raise SubmissionFailed("the run could not be scored")
     run_dir = runs_dir / str(spec.run_id)
     os.replace(staging / str(spec.run_id), run_dir)
     return run_dir
