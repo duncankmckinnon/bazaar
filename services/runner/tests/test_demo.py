@@ -573,7 +573,7 @@ class MissingPriceForTest(Exception):
 
 def test_the_demo_agent_launch_keeps_the_default_decision_budget(monkeypatch):
     """Only submissions get the larger budget; the CLI's agent launch passes none, so
-    run_decision uses DecisionBudget() (4 requests, 16k tokens, 12 tool calls)."""
+    run_decision uses DecisionBudget() (4 requests, 16k tokens, 20 tool calls)."""
     pytest.importorskip("bazaar_agent.trading")
     from bazaar_runner import agent
 

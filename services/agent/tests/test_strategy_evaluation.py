@@ -1,9 +1,11 @@
-"""Exercise real online evaluation and OTel emission with local judge models."""
+"""Exercise real online evaluation and OTel emission against a local Gateway Jev route."""
 
 import asyncio
+import json
 
+import httpx2
 import pytest
-from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_evals.online import wait_for_evaluations
@@ -30,37 +32,49 @@ def evaluations(capfire):
     ]
 
 
+GATEWAY = "https://gateway.test/proxy"
+
+
+def verdict(probability):
+    return {
+        "model": "jev-1.13.0",  # Jev resolves the jev-latest alias.
+        "answers": {"pass": {"type": "noul", "noul": probability}},
+        "usage": {"input_tokens": 120, "output_tokens": 1},
+    }
+
+
+def route_judge(monkeypatch, handler):
+    """Serve the Gateway's Jev route locally; everything else is the production judge."""
+    from bazaar_agent import strategy_evaluation
+
+    provider = strategy_evaluation.TypeSafeProvider
+    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.delenv("BAZAAR_JUDGE_MODEL", raising=False)
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", GATEWAY)
+    monkeypatch.setattr(
+        strategy_evaluation,
+        "TypeSafeProvider",
+        lambda **kwargs: provider(
+            **kwargs, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
+        ),
+    )
+
+
 @pytest.fixture
 def judge(monkeypatch):
     # Production must pass only decision evidence to the judge, never runtime handles.
-    from bazaar_agent import strategy_evaluation
-
     prompts = []
 
-    def grade(messages, info):
-        prompts.append(
-            "\n".join(
-                str(part.content)
-                for message in messages
-                for part in message.parts
-                if isinstance(part, UserPromptPart)
-            )
-        )
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    info.output_tools[0].name,
-                    {
-                        "pass": True,
-                        "score": 1.0,
-                        "reason": "The agent held as the supplied strategy required.",
-                    },
-                )
-            ]
-        )
+    def grade(request):
+        assert str(request.url) == f"{GATEWAY}/jev-duncan/v1/systemone"
+        assert request.headers["authorization"] == "Bearer test-gateway-key"
+        body = json.loads(request.content)
+        assert body["model"] == "jev-latest" and set(body["questions"]) == {"pass"}
+        prompts.append(body["state"])
+        return httpx2.Response(200, json=verdict(0.9))
 
-    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    route_judge(monkeypatch, grade)
     return prompts
 
 
@@ -90,12 +104,12 @@ async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfir
     by_name = {event["attributes"]["gen_ai.evaluation.name"]: event for event in events}
     score = by_name["strategy_adherence"]["attributes"]
     assert score["gen_ai.evaluation.score.value"] == 1.0
-    assert score["gen_ai.evaluation.explanation"] == (
-        "The agent held as the supplied strategy required."
-    )
+    assert "gen_ai.evaluation.explanation" not in score  # Jev returns no rationale.
     assert (
         by_name["strategy_adherence_pass"]["attributes"]["gen_ai.evaluation.score.label"] == "pass"
     )
+    confidence = by_name["strategy_adherence_confidence"]["attributes"]
+    assert confidence["gen_ai.evaluation.score.value"] == pytest.approx(0.8)
     wrapper = next(
         span
         for span in capfire.exporter.exported_spans_as_dict()
@@ -112,19 +126,50 @@ async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfir
     }
 
 
-async def test_failed_judge_does_not_change_a_decision(monkeypatch, judge, capfire):
-    from bazaar_agent import strategy_evaluation
-
-    def broken(messages, info):
-        raise RuntimeError("judge unavailable")
-
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(broken))
+async def test_failed_judge_does_not_change_a_decision(monkeypatch, capfire):
+    route_judge(monkeypatch, lambda request: httpx2.Response(503, text="judge unavailable"))
     result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
     await wait_for_evaluations()
     assert result.error is None and result.decision.action == "hold"
     [event] = evaluations(capfire)
-    assert event["attributes"]["error.type"] == "RuntimeError"
+    assert event["attributes"]["error.type"] == "ModelHTTPError"
     assert "gen_ai.evaluation.score.value" not in event["attributes"]
+
+
+@pytest.mark.parametrize("judge_model", ["jev-latest", "jev/duncan:jev-latest", "jev-duncan:"])
+async def test_judge_model_must_name_a_gateway_route_and_model(monkeypatch, capfire, judge_model):
+    route_judge(monkeypatch, lambda request: pytest.fail("A malformed judge model was called"))
+    monkeypatch.setenv("BAZAAR_JUDGE_MODEL", judge_model)
+    result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
+    await wait_for_evaluations()
+    assert result.error is None
+    [event] = evaluations(capfire)
+    assert event["attributes"]["error.type"] == "UserError"
+
+
+async def test_missing_gateway_key_is_an_evaluation_error(monkeypatch, capfire):
+    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.delenv("PYDANTIC_AI_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("PAIG_API_KEY", raising=False)
+    result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
+    await wait_for_evaluations()
+    assert result.error is None
+    [event] = evaluations(capfire)
+    assert event["attributes"]["error.type"] == "UserError"
+
+
+async def test_violation_fails_with_jev_confidence(monkeypatch, capfire):
+    route_judge(monkeypatch, lambda request: httpx2.Response(200, json=verdict(0.2)))
+    await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
+    await wait_for_evaluations()
+    by_name = {e["attributes"]["gen_ai.evaluation.name"]: e for e in evaluations(capfire)}
+    assert by_name["strategy_adherence"]["attributes"]["gen_ai.evaluation.score.value"] == 0.0
+    assert (
+        by_name["strategy_adherence_pass"]["attributes"]["gen_ai.evaluation.score.label"] == "fail"
+    )
+    assert by_name["strategy_adherence_confidence"]["attributes"][
+        "gen_ai.evaluation.score.value"
+    ] == pytest.approx(0.6)
 
 
 async def test_each_concurrent_decision_is_evaluated(judge, capfire):
@@ -191,24 +236,12 @@ async def test_session_drains_background_judge_before_the_loop_can_close(monkeyp
 
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def slow(messages, info):
+    async def slow(request):
         started.set()
         await release.wait()
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    info.output_tools[0].name,
-                    {
-                        "pass": False,
-                        "score": 0.0,
-                        "reason": "Holding violated the buy instruction.",
-                    },
-                )
-            ]
-        )
+        return httpx2.Response(200, json=verdict(0.1))
 
-    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(slow))
+    route_judge(monkeypatch, slow)
 
     async def run():
         async with strategy_evaluation.strategy_evaluation_session():
@@ -225,7 +258,7 @@ async def test_session_drains_background_judge_before_the_loop_can_close(monkeyp
     finally:
         release.set()
         await task
-    assert len(evaluations(capfire)) == 2
+    assert len(evaluations(capfire)) == 3
 
 
 async def test_disabled_session_never_dispatches_a_judge(monkeypatch, capfire):
@@ -243,12 +276,11 @@ async def test_disabled_session_never_dispatches_a_judge(monkeypatch, capfire):
 async def test_judge_timeout_is_an_evaluation_error_and_session_finishes(monkeypatch, capfire):
     from bazaar_agent import strategy_evaluation
 
-    async def never_finishes(messages, info):
+    async def never_finishes(request):
         await asyncio.Event().wait()
 
-    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    route_judge(monkeypatch, never_finishes)
     monkeypatch.setattr(strategy_evaluation, "JUDGE_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(never_finishes))
     async with asyncio.timeout(2), strategy_evaluation.strategy_evaluation_session():
         result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
     assert result.error is None

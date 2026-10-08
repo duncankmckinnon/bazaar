@@ -50,7 +50,7 @@ result = await run_decision(
     client=client,  # fixed MockTransport base URL, bounded timeout, no logging hooks
     client_order_id=order_id,  # reserve once; preserve across recovery
     runtime=RuntimeConfig(model_settings={"temperature": 0, "max_tokens": 4_000}),
-    budget=DecisionBudget(model_requests=4, tool_calls=12, total_tokens=16_000),
+    budget=DecisionBudget(model_requests=4, tool_calls=20, total_tokens=16_000),
     model_factory=lambda ref: TestModel(
         call_tools=[], custom_output_args={"action": "hold"}
     ),
@@ -94,12 +94,13 @@ Every completed `run_decision` invocation is wrapped with Pydantic Evals'
 strategy against the initial account/portfolio, fixed simulated time, model conversation,
 research tool observations (including nested Code Mode reads), and actual decision/order evidence.
 The rubric assesses research requirements, entry/exit conditions, sizing and risk constraints,
-without using later market outcomes. Uncertainty must be stated in the explanation.
+without using later market outcomes. Jev returns a binary verdict rather than a rationale.
 
 Logfire receives `gen_ai.evaluation.result` events under target `trading.decision`:
 
-- `strategy_adherence`: a 0–1 score with reasoning.
-- `strategy_adherence_pass`: a pass/fail assertion with reasoning.
+- `strategy_adherence`: `1.0` for adherence or `0.0` for a violation.
+- `strategy_adherence_pass`: the same verdict as a pass/fail assertion.
+- `strategy_adherence_confidence`: Jev's confidence in that verdict, when reported.
 - `strategy_adherence_status=not_evaluated`: no decision or attempted order was produced.
 
 An attempted order is still evaluated when the final model output fails. Judge errors and
@@ -110,12 +111,13 @@ There is no evaluation database, dataset file, or change to `DecisionResult`, `r
 or the period-scoring `evaluation.json`. The SDK sends the results through the application's
 existing Logfire configuration; view them in Logfire's **Live Evaluations**.
 
-The operator can set `BAZAAR_JUDGE_MODEL` (default `gateway/anthropic:claude-sonnet-5-5`),
-using the existing `PYDANTIC_AI_GATEWAY_API_KEY` for Gateway models. Evaluation is enabled by
-default for every decision, including fixture/demo decisions. Set `BAZAAR_STRATEGY_EVAL_ENABLED=0`
-to disable it. Strategy text cannot configure the judge. Each decision gets a separate online
-wrapper so the SDK's shared evaluator concurrency limit does not drop calls; judge concurrency
-therefore scales with the number of decisions in flight.
+The operator can set `BAZAAR_JUDGE_MODEL` as `<Gateway route>:<Jev model>` (default
+`jev-duncan:jev-latest`). The judge uses `PYDANTIC_AI_GATEWAY_API_KEY` and sends requests to that
+Gateway route's Jev endpoint. Evaluation is enabled by default for every decision, including
+fixture/demo decisions. Set `BAZAAR_STRATEGY_EVAL_ENABLED=0` to disable it. Strategy text cannot
+configure the judge. Each decision gets a separate online wrapper so the SDK's shared evaluator
+concurrency limit does not drop calls; judge concurrency therefore scales with the number of
+decisions in flight.
 
 The CLI and submission runner use `strategy_evaluation_session()` to let background judges
 finish before closing their event loop. Direct callers should do the same:
@@ -230,7 +232,7 @@ with a fresh ID or advance the clock just because the decision failed. Cancellat
 the runner already owns the reserved ID and must reconcile it even when no result is returned.
 Across invocations this harness has no durable order ledger: the future runner/market own that.
 
-Default hard limits: 4 model requests (including validation retries), 12 executed tools, 16,000
+Default hard limits: 4 model requests (including validation retries), 20 executed tools, 16,000
 reported total tokens and 30 seconds. Tool execution is sequential; SDK batch checks reject an
 over-budget validated tool batch before executing it. Local failed tool executions count too.
 Schema-invalid/unknown calls do not execute tools; their retries consume model requests. Token
