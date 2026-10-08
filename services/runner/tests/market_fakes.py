@@ -43,7 +43,22 @@ def session(day: date) -> TradingSession:
 SESSIONS = tuple(session(date(2026, 2, d)) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13))
 CLOSES = (datetime(2026, 1, 30, 21, 0, tzinfo=UTC), *(s.close_at for s in SESSIONS))
 # Synthetic: the close on trading day i (2026-01-30 is day 0) is base + i.
-BASE = {"AAPL": 200, "MSFT": 400, "KO": 60}
+# Invented round numbers at realistic magnitudes (META's is above the ~$833 equal-weight slot of
+# a later day minus nothing: 10000 / 12 still buys one share).
+BASE = {
+    "AAPL": 200,
+    "AMZN": 220,
+    "EA": 150,
+    "FISV": 70,
+    "JNJ": 160,
+    "JPM": 300,
+    "KO": 60,
+    "META": 700,
+    "MSFT": 400,
+    "NVDA": 180,
+    "WMT": 100,
+    "XOM": 110,
+}
 
 SPEC = RunSpec(
     run_id=UUID("00000000-0000-0000-0000-0000000000a0"),
