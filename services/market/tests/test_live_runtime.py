@@ -152,3 +152,69 @@ def test_stop_makes_a_last_commit():
     committer.stop()
 
     assert commits.count == 1
+
+
+def test_the_log_says_when_the_database_was_freshly_seeded(tmp_path, seed, caplog):
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        rt.prepare_data(tmp_path / "data", seed / "market.sqlite3", seed / "runs")
+
+    assert "freshly seeded from" in caplog.text
+
+
+def test_the_log_says_when_the_volume_database_was_kept(tmp_path, seed, caplog):
+    rt.prepare_data(tmp_path / "data", seed / "market.sqlite3", seed / "runs")
+    caplog.clear()
+
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        rt.prepare_data(tmp_path / "data", seed / "market.sqlite3", seed / "runs")
+
+    assert "already on the volume; seed not applied" in caplog.text
+
+
+def short_lived(code: int = 3) -> "rt.subprocess.Popen":
+    return rt.subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep(0.2); raise SystemExit({code})"]
+    )
+
+
+def test_the_watchdog_exits_the_container_when_the_market_dies(caplog):
+    exits: list[int] = []
+
+    with caplog.at_level("ERROR", logger="bazaar.live"):
+        rt.watch_market(short_lived(), threading.Event(), exit=exits.append).join(timeout=10)
+
+    assert exits == [1]
+    assert "the market exited with status 3" in caplog.text
+
+
+def test_the_watchdog_ignores_a_market_stopped_by_shutdown():
+    exits: list[int] = []
+    stopping = threading.Event()
+    stopping.set()
+
+    rt.watch_market(short_lived(0), stopping, exit=exits.append).join(timeout=10)
+
+    assert exits == []
+
+
+def sleeper(ignore_term: bool = False) -> "rt.subprocess.Popen":
+    code = "import signal, time\n"
+    if ignore_term:
+        code += "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    code += "print('ready', flush=True)\ntime.sleep(60)\n"
+    process = rt.subprocess.Popen([sys.executable, "-c", code], stdout=rt.subprocess.PIPE)
+    process.stdout.readline()  # the signal handler is in place
+    return process
+
+
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_shutdown_commits_only_after_the_market_has_exited(ignore_term):
+    market = sleeper(ignore_term)
+    exited_at_commit: list[bool] = []
+    committer = rt.VolumeCommitter(lambda: exited_at_commit.append(market.poll() is not None))
+    stopping = threading.Event()
+
+    rt.shutdown(market, committer, stopping, timeout=1)
+
+    assert exited_at_commit == [True]
+    assert stopping.is_set()

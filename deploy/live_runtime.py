@@ -41,19 +41,24 @@ def require_runner_token(env: Mapping[str, str] = os.environ) -> None:
 def prepare_data(volume_dir: Path, seed_db: Path, seed_runs: Path | None) -> tuple[Path, Path]:
     """Give the volume a writable market DB and the seed runs, without overwriting either.
 
+    Logs which database is in use and whether it was just seeded.
+
     Returns the database path and the runs directory. A missing seed database with no database
     on the volume is an error; missing seed runs only leave the runs directory empty.
     """
     volume_dir = Path(volume_dir)
     db, runs = volume_dir / "market.sqlite3", volume_dir / "runs"
     volume_dir.mkdir(parents=True, exist_ok=True)
-    if not db.exists():
+    if db.exists():
+        # A new seed never replaces a database the volume already has. See deploy/README.md.
+        logger.info("market database in use: %s (already on the volume; seed not applied)", db)
+    else:
         if not Path(seed_db).is_file():
             raise FileNotFoundError(f"no market database at {db} and no seed at {seed_db}")
         partial = db.with_name(db.name + ".part")
         shutil.copyfile(seed_db, partial)
         os.replace(partial, db)
-        logger.info("copied the seed market database to %s", db)
+        logger.info("market database in use: %s (freshly seeded from %s)", db, seed_db)
     if not runs.exists():
         if seed_runs is not None and Path(seed_runs).is_dir():
             partial = runs.with_name("runs.part")
@@ -138,3 +143,43 @@ class VolumeCommitter:
         if self._thread is not None:
             self._thread.join(timeout=self._interval + 5)
         self.commit_now("shutdown")
+
+
+def watch_market(
+    process: subprocess.Popen,
+    stopping: threading.Event,
+    exit: Callable[[int], object] = os._exit,
+) -> threading.Thread:
+    """Exit the whole container if the market dies on its own, so the platform restarts it.
+
+    Without this, every run would fail against a dead market while the web app looked healthy.
+    An exit during `shutdown` is expected and ignored.
+    """
+
+    def watch() -> None:
+        status = process.wait()
+        if stopping.is_set():
+            return
+        logger.error("the market exited with status %s; stopping the container", status)
+        exit(1)
+
+    thread = threading.Thread(target=watch, name="market-watchdog", daemon=True)
+    thread.start()
+    return thread
+
+
+def shutdown(
+    process: subprocess.Popen,
+    committer: VolumeCommitter,
+    stopping: threading.Event,
+    timeout: float = 10.0,
+) -> None:
+    """Stop the market, wait until it has exited, then make the last volume commit."""
+    stopping.set()
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    committer.stop()

@@ -92,19 +92,26 @@ WEB_ENV = {
 class Live:
     @modal.enter()
     def start(self) -> None:
+        import logging
+        import threading
+
         import live_runtime
 
+        logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
         live_runtime.require_runner_token()
         db, _ = live_runtime.prepare_data(Path(DATA), Path(SEED_DB), Path(SEED_RUNS))
         self.committer = live_runtime.VolumeCommitter(volume.commit).start()
         self.committer.commit_now("seed")
         self.market = live_runtime.start_market(db)
         live_runtime.wait_healthy(f"{MARKET_URL}/health", timeout=30, process=self.market)
+        self.stopping = threading.Event()
+        live_runtime.watch_market(self.market, self.stopping)
 
     @modal.exit()
     def stop(self) -> None:
-        self.market.terminate()
-        self.committer.stop()
+        import live_runtime
+
+        live_runtime.shutdown(self.market, self.committer, self.stopping)
 
     @modal.asgi_app()
     def web(self):
