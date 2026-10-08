@@ -20,6 +20,8 @@ from pydantic_evals.evaluators import (
 )
 from pydantic_evals.online import OnlineEvalConfig
 
+from bazaar_agent.redaction import RedactingModel
+
 JUDGE_MODEL_ENV = "BAZAAR_JUDGE_MODEL"
 DEFAULT_JUDGE_MODEL = "gateway/anthropic:claude-sonnet-5-5"
 JUDGE_TIMEOUT_SECONDS = 30.0
@@ -78,8 +80,9 @@ class StrategyAdherence(Evaluator):
             return await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
                 # pydantic-evals' shared judge agents are not instrumented; an InstrumentedModel
-                # passed to the run supplies the instrumentation for this judge call.
-                model=InstrumentedModel(judge_model(), JUDGE_INSTRUMENTATION),
+                # passed to the run supplies the instrumentation for this judge call. Redaction
+                # sits inside it, so the judge's chat span never records a raw model error.
+                model=InstrumentedModel(RedactingModel(judge_model()), JUDGE_INSTRUMENTATION),
                 include_input=True,
                 model_settings={"temperature": 0, "max_tokens": 2000},
                 score={"evaluation_name": "strategy_adherence", "include_reason": True},

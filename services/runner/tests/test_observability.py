@@ -343,11 +343,11 @@ def exception_messages(spans) -> list[str]:
 
 
 def assert_nowhere(spans, *texts: str) -> None:
+    # A bare `assert secret not in <huge string>` makes pytest diff the whole export for minutes.
     exported = json.dumps(spans, default=str)
-    for secret in EXCEPTION_SECRETS:
-        assert secret not in exported
-        for text in texts:
-            assert secret not in text
+    leaked = [s for s in EXCEPTION_SECRETS if any(s in t for t in (exported, *texts))]
+    if leaked:
+        pytest.fail(f"secret sentinels leaked: {leaked}")
 
 
 def test_a_model_and_market_client_raising_secrets_leave_no_secret(
@@ -491,6 +491,17 @@ def test_a_judge_failure_holding_secrets_leaves_no_secret(secret_env, monkeypatc
     spans = secret_env.exporter.exported_spans_as_dict()
     events = evaluation_logs(secret_env)
     assert any("[REDACTED]" in json.dumps(event, default=str) for event in events)
+    # The error was raised by the judge's model, inside its traced chat span: that span recorded
+    # it (message and stacktrace) already redacted.
+    judge_chats = [
+        s for s in spans if s["attributes"].get("gen_ai.request.model") == "function:grade:"
+    ]
+    assert judge_chats
+    for chat in judge_chats:
+        (error,) = [e for e in chat.get("events", []) if e["name"] == "exception"]
+        assert error["attributes"]["exception.type"].endswith("RedactedError")
+        assert "[REDACTED]" in error["attributes"]["exception.message"]
+        assert "exception.stacktrace" in error["attributes"]
     files = [p.read_text() for p in run_dir.rglob("*") if p.is_file()]
     assert_nowhere(spans, json.dumps(events, default=str), *files)
 

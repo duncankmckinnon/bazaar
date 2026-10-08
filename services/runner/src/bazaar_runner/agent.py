@@ -30,13 +30,7 @@ def redacting_model_factory(model_factory: Callable[[str], Any]) -> Callable[[st
     """The agent's spans record a model error before the runner sees it, and Logfire never
     scrubs exception text. So an error whose text holds a configured secret leaves the model as a
     RedactedError with the secret removed and no chain; any other error is unchanged."""
-    from bazaar_protocol.telemetry import redacted_exceptions
-    from pydantic_ai.models.wrapper import WrapperModel
-
-    class RedactingModel(WrapperModel):
-        async def request(self, *args: Any, **kwargs: Any) -> Any:
-            with redacted_exceptions():
-                return await self.wrapped.request(*args, **kwargs)
+    from bazaar_agent.redaction import RedactingModel
 
     return lambda model_ref: RedactingModel(model_factory(model_ref))
 
