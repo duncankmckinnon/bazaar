@@ -18,7 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.settings import Settings
-from bazaar_web.store import CapReached, NameTaken, NotFound, Now, StillInFlight, Store
+from bazaar_web.store import (
+    CapReached,
+    Hidden,
+    NameTaken,
+    NotFound,
+    Now,
+    StillInFlight,
+    Store,
+)
 from bazaar_web.worker import RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -209,6 +217,8 @@ def create_app(
             raise HTTPException(404, "no such submission") from None
         except StillInFlight:
             raise HTTPException(409, "that submission is still queued or running") from None
+        except Hidden:
+            raise HTTPException(409, "that submission was already rerun or is hidden") from None
         position = store.position(new_id)  # read before a worker can pick it up
         request.app.state.worker.enqueue(new_id)
         request.app.state.board.invalidate()

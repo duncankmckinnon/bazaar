@@ -238,3 +238,37 @@ def test_a_failed_rerun_leaves_the_old_row_untouched(tmp_path, monkeypatch):
 
     row = store.get(old)
     assert (row["name"], row["hidden"], row["status"]) == ("old-bot", 0, "scored")
+
+
+def test_rerunning_the_same_submission_twice_is_refused(seeded, helpers):
+    runner = helpers.FakeRunner()
+    with TestClient(create_app(seeded, runner)) as c:
+        old = submit(c).json()["id"]
+        finished(c, helpers, old)
+        first = rerun(c, old)
+        finished(c, helpers, first.json()["id"])
+        repeat = rerun(c, old)  # a double-click or a client retry
+        rows = board_rows(c)
+
+    assert first.status_code == 201
+    assert repeat.status_code == 409
+    assert repeat.json() == {"detail": "that submission was already rerun or is hidden"}
+    assert [call["name"] for call in runner.calls] == ["alice-bot", "alice-bot"]
+    assert not any("~" in r["name"] for r in rows)
+    assert Store(seeded.web_db).get(old)["name"] == f"alice-bot~{old[:8]}"  # renamed only once
+
+
+def test_a_hidden_submission_cannot_be_rerun_back_onto_the_board(seeded, helpers):
+    runner = helpers.FakeRunner()
+    with TestClient(create_app(seeded, runner)) as c:
+        rude = submit(c, name="rude-name").json()["id"]
+        finished(c, helpers, rude)
+        assert c.post(f"/api/admin/submissions/{rude}/hide", headers=ADMIN).status_code == 204
+        response = rerun(c, rude)
+        rows = board_rows(c)
+
+    assert response.status_code == 409
+    assert len(runner.calls) == 1
+    assert "rude-name" not in [r["name"] for r in rows]
+    row = Store(seeded.web_db).get(rude)
+    assert (row["name"], row["hidden"]) == ("rude-name", 1)

@@ -55,6 +55,10 @@ class StillInFlight(Exception):
     pass
 
 
+class Hidden(Exception):
+    """Already rerun (its replacement is the live row) or hidden by moderation."""
+
+
 class CapReached(Exception):
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
@@ -192,6 +196,10 @@ class Store:
             old = conn.execute("SELECT * FROM submissions WHERE id = ?", (old_id,)).fetchone()
             if old is None:
                 raise NotFound
+            # A rerun hides the old row, so this refuses a repeat rerun of the same id (a second
+            # paid run under the "~" name) and never un-hides a moderated name.
+            if old["hidden"]:
+                raise Hidden
             if old["status"] in ("queued", "running"):
                 raise StillInFlight
             conn.execute(
