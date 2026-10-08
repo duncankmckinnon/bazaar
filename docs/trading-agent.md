@@ -77,14 +77,26 @@ tools, artifacts and model settings are rejected. Persisted `StrategyVersion` de
 still contain `LegacyStrategyDefinition`, but execution reads only its instructions and ignores
 all legacy runtime fields, including unsupported harnesses and artifact references.
 
-The fixed `TRADING_ROLE` tells the agent to act as a simulated stock trader maximizing
-market-authoritative portfolio value **NET of all trading fees**, within the supplied strategy.
+The trusted trading role comes from the Logfire managed variable `bazaar_trading_role`. At the
+start of each submission, the runner forces one refresh, resolves the variable with the submission
+id as its targeting key, and holds that exact value for all ten decisions. The next submission
+refreshes independently, so a published variable change takes effect without an application
+redeploy. If Logfire is unavailable or the remote value is missing or invalid, Logfire retains the
+last valid cached value when available and otherwise uses the baked `TRADING_ROLE` fallback.
+
+The role tells the agent to act as a simulated stock trader maximizing market-authoritative
+portfolio value **NET of all trading fees**, within the supplied strategy.
 Strategy instructions are labeled **user input**, never appended to agent instructions. The
 initial validated market snapshots are also labeled JSON user input, including `portfolio_value`.
 Strategy text cannot change scope, budgets, tool admission, factory, settings, simulated time or
 order identity. News, filings and private text are explicitly marked untrusted evidence;
 prompt-injection resistance is enforced by fixed capabilities and scoped DTO validation, not a
 claim that models ignore malicious prose.
+
+Managed-variable reads use `LOGFIRE_API_KEY` with `project:read_variables`; this is separate from
+the write-only telemetry token in `LOGFIRE_TOKEN`. Direct `run_decision` callers resolve the same
+variable once for their individual decision unless a trusted role was already supplied by the
+submission runner.
 
 ## Online strategy adherence evaluation
 

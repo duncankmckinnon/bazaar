@@ -44,6 +44,7 @@ def make_agent_decider(
     runtime: Any = None,
     quote_symbols: Sequence[str] = (),
     sessions: tuple[TradingSession, ...] = (),
+    trading_role: str | None = None,
 ) -> DecideWithAgent:
     """Fiscal cycles arrive per decision from the market (AgentStep), never invented here.
     With no model_factory the model is the operator's default (env_model_factory), as in
@@ -96,6 +97,7 @@ def make_agent_decider(
             model_factory=model_factory,
             quote_symbols=quote_symbols,
             trading_day=trading_day(sessions, ctx.simulated_at) if sessions else None,
+            trading_role=trading_role,
         )
         error = f"{result.error.code}: {result.error.message}" if result.error else None
         usage = AgentUsage(

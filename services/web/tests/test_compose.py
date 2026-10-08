@@ -38,7 +38,12 @@ def test_default_stack_starts_web_worker_with_market_credentials(stack):
     assert web["environment"]["BAZAAR_MARKET_URL"] == "http://market:8000"
     assert web["environment"]["BAZAAR_RUNNER_TOKEN"] == market["environment"]["BAZAAR_RUNNER_TOKEN"]
     assert web["environment"]["BAZAAR_RUNNER_TOKEN"]
-    for name in ("PYDANTIC_AI_GATEWAY_API_KEY", "LOGFIRE_TOKEN", "BAZAAR_STRATEGY_EVAL_ENABLED"):
+    for name in (
+        "PYDANTIC_AI_GATEWAY_API_KEY",
+        "LOGFIRE_API_KEY",
+        "LOGFIRE_TOKEN",
+        "BAZAAR_STRATEGY_EVAL_ENABLED",
+    ):
         assert name in web["environment"]
 
 

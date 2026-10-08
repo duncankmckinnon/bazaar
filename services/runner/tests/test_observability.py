@@ -289,9 +289,11 @@ def test_a_process_configured_by_the_web_keeps_its_service_name(monkeypatch, tmp
     configured = []
     real_configure = protocol_telemetry.configure
 
-    def spy(service_name, service_version=None):
-        configured.append((service_name, real_configure(service_name, service_version)))
-        return configured[-1][1]
+    def spy(service_name, service_version=None, **kwargs):
+        configured.append(
+            (service_name, kwargs, real_configure(service_name, service_version, **kwargs))
+        )
+        return configured[-1][2]
 
     monkeypatch.setattr(protocol_telemetry, "configure", spy)
     market = GrantingMarket()
@@ -307,7 +309,7 @@ def test_a_process_configured_by_the_web_keeps_its_service_name(monkeypatch, tmp
         runner_token=TOKEN,
         runs_dir=tmp_path,
     )
-    assert configured == [("bazaar-runner", False)]
+    assert configured == [("bazaar-runner", {"managed_variables": True}, False)]
     spans = exporter.exported_spans_as_dict(include_resources=True)
     assert named(spans, "runner.run")
     assert {s["resource"]["attributes"]["service.name"] for s in spans} == {"bazaar-web"}

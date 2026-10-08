@@ -195,12 +195,16 @@ def test_migration_adds_trace_context_to_older_databases(tmp_path):
 
 def test_configure_delegates_to_the_shared_helper(real_configure, monkeypatch):
     calls = []
-    monkeypatch.setattr(bazaar_protocol.telemetry, "configure", calls.append)
+    monkeypatch.setattr(
+        bazaar_protocol.telemetry,
+        "configure",
+        lambda service, **kwargs: calls.append((service, kwargs)),
+    )
     monkeypatch.setattr(logfire, "instrument_system_metrics", lambda: calls.append("metrics"))
 
     real_configure()
 
-    assert calls == ["bazaar-web", "metrics"]
+    assert calls == [("bazaar-web", {"managed_variables": True}), "metrics"]
 
 
 def test_web_startup_turns_on_the_shared_scrubbing(settings, helpers, real_configure, monkeypatch):

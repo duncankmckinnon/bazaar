@@ -59,6 +59,7 @@ SECRET_ENV = (
     "PYDANTIC_AI_GATEWAY_API_KEY",
     "BAZAAR_RUNNER_TOKEN",
     "BAZAAR_ADMIN_TOKEN",
+    "LOGFIRE_API_KEY",
     "LOGFIRE_TOKEN",
 )
 REDACTED = "[REDACTED]"
@@ -143,7 +144,12 @@ def _service_version(service_name: str) -> str | None:
         return None
 
 
-def configure(service_name: str, service_version: str | None = None) -> bool:
+def configure(
+    service_name: str,
+    service_version: str | None = None,
+    *,
+    managed_variables: bool = False,
+) -> bool:
     """Configure Logfire for this process unless it already is; True if this call configured it.
 
     Logfire marks its global configuration initialized only inside `logfire.configure`, so a
@@ -156,6 +162,11 @@ def configure(service_name: str, service_version: str | None = None) -> bool:
         if GLOBAL_CONFIG._initialized:
             return False
         # Any write token comes from LOGFIRE_TOKEN in the environment.
+        variables = (
+            {"variables": logfire.VariablesOptions(timeout=(2, 2))}
+            if managed_variables and os.getenv("LOGFIRE_API_KEY")
+            else {}
+        )
         logfire.configure(
             send_to_logfire="if-token-present",
             service_name=service_name,
@@ -165,5 +176,6 @@ def configure(service_name: str, service_version: str | None = None) -> bool:
             inspect_arguments=False,
             distributed_tracing=True,
             scrubbing=scrubbing_options(),
+            **variables,
         )
         return True

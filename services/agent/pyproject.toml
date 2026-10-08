@@ -9,7 +9,7 @@ dependencies = [
     "httpx>=0.27",
     "pydantic-ai-slim[anthropic,openai]==2.54.0",
     "pydantic-ai-harness[codemode]==0.54.0",
-    "logfire[fastapi,httpx,sqlite3,system-metrics]>=5.1.1",
+    "logfire[fastapi,httpx,sqlite3,system-metrics,variables]>=5.1.1",
     "uvicorn>=0.30",
     "pydantic-monty==1.0.0",
     "pydantic-evals[logfire]==2.54.0",

@@ -25,7 +25,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 from bazaar_agent.strategy_evaluation import strategy_evaluation_session
-from bazaar_agent.trading import DecisionBudget, RuntimeConfig
+from bazaar_agent.trading import TRADING_ROLE_VARIABLE, DecisionBudget, RuntimeConfig
 from bazaar_protocol.telemetry import redact
 
 from bazaar_runner.demo import DEMO_SYMBOLS, Launch, demo_spec
@@ -189,39 +189,42 @@ async def _run(
         starting_cash=STARTING_CASH,
     )
     transport = _transport_for(market_url)
-    async with (
-        strategy_evaluation_session(),
-        httpx.AsyncClient(
-            base_url=market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
-        ) as client,
-    ):
-        port = HttpMarketPort(client, experiment_id, approval_id, runner_token)
-        await port.grant(approval_id)
-        step = AgentStep(
-            # The submitter's text is untrusted strategy input; run_decision labels it as such.
-            make_agent_decider(
-                instructions,
-                _model_factory(model),
-                budget=SUBMISSION_BUDGET,
-                runtime=SUBMISSION_RUNTIME,
-                quote_symbols=DEMO_SYMBOLS,
-                sessions=spec.script.sessions,
-            ),
-            market_url=market_url,
-            symbols=DEMO_SYMBOLS,
-            transport=transport,
-        )
-        record, evaluation = await record_run(
-            spec,
-            _ProgressPort(port, _progress_reporter(on_progress)),
-            step,
-            policy_ref=launch.policy_ref,
-            runs_dir=staging,
-            evaluate=evaluate_and_emit,
-            submission_id=submission_id,
-            strategy_name=name,
-            handle=handle,
-        )
+    await TRADING_ROLE_VARIABLE.refresh(force=True)
+    with TRADING_ROLE_VARIABLE.get(targeting_key=submission_id) as trading_role:
+        async with (
+            strategy_evaluation_session(),
+            httpx.AsyncClient(
+                base_url=market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
+            ) as client,
+        ):
+            port = HttpMarketPort(client, experiment_id, approval_id, runner_token)
+            await port.grant(approval_id)
+            step = AgentStep(
+                # The submitter's text is untrusted strategy input; run_decision labels it as such.
+                make_agent_decider(
+                    instructions,
+                    _model_factory(model),
+                    budget=SUBMISSION_BUDGET,
+                    runtime=SUBMISSION_RUNTIME,
+                    quote_symbols=DEMO_SYMBOLS,
+                    sessions=spec.script.sessions,
+                    trading_role=trading_role.value,
+                ),
+                market_url=market_url,
+                symbols=DEMO_SYMBOLS,
+                transport=transport,
+            )
+            record, evaluation = await record_run(
+                spec,
+                _ProgressPort(port, _progress_reporter(on_progress)),
+                step,
+                policy_ref=launch.policy_ref,
+                runs_dir=staging,
+                evaluate=evaluate_and_emit,
+                submission_id=submission_id,
+                strategy_name=name,
+                handle=handle,
+            )
     if record.status != "completed":
         raise SubmissionFailed(f"the run failed: {record.failure}")
     # The board shows a submission as scored from evaluation.json: no score, no published run.
