@@ -46,6 +46,21 @@ agent launch, which set `RuntimeConfig(instrument=True)`. They include message c
 the submitter's strategy text, tool arguments and results, and outputs. Other callers of
 `run_decision` keep the default `instrument=False`, which suppresses them.
 
+## Distributed traces
+
+The runner's market clients (the run's own client and each decision's agent client) are
+instrumented per client with `bazaar_protocol.telemetry.instrument_market_client`. Each market
+request gets an HTTP client span and sends `traceparent`, so the market's request spans nest under
+`runner.decision`, `runner.mark` and `trading.decision` in the run's trace. Headers and bodies are
+never captured. Transport errors are redacted inside that HTTP span (they keep their httpx type).
+The Gateway's client is not instrumented here: pydantic-ai's Gateway provider propagates the
+trace itself.
+
+Code-mode decisions (`RuntimeConfig(code_mode=True)`) also trace Monty: `session {script_name}`
+and `run code` (with the model's code and its output) under `trading.decision`. Monty's telemetry
+is installed once per process, on the first code-mode decision
+(`bazaar_agent.monty_telemetry`). Submissions never run code mode, so they install nothing.
+
 ## Configuration
 
 Every service configures Logfire through `bazaar_protocol.telemetry.configure(service_name)`. It
