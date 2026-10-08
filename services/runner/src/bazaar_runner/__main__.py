@@ -213,6 +213,8 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
 
 async def amain(args: argparse.Namespace) -> int:
     policies = load_policies(args.market_url, fiscal_cycles=not args.no_fiscal_cycles)
+    from bazaar_agent.strategy_evaluation import strategy_evaluation_session
+
     launches = []
     for prefix, ref, _ in demo_launches(args):
         if ref in policies:
@@ -223,7 +225,10 @@ async def amain(args: argparse.Namespace) -> int:
     # One agent per experiment: refuse before any port, account or order exists.
     check_one_agent_per_experiment(launches)
 
-    async with httpx.AsyncClient(base_url=args.market_url, timeout=30) as client:
+    async with (
+        strategy_evaluation_session(),
+        httpx.AsyncClient(base_url=args.market_url, timeout=30) as client,
+    ):
         # Built before any run, so a missing token stops the CLI at startup.
         ports = {
             launch: HttpMarketPort.from_env(client, launch.experiment_id, launch.approval_id)

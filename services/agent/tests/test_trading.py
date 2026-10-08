@@ -189,6 +189,14 @@ def no_gateway(monkeypatch):
     return monkeypatch
 
 
+def test_default_trading_model_builds_with_declared_provider_dependencies(no_gateway):
+    no_gateway.setenv(GATEWAY_KEY_ENV, "fixture-key-not-used-for-network")
+    no_gateway.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", "http://gateway.invalid")
+    model = env_model_factory()("fixture")
+    assert type(model).__name__ == "OpenAIResponsesModel"
+    assert model.model_name == "gpt-5.6-sol"
+
+
 async def test_testmodel_hold_and_missing_factory(no_gateway):
     result, calls = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
     assert result.decision.action == "hold" and result.error is None

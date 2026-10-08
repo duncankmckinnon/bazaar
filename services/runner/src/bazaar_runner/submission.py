@@ -17,6 +17,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
+from bazaar_agent.strategy_evaluation import strategy_evaluation_session
 from bazaar_agent.trading import DecisionBudget, RuntimeConfig
 
 from bazaar_runner.demo import DEMO_SYMBOLS, Launch, demo_spec
@@ -162,9 +163,12 @@ async def _run(
         starting_cash=STARTING_CASH,
     )
     transport = _transport_for(market_url)
-    async with httpx.AsyncClient(
-        base_url=market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
-    ) as client:
+    async with (
+        strategy_evaluation_session(),
+        httpx.AsyncClient(
+            base_url=market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
+        ) as client,
+    ):
         port = HttpMarketPort(client, experiment_id, approval_id, runner_token)
         await port.grant(approval_id)
         step = AgentStep(
