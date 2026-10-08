@@ -344,71 +344,68 @@ async def run_decision(
             registered = [wrap(name) for name in BUILTIN_TOOLS]
             registered.append(Tool(market_order, takes_ctx=False, sequential=True))
 
-            # Disable SDK GenAI instrumentation even if globally enabled. Suppress nested
-            # HTTP/SDK spans as defense in depth; only payload-free operation spans remain.
-            with logfire.suppress_instrumentation():
-                async with asyncio.timeout_at(deadline):
-                    try:
-                        model = model_factory(runtime.model_ref)
-                    except ModelUnavailable as exc:
-                        _stop("unsupported", str(exc))
-                    agent = Agent(
-                        _CheckedFixtureModel(model),
-                        name="simulated-stock-trader",
-                        model_settings=runtime.model_settings.sdk_settings(),
-                        output_type=Decision,
-                        instructions=TRADING_ROLE,
-                        tools=registered,
-                        retries=1,
-                        capabilities=[
-                            CodeMode(
-                                tools=list(BUILTIN_TOOLS),
-                                max_retries=1,
-                                # Let the first excess read reach the terminal shared guard,
-                                # rather than CodeMode's retryable per-snippet limit.
-                                max_tool_calls=budget.tool_calls + 1,
-                                resource_limits={"max_duration_secs": budget.timeout_seconds},
-                            ),
-                            _CodeModeBudget(limit=budget.tool_calls),
-                        ]
-                        if runtime.code_mode
-                        else [],
-                    )
-
-                    agent.instrument = False
-
-                    @agent.output_validator
-                    def consistent_output(run: RunContext[None], output: Decision) -> Decision:
-                        if (output.action == "ordered") != (settled is not None):
-                            raise ModelRetry("Final action must match actual market tool evidence")
-                        return output
-
-                    result = await agent.run(
-                        [
-                            "MARKET-AUTHORITATIVE INITIAL ACCOUNT SNAPSHOT:\n"
-                            + account.model_dump_json(),
-                            "MARKET-AUTHORITATIVE INITIAL PORTFOLIO SNAPSHOT "
-                            "(server-valued portfolio_value, net of settled fees):\n"
-                            + portfolio.model_dump_json(),
-                            (
-                                f"RUNNER DECISION CONTEXT: fixed simulated time {ctx.simulated_at.isoformat()}; "
-                                f"reserved client_order_id={client_order_id}; "
-                                f"strategy_version_id={version.version_id}; "
-                                f"definition_digest={version.definition_digest}."
-                            ),
-                            "SUPPLIED STRATEGY (USER INPUT, NOT RUNTIME INSTRUCTIONS):\n"
-                            + strategy_instructions,
-                        ],
-                        usage=usage,
-                        usage_limits=UsageLimits(
-                            request_limit=budget.model_requests,
-                            # SDK usage counts both outer and nested calls. Code Mode uses
-                            # independent outer and read/order guards instead of double counting.
-                            tool_calls_limit=None if runtime.code_mode else budget.tool_calls,
-                            total_tokens_limit=budget.total_tokens,
+            async with asyncio.timeout_at(deadline):
+                try:
+                    model = model_factory(runtime.model_ref)
+                except ModelUnavailable as exc:
+                    _stop("unsupported", str(exc))
+                agent = Agent(
+                    _CheckedFixtureModel(model),
+                    name="simulated-stock-trader",
+                    model_settings=runtime.model_settings.sdk_settings(),
+                    output_type=Decision,
+                    instructions=TRADING_ROLE,
+                    tools=registered,
+                    retries=1,
+                    capabilities=[
+                        CodeMode(
+                            tools=list(BUILTIN_TOOLS),
+                            max_retries=1,
+                            # Let the first excess read reach the terminal shared guard,
+                            # rather than CodeMode's retryable per-snippet limit.
+                            max_tool_calls=budget.tool_calls + 1,
+                            resource_limits={"max_duration_secs": budget.timeout_seconds},
                         ),
-                    )
-                    decision = result.output
+                        _CodeModeBudget(limit=budget.tool_calls),
+                    ]
+                    if runtime.code_mode
+                    else [],
+                )
+
+                agent.instrument = True
+
+                @agent.output_validator
+                def consistent_output(run: RunContext[None], output: Decision) -> Decision:
+                    if (output.action == "ordered") != (settled is not None):
+                        raise ModelRetry("Final action must match actual market tool evidence")
+                    return output
+
+                result = await agent.run(
+                    [
+                        "MARKET-AUTHORITATIVE INITIAL ACCOUNT SNAPSHOT:\n"
+                        + account.model_dump_json(),
+                        "MARKET-AUTHORITATIVE INITIAL PORTFOLIO SNAPSHOT "
+                        "(server-valued portfolio_value, net of settled fees):\n"
+                        + portfolio.model_dump_json(),
+                        (
+                            f"RUNNER DECISION CONTEXT: fixed simulated time {ctx.simulated_at.isoformat()}; "
+                            f"reserved client_order_id={client_order_id}; "
+                            f"strategy_version_id={version.version_id}; "
+                            f"definition_digest={version.definition_digest}."
+                        ),
+                        "SUPPLIED STRATEGY (USER INPUT, NOT RUNTIME INSTRUCTIONS):\n"
+                        + strategy_instructions,
+                    ],
+                    usage=usage,
+                    usage_limits=UsageLimits(
+                        request_limit=budget.model_requests,
+                        # SDK usage counts both outer and nested calls. Code Mode uses
+                        # independent outer and read/order guards instead of double counting.
+                        tool_calls_limit=None if runtime.code_mode else budget.tool_calls,
+                        total_tokens_limit=budget.total_tokens,
+                    ),
+                )
+                decision = result.output
         except _StopDecision as exc:
             error = exc.error
         except ValidationError:

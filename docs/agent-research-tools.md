@@ -20,10 +20,10 @@ credentials. The caller owns its lifecycle. Requests never follow redirects or a
 retry orders. Preserve `client_order_id` on an explicit retry after an ambiguous failure.
 Transport/API errors discard server bodies and exception text; rejected order messages are
 replaced with their enum codes. Successful archived content is intentionally returned to the
-trading model, but never recorded in tool spans. The outbound request runs inside
-`logfire.suppress_instrumentation()` even when the client is HTTPX-instrumented: child spans can
-otherwise expose cursor query strings or exception text before a tool catches it. Only the safe
-tool span remains. Do not attach hooks/transports that independently log credentials or payloads.
+trading model. Tool decorators do not extract arguments, but nested SDK and instrumented HTTPX
+spans are not suppressed. PydanticAI decision traces can include research content, and HTTP spans
+can include cursor query strings or exception details before the tool catches an error. Configure
+a trusted Logfire destination and do not attach hooks/transports that independently log credentials.
 Tool spans use `extract_args=False`; ordinary transport/hook exceptions are caught inside the
 span with fixed messages. Cancellation still propagates. Local preflight errors are
 `invalid_request`, distinct from invalid server responses.

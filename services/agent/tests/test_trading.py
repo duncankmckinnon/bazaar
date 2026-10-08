@@ -482,8 +482,11 @@ async def test_fixture_factory_error_sanitized():
     )
 
 
-async def test_payload_safe_with_production_httpx_and_global_genai_instrumentation(capfire, caplog):
-    Agent.instrument_all(True)
+@pytest.mark.parametrize("global_instrumentation", [False, True])
+async def test_model_tool_and_http_spans_are_not_suppressed(
+    capfire, caplog, global_instrumentation
+):
+    Agent.instrument_all(global_instrumentation)
     try:
         model, _ = script(
             [ToolCallPart("news", query())],
@@ -514,8 +517,11 @@ async def test_payload_safe_with_production_httpx_and_global_genai_instrumentati
         assert result.error is None and result.decision.action == "hold"
         spans = capfire.exporter.exported_spans_as_dict()
         assert "trading.decision" in {span["name"] for span in spans}
-        assert SECRET not in json.dumps(spans, default=str) + caplog.text
-        assert not any("gen_ai" in json.dumps(span, default=str) for span in spans)
+        assert SECRET in json.dumps(spans, default=str)
+        assert SECRET not in caplog.text
+        assert any("gen_ai" in json.dumps(span, default=str) for span in spans)
+        assert any(span["name"] == "execute_tool news" for span in spans)
+        assert any(span["attributes"].get("http.url") for span in spans)
     finally:
         Agent.instrument_all(False)
 
@@ -563,7 +569,7 @@ async def test_output_and_order_id_collision_rejected():
     assert result.error.code == "invalid_response" and not requests
 
 
-async def test_cancelled_order_payload_not_in_monitored_spans(capfire):
+async def test_cancelled_order_is_traced_and_cancellation_propagates(capfire):
     def handler(request):
         raise asyncio.CancelledError(SECRET)
 
@@ -580,7 +586,7 @@ async def test_cancelled_order_payload_not_in_monitored_spans(capfire):
         )
         with pytest.raises(asyncio.CancelledError):
             await run_decision(client=client, model_factory=lambda ref: model, **inputs())
-    assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+    assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
 
 
 async def test_no_factory_builds_the_model_named_in_the_environment(no_gateway):
@@ -648,7 +654,7 @@ async def test_read_error_does_not_turn_order_failure_into_retry():
 
 
 @pytest.mark.parametrize("kind", ["filing", "private", "order", "model_failure", "invalid_output"])
-async def test_other_protected_payloads_not_in_monitored_spans(kind, capfire, caplog):
+async def test_research_order_and_model_failures_are_traced(kind, capfire, caplog):
     from bazaar_protocol.research import PrivateHistoryPage
 
     class Reader:
@@ -707,7 +713,8 @@ async def test_other_protected_payloads_not_in_monitored_spans(kind, capfire, ca
         )
     assert (result.error is None) == (kind != "model_failure")
     spans = capfire.exporter.exported_spans_as_dict()
-    assert SECRET not in json.dumps(spans, default=str) + caplog.text
+    assert SECRET in json.dumps(spans, default=str)
+    assert SECRET not in caplog.text
     attributes = next(span["attributes"] for span in spans if span["name"] == "trading.decision")
     for label in ("experiment_id", "account_id", "agent_id", "strategy_version_id"):
         assert attributes[label] == IDS[label]
@@ -1116,7 +1123,7 @@ async def test_initial_and_model_work_share_one_timeout_not_fresh_timeouts():
     assert len(trace) == 2 and len(model_calls) == 1 and result.order_request is None
 
 
-async def test_initial_market_payload_is_not_logged(capfire, caplog):
+async def test_initial_market_payload_is_in_genai_trace(capfire, caplog):
     model, calls = script(lambda info: [output(info)])
     async with httpx.AsyncClient(
         base_url="https://market.invalid",
@@ -1139,10 +1146,8 @@ async def test_initial_market_payload_is_not_logged(capfire, caplog):
     assert result.error is None
     assert SECRET in "\n".join(user_prompts(calls[0][0]))
     assert SECRET not in result.model_dump_json()
-    assert (
-        SECRET
-        not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str) + caplog.text
-    )
+    assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+    assert SECRET not in caplog.text
 
 
 def code_call(code):
@@ -1292,7 +1297,7 @@ async def test_code_mode_state_and_cursor_isolation_under_concurrency():
     assert "left-strategy" not in "\n".join(user_prompts(right[0][0]))
 
 
-async def test_code_mode_content_excluded_from_telemetry(capfire, caplog):
+async def test_code_mode_content_included_in_telemetry(capfire, caplog):
     Agent.instrument_all(True)
     try:
         model, _ = script(
@@ -1301,7 +1306,7 @@ async def test_code_mode_content_excluded_from_telemetry(capfire, caplog):
         )
         result, _ = await invoke(model, payload=page([news(text=SECRET)]), overrides=code_runtime())
         assert result.error is None
-        assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+        assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
         assert SECRET not in caplog.text
     finally:
         Agent.instrument_all(False)

@@ -69,7 +69,9 @@ versioning and configuration. **This local API has no authentication; do not exp
 
 Pydantic Logfire monitors API requests, registry operations, database queries and agent HTTP/logging
 activity. Set `LOGFIRE_TOKEN` to enable export; token-free local operation and tests remain supported.
-Sensitive strategy payloads are excluded from traces. See the API guide's monitoring section.
+Registry API traces exclude sensitive strategy payloads. Trading runs include PydanticAI model
+inputs/outputs and tool activity; see the [trading guide](docs/trading-agent.md#monitoring-and-next-interfaces)
+for telemetry privacy considerations and the API guide's monitoring section for registry tracing.
 
 ## Shared API contracts
 

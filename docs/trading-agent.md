@@ -210,17 +210,20 @@ a malicious synchronous factory/function: injections are trusted test fixtures, 
 
 ## Monitoring and next interfaces
 
-A safe `trading.decision` operation span is emitted now. SDK content/GenAI instrumentation is
-explicitly disabled even when enabled globally; nested model/HTTP instrumentation is suppressed.
-Exceptions are caught inside the safe span and only fixed messages leave it. No messages, inputs,
-instructions, research/private contents, order payloads, response bodies, cursors or credentials
-are logged. Production HTTPX configuration explicitly sets `capture_all=False`, header/request/
-response capture false; do not add independently logging hooks. Payload-marker tests configure
-monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata is **#23**;
-the model itself can already be a Gateway model chosen by the operator.
+Each `trading.decision` span contains enabled PydanticAI agent, model and tool instrumentation,
+including Code Mode. Instrumentation is enabled per agent even if global SDK instrumentation is
+off. Nested SDK and instrumented HTTPX spans are no longer suppressed. Configure Logfire in the
+hosting process and supply `LOGFIRE_TOKEN` to export traces (the runner configures it for submissions).
+The model can be a Gateway model chosen by the operator.
 
-Code Mode does not add tracing or AI Gateway integration: SDK/HTTP content instrumentation remains
-suppressed as above. Computation over returned research data does not authorize future observations
+**Telemetry includes model inputs/outputs**, including strategy instructions, market snapshots,
+research/private content and tool arguments/results. Instrumented HTTP spans can include cursor
+query strings and exception details. Only send runs to an appropriate, trusted Logfire project.
+HTTPX header/request/response-body capture remains disabled in the placeholder process; that does
+not suppress spans. Returned harness errors remain sanitized, but nested telemetry is not a
+payload-free boundary. Do not put credentials in strategy text or research data.
+
+Computation over returned research data does not authorize future observations
 or bypass point-in-time validation. No real historical experiment was run; fixtures prove client
 behavior, not server authorization, source completeness, live grants or model quality. Provisioning,
 account-status and performance-statistics contracts remain deferred; no market service or Compose
