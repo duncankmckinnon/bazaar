@@ -79,6 +79,9 @@ WEB_ENV = {
     "BAZAAR_RUNS_DIR": f"{DATA}/runs",
     "BAZAAR_WEB_DB": f"{DATA}/web.sqlite3",
 }
+if modal.is_local() and os.environ.get("BAZAAR_RESEED_RUNS", "").strip():
+    # One-shot reseed of the board's runs for this deploy. See deploy/README.md.
+    WEB_ENV["BAZAAR_RESEED_RUNS"] = os.environ["BAZAAR_RESEED_RUNS"].strip()
 
 
 @app.cls(
@@ -101,6 +104,9 @@ class Live:
 
         logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s %(message)s")
         live_runtime.require_runner_token()
+        live_runtime.reseed_runs(
+            Path(DATA), Path(SEED_RUNS), os.environ.get("BAZAAR_RESEED_RUNS"), commit=volume.commit
+        )
         db, _ = live_runtime.prepare_data(Path(DATA), Path(SEED_DB), Path(SEED_RUNS))
         self.committer = live_runtime.VolumeCommitter(volume.commit).start()
         self.committer.commit_now("seed")

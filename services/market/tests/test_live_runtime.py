@@ -247,3 +247,180 @@ def test_the_watchdog_still_exits_when_the_last_commit_fails(caplog):
 
     assert exits == [1]
     assert "the last commit before exiting failed" in caplog.text
+
+
+T1 = rt.datetime(2026, 10, 8, 18, 0, tzinfo=rt.UTC)
+T2 = rt.datetime(2026, 10, 8, 19, 0, tzinfo=rt.UTC)
+
+
+def board(volume: Path, *names: str) -> None:
+    for name in names:
+        (volume / "runs" / name).mkdir(parents=True)
+        (volume / "runs" / name / "run.json").write_text(name)
+
+
+def new_seed(tmp_path, *names: str) -> Path:
+    folder = tmp_path / "seed-v2"
+    for name in names:
+        (folder / name).mkdir(parents=True)
+        (folder / name / "record.json").write_text(name)
+        (folder / name / "evaluation.json").write_text(name)
+    return folder
+
+
+def listing(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir())
+
+
+def test_a_reseed_archives_the_board_and_copies_the_new_seed(tmp_path, caplog):
+    volume = tmp_path / "data"
+    board(volume, "baseline", "attendee-1")
+    commits = Commits()
+
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        outcome = rt.reseed_runs(volume, new_seed(tmp_path, "v2-a", "v2-b"), "v2", T1, commits)
+
+    assert outcome == "reseeded"
+    assert listing(volume / "runs") == ["v2-a", "v2-b"]
+    assert listing(volume / "archive" / "20261008T180000Z" / "runs") == ["attendee-1", "baseline"]
+    assert (volume / "archive" / "reseeded-v2").exists()
+    assert commits.count == 1
+    assert "copied 2 seed runs" in caplog.text and "archived the previous runs" in caplog.text
+
+
+def test_the_same_id_reseeds_once_across_restarts(tmp_path, caplog):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    rt.reseed_runs(volume, seed, "v2", T1)
+    board(volume, "attendee-scored-after")  # a run scored after the reseed
+
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        outcome = rt.reseed_runs(volume, seed, "v2", T2)  # the container restarted
+
+    assert outcome == "skipped"
+    assert listing(volume / "runs") == ["attendee-scored-after", "v2-a"]
+    assert listing(volume / "archive") == ["20261008T180000Z", "reseeded-v2"]
+    assert "skipped" in caplog.text
+
+
+def test_a_new_id_reseeds_again(tmp_path):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert rt.reseed_runs(volume, seed, "v3", T2) == "reseeded"
+    assert listing(volume / "archive" / "20261008T190000Z" / "runs") == ["v2-a"]
+
+
+@pytest.mark.parametrize("flag", [None, "", "   "])
+def test_without_the_flag_nothing_happens(tmp_path, flag):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+
+    assert rt.reseed_runs(volume, new_seed(tmp_path, "v2-a"), flag, T1) == "off"
+    assert listing(volume / "runs") == ["baseline"]
+    assert not (volume / "archive").exists()
+
+
+@pytest.mark.parametrize("seed_names", [None, ()])
+def test_missing_or_empty_seeds_fail_closed_and_leave_the_board(tmp_path, seed_names):
+    volume = tmp_path / "data"
+    board(volume, "baseline", "attendee-1")
+    seed = tmp_path / "seed-v2"
+    if seed_names is not None:
+        seed.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="nothing moved"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["attendee-1", "baseline"]
+    assert not (volume / "archive").exists()
+
+
+def test_the_marker_is_written_only_after_a_successful_copy(tmp_path, monkeypatch):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+
+    def broken_copy(source, destination, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rt.shutil, "copytree", broken_copy)
+    with pytest.raises(OSError, match="disk full"):
+        rt.reseed_runs(volume, new_seed(tmp_path, "v2-a"), "v2", T1)
+
+    assert not (volume / "archive" / "reseeded-v2").exists()
+    assert listing(volume / "runs") == ["baseline"]
+
+
+def test_an_unsafe_reseed_id_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="BAZAAR_RESEED_RUNS"):
+        rt.reseed_runs(tmp_path / "data", new_seed(tmp_path, "v2-a"), "../escape", T1)
+
+
+def test_a_failed_commit_after_a_reseed_is_logged_not_fatal(tmp_path, caplog):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+
+    with caplog.at_level("ERROR", logger="bazaar.live"):
+        outcome = rt.reseed_runs(volume, new_seed(tmp_path, "v2-a"), "v2", T1, Commits(fail=True))
+
+    assert outcome == "reseeded"
+    assert "volume commit failed" in caplog.text
+
+
+def test_a_seed_of_only_dotfiles_fails_closed(tmp_path):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = tmp_path / "seed-v2"
+    seed.mkdir()
+    (seed / ".DS_Store").write_text("finder")
+
+    with pytest.raises(FileNotFoundError, match="no seed runs.*nothing moved"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+    assert not (volume / "archive").exists()
+
+
+@pytest.mark.parametrize("missing", ["record.json", "evaluation.json"])
+def test_a_seed_run_missing_a_file_fails_closed_and_names_it(tmp_path, missing):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a", "v2-broken")
+    (seed / "v2-broken" / missing).unlink()
+
+    with pytest.raises(FileNotFoundError, match="v2-broken in .*nothing moved"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+    assert not (volume / "archive").exists()
+    assert not (volume / "runs.part").exists()
+
+
+def test_a_stray_file_in_the_seed_fails_closed(tmp_path):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    (seed / "notes.txt").write_text("not a run")
+
+    with pytest.raises(FileNotFoundError, match="notes.txt"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+
+
+def test_a_valid_seed_with_a_stray_dotfile_reseeds_without_it(tmp_path, caplog):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    (seed / ".DS_Store").write_text("finder")
+    (seed / "v2-a" / ".DS_Store").write_text("finder")
+
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        assert rt.reseed_runs(volume, seed, "v2", T1) == "reseeded"
+
+    assert listing(volume / "runs") == ["v2-a"]
+    assert listing(volume / "runs" / "v2-a") == ["evaluation.json", "record.json"]
+    assert "copied 1 seed runs" in caplog.text
