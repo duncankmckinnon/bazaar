@@ -40,7 +40,8 @@ SUBMISSION_BUDGET = DecisionBudget().model_copy(
 )
 # PM 14:02Z, security: attendee text is untrusted and runs beside the Gateway key and the runner
 # token. Code mode is pinned off here and never taken from env, arguments or the submission.
-SUBMISSION_RUNTIME = RuntimeConfig(code_mode=False)
+# Tracing with message content is on (Anthony 10-08): secrets never enter the agent's context.
+SUBMISSION_RUNTIME = RuntimeConfig(code_mode=False, instrument=True)
 
 _telemetry_lock = threading.Lock()
 
@@ -99,6 +100,7 @@ def run_submission(
     runs_dir: Path,
     model: str | None = None,
     on_progress: Callable[[int], None] | None = None,
+    handle: str | None = None,
 ) -> Path:
     """Run one agent over the demo fortnight and return its scored run directory.
 
@@ -120,6 +122,7 @@ def run_submission(
                 runs_dir=runs_dir,
                 model=model,
                 on_progress=on_progress,
+                handle=handle,
             )
         )
     except SubmissionFailed as exc:
@@ -145,6 +148,7 @@ async def _run(
     runs_dir: Path,
     model: str | None,
     on_progress: Callable[[int], None] | None,
+    handle: str | None,
 ) -> Path:
     # Imported here: bazaar_agent and bazaar_evaluation are optional for the runner package.
     from bazaar_evaluation import evaluate_and_emit
@@ -187,6 +191,8 @@ async def _run(
             runs_dir=staging,
             evaluate=evaluate_and_emit,
             submission_id=submission_id,
+            strategy_name=name,
+            handle=handle,
         )
     if record.status != "completed":
         raise SubmissionFailed(f"the run failed: {record.failure}")

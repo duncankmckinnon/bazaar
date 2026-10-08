@@ -180,6 +180,8 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
         import pydantic_ai  # noqa: F401
     except ImportError as exc:
         raise DemoUnavailable(f"the agent launch needs bazaar_agent.trading: {exc}") from None
+    from bazaar_agent.trading import RuntimeConfig
+
     from bazaar_runner.agent import (
         AGENT_FIXTURE_INSTRUCTIONS,
         fixture_model_factory,
@@ -189,7 +191,11 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
 
     def agent(prices):
         # A fresh decider and fixture model per launch; the agent reads prices itself.
-        decider = make_agent_decider(AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory())
+        decider = make_agent_decider(
+            AGENT_FIXTURE_INSTRUCTIONS,
+            fixture_model_factory(),
+            runtime=RuntimeConfig(instrument=True),
+        )
         return AgentStep(
             decider,
             market_url=market_url,
