@@ -90,6 +90,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .reconnecting { font: 500 13px/1 var(--mono); color: var(--calcium); margin: 12px 0 0; }
 .actions { display: grid; gap: 10px; }
 .actions a { display: flex; align-items: center; justify-content: center; min-height: 48px; }
+.logfire { display: inline-flex; align-items: center; min-height: 44px; margin-top: 10px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -146,6 +147,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
         <p id="status-detail" class="detail" hidden></p>
         <dl id="status-stats" class="stats" hidden></dl>
       </div>
+      <div id="logfire"></div>
       <p id="reconnecting" class="reconnecting" hidden>Reconnecting</p>
     </div>
     <div class="actions">
@@ -383,6 +385,41 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     return typeof value === "number" && isFinite(value) ? value : null;
   }
 
+  // safeLogfireUrl:start
+  // Only an absolute https URL on pydantic.dev (Logfire's hosts) may become a link.
+  function safeLogfireUrl(value) {
+    if (typeof value !== "string" || !value) { return null; }
+    try {
+      var url = new URL(value);
+      var host = url.hostname;
+      var logfireHost = host === "pydantic.dev" || host.slice(-".pydantic.dev".length) === ".pydantic.dev";
+      return url.protocol === "https:" && logfireHost ? value : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  // safeLogfireUrl:end
+
+  var logfireLink = null;
+
+  // One link, reused across polls so it is never duplicated and keeps focus.
+  function showLogfire(url) {
+    if (!url) {
+      if (logfireLink) { logfireLink.hidden = true; }
+      return;
+    }
+    if (!logfireLink) {
+      logfireLink = document.createElement("a");
+      logfireLink.className = "logfire";
+      logfireLink.target = "_blank";
+      logfireLink.rel = "noopener noreferrer";
+      logfireLink.textContent = "See your agent in Logfire";
+      byId("logfire").appendChild(logfireLink);
+    }
+    if (logfireLink.getAttribute("href") !== url) { logfireLink.href = url; }
+    logfireLink.hidden = false;
+  }
+
   function percent(value) {
     var number = toNumber(value);
     if (number === null) { return null; }
@@ -452,10 +489,13 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
       failures = 0;
       reconnecting.hidden = true;
       if (body.missing) {
+        showLogfire(null);
         render("We could not find this entry.", "It may have been removed. You can submit another.");
         return;
       }
       var status = body && body.status;
+      showLogfire(status === "running" || status === "scored"
+        ? safeLogfireUrl(body.logfire_url) : null);
       if (status === "queued") {
         render(queued(body.position), "");
       } else if (status === "running") {
@@ -488,6 +528,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     byId("status-view").hidden = false;
     byId("status-name").textContent = saved.name || "";
     reconnecting.hidden = true;
+    showLogfire(null);
     // The POST position stands in until the first poll returns the live one.
     render(typeof saved.position === "number" ? queued(saved.position) : "Checking status", "");
     poll();

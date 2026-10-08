@@ -67,6 +67,7 @@ def run_page_function(name, calls):
     sources = re.findall(
         r"^  function (?:toNumber|percent|rankLabel)\(.*?^  }$", page(), re.MULTILINE | re.DOTALL
     )
+    sources += re.findall(r"// safeLogfireUrl:start(.*?)// safeLogfireUrl:end", page(), re.DOTALL)
     script = (
         "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
     )
@@ -96,3 +97,53 @@ def test_rank_label_accepts_positive_whole_numbers_and_digit_strings():
     calls = ["2", '"2"', "0", "1.5", "null", '"x"']
 
     assert run_page_function("rankLabel", calls) == ["#2", "#2", None, None, None, None]
+
+
+def test_safe_logfire_url_allows_only_https_on_pydantic_dev():
+    good = "https://logfire-us.pydantic.dev/x/y?q=1"
+    calls = [
+        json.dumps(good),
+        "null",
+        '""',
+        '"javascript:alert(1)"',
+        '"http://example.com"',
+        '"/relative"',
+        '"data:text/html,x"',
+        "42",
+        '"not a url"',
+        '"HTTPS://logfire-us.pydantic.dev/x"',
+        '"https://logfire-eu.pydantic.dev/a"',
+        '"https://pydantic.dev/a"',
+        '"https://evil.example/a"',
+        '"https://pydantic.dev.evil.com/a"',
+        '"https://logfire-us.pydantic.info/a"',
+        '"https://notpydantic.dev/a"',
+    ]
+
+    assert run_page_function("safeLogfireUrl", calls) == [
+        good,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "HTTPS://logfire-us.pydantic.dev/x",
+        "https://logfire-eu.pydantic.dev/a",
+        "https://pydantic.dev/a",
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_logfire_link_is_labelled_and_opens_safely():
+    html = page()
+
+    assert "See your agent in Logfire" in html
+    assert '"noopener noreferrer"' in html
+    assert '"_blank"' in html
+    assert "// safeLogfireUrl:start" in html and "// safeLogfireUrl:end" in html
