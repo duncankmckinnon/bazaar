@@ -48,7 +48,7 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .ar-cols, .ar-row { display: grid; grid-template-columns: calc(var(--u)*4.2) calc(var(--u)*8.6) minmax(0,1fr) calc(var(--u)*7.6); gap: calc(var(--u)*.9); align-items: center; }
 .ar-cols { font: 400 calc(var(--u)*.62)/1 var(--pixel); color: var(--muted); padding: 0 calc(var(--u)*.6) calc(var(--u)*.7); }
 .ar-cols span:nth-child(4) { text-align: right; }
-.ar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.ar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .ar-row { padding: calc(var(--u)*.55) calc(var(--u)*.6); font: 400 calc(var(--u)*.95)/1.2 var(--pixel); color: var(--c, var(--sugar)); border-radius: calc(var(--u)*.3); }
 .ar-row.hl { background: rgba(251,255,234,.08); }
 .ar-row .nm { font: 700 calc(var(--u)*1.05)/1.2 var(--mono); text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -57,6 +57,7 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .ar-row.st-running, .ar-row.st-queued { --c: #d9c4d3; }
 .ar-row.st-running .rt { color: var(--pyai-cyan); animation: blink 1s steps(1) infinite; }
 .ar-row.st-queued .rt { color: var(--muted); }
+.ar-row.more { display: block; color: var(--muted); font-size: calc(var(--u)*.8); }
 .ar-row .sc.prov { opacity: .7; }
 .ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 calc(var(--u)*.6)/1 var(--pixel); color: var(--blackbean); background: var(--pyai-yellow); padding: .3em .5em; animation: blink .5s steps(1) 16; }
 .empty { font: 400 calc(var(--u)*1)/1.6 var(--pixel); color: var(--pyai-yellow); text-transform: uppercase; padding: calc(var(--u)*2) calc(var(--u)*.6); }
@@ -165,7 +166,7 @@ const SUBMIT_URL = __SUBMIT_URL__;
 const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EASE = "cubic-bezier(.2,.8,.2,1)";
 const DAYS = 10;
-const MAX_ROWS = 10;
+const PHONE_ROWS = 10;
 const NEW_MS = 8000;
 const POLL_MS = 2000;
 const TAPE_MS = 6000;
@@ -271,6 +272,36 @@ function svgEl(tag, attrs, parent) {
 }
 
 /* ---------- leaderboard (left) ---------- */
+// Capacity n rows: every running then queued row is pinned, scored rows fill the rest by rank.
+// Display order is the API's: scored, running, queued. Failed rows are not on this board. If the
+// pinned rows alone overflow, the last line counts what is left out instead of dropping it silently.
+function selectRows(all, capacity) {
+  const n = Math.max(1, Math.floor(capacity) || 1);
+  const of = (s) => all.filter(r => r.status === s);
+  const pinned = [...of("running"), ...of("queued")];
+  if (pinned.length <= n) return { rows: [...of("scored").slice(0, n - pinned.length), ...pinned], more: null };
+  const rows = pinned.slice(0, n - 1), left = pinned.slice(n - 1);
+  return { rows, more: `+${left.length} MORE` + (left.every(r => r.status === "queued") ? " QUEUED" : "") };
+}
+
+// How many rows fit the list's height, measured from a probe row in the real fonts.
+let capacity = PHONE_ROWS;
+function measureCapacity() {
+  if (matchMedia("(max-width: 760px)").matches) return PHONE_ROWS;
+  const probe = document.createElement("li");
+  probe.className = "ar-row st-scored";
+  probe.style.cssText = "position:absolute;visibility:hidden;left:0;right:0";
+  probe.innerHTML = '<span class="rk">1ST</span><span class="sc num">$10,000</span><span class="nm">PROBE</span><span class="rt num">+0.00%</span>';
+  list.appendChild(probe);
+  const h = probe.offsetHeight;
+  probe.remove();
+  return h > 0 ? Math.max(1, Math.floor(list.clientHeight / h)) : capacity;
+}
+function refit() {
+  const next = measureCapacity();
+  if (next !== capacity) { capacity = next; if (lastData) renderBoard(lastData); }
+}
+
 function renderBoard(data) {
   const start = data.window && typeof data.window.starting_cash === "number" ? data.window.starting_cash : 10000;
   const all = Array.isArray(data.rows) ? data.rows : [];
@@ -281,19 +312,23 @@ function renderBoard(data) {
     lastStatus.set(id, r.status);
   }
   // Rows arrive ranked (scored, running, queued, failed); failed runs are not on this board.
-  const rows = all.filter(r => r.status !== "failed").slice(0, MAX_ROWS);
-  if (!rows.length) {
+  const { rows, more } = selectRows(all, capacity);
+  if (!rows.length && !more) {
     list.innerHTML = '<li class="empty">Scan to submit the first strategy</li>';
     return;
   }
   if (list.querySelector(".empty")) list.innerHTML = "";
-  reconcile(list, rows.map(r => ({ ...r, id: String(r.id) })), () => {
+  const items = rows.map(r => ({ ...r, id: String(r.id) }));
+  if (more) items.push({ id: "__more__", more });
+  reconcile(list, items, (it) => {
     const li = document.createElement("li");
+    if (it.more) return li;
     li.innerHTML = '<span class="rk"></span><span class="sc num"></span><span class="nm"></span><span class="rt num"></span>';
     li.addEventListener("mouseenter", () => setFocus(li.dataset.k));
     li.addEventListener("mouseleave", () => setFocus(null));
     return li;
   }, (li, r) => {
+    if (r.more) { li.className = "ar-row more"; li.textContent = r.more; return; }
     const scored = r.status === "scored";
     const fresh = (newUntil.get(r.id) || 0) > now;
     const live = r.status === "running" && r.provisional === true;
@@ -504,6 +539,11 @@ async function poll() {
   }
 }
 poll();
+let refitTimer;
+addEventListener("resize", () => { clearTimeout(refitTimer); refitTimer = setTimeout(refit, 100); });
+if (typeof ResizeObserver === "function") new ResizeObserver(refit).observe(list);
+if (document.fonts) { document.fonts.ready.then(refit); document.fonts.addEventListener("loadingdone", refit); }
+refit();
 })();
 </script>
 </body>
