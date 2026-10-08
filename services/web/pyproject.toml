@@ -8,6 +8,8 @@ dependencies = [
     "bazaar-replay",
     "bazaar-runner",
     "fastapi>=0.115",
+    "logfire>=5.1.1",
+    "opentelemetry-api",
     "uvicorn>=0.30",
 ]
 
