@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import logfire
 import pytest
 from bazaar_protocol import telemetry
@@ -327,3 +328,40 @@ def test_a_clean_block_leaves_nothing_behind(secrets):
     with redacted_exceptions():
         value = 1
     assert value == 1
+
+
+# Market clients: traced per client, transport errors redacted inside the HTTP span.
+
+
+def failing_client(message: str) -> httpx.AsyncClient:
+    def fail(request):
+        raise httpx.ConnectError(message, request=request)
+
+    return telemetry.instrument_market_client(
+        httpx.AsyncClient(base_url="http://market", transport=httpx.MockTransport(fail))
+    )
+
+
+async def test_a_transport_error_holding_a_secret_keeps_its_type_redacted(secrets, capfire):
+    async with failing_client(f"refused {GATEWAY_KEY}") as client:
+        with pytest.raises(httpx.ConnectError) as caught:
+            await client.get("/health")
+    assert str(caught.value) == f"refused {REDACTED}"
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+async def test_a_transport_error_without_secrets_is_untouched(secrets, capfire):
+    async with failing_client("connection refused") as client:
+        with pytest.raises(httpx.ConnectError, match="^connection refused$"):
+            await client.get("/health")
+
+
+async def test_instrumenting_clients_never_rewraps_a_shared_transport(capfire):
+    shared = httpx.MockTransport(lambda request: httpx.Response(204))
+    clients = [httpx.AsyncClient(transport=shared) for _ in range(3)]
+    for client in clients:
+        telemetry.instrument_market_client(client)
+    # Each client wraps the shared transport in its own redacting transport; the shared one
+    # itself is never patched.
+    assert "handle_async_request" not in vars(shared)
+    assert len({id(client._transport) for client in clients}) == 3
