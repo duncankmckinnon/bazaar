@@ -5,13 +5,3 @@
 **/.ruff_cache
 .env
 docs
-
-# Conference image: never ship secrets, local data or rig notes.
-**/.env*
-data/
-.herdr
-PLAN.md
-LEDGER-DESIGN.md
-review-*.md
-**/*.sqlite3*
-!deploy/seed/market.sqlite3
