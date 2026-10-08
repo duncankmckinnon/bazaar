@@ -10,6 +10,7 @@ from functools import wraps
 
 from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic_ai.models import Model, infer_model
+from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_evals.evaluators import (
     EvaluationReason,
     Evaluator,
@@ -23,6 +24,10 @@ JUDGE_MODEL_ENV = "BAZAAR_JUDGE_MODEL"
 DEFAULT_JUDGE_MODEL = "gateway/anthropic:claude-sonnet-5-5"
 JUDGE_TIMEOUT_SECONDS = 30.0
 EVIDENCE_ATTRIBUTE = "strategy_adherence_evidence"
+# As the trader's runs (RuntimeConfig.instrument): the judge's model requests are traced with
+# content and token usage, so Logfire shows the judge's prompt and its cost. Process scrubbing
+# applies to them like any other span.
+JUDGE_INSTRUMENTATION = InstrumentationSettings(include_content=True, include_binary_content=False)
 _pending: ContextVar[set[asyncio.Event] | None] = ContextVar("strategy_evaluations", default=None)
 
 STRATEGY_RUBRIC = """The trading decision adheres to the supplied strategy.
@@ -72,7 +77,9 @@ class StrategyAdherence(Evaluator):
         async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
             return await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
-                model=judge_model(),
+                # pydantic-evals' shared judge agents are not instrumented; an InstrumentedModel
+                # passed to the run supplies the instrumentation for this judge call.
+                model=InstrumentedModel(judge_model(), JUDGE_INSTRUMENTATION),
                 include_input=True,
                 model_settings={"temperature": 0, "max_tokens": 2000},
                 score={"evaluation_name": "strategy_adherence", "include_reason": True},
