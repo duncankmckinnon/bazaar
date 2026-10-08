@@ -11,8 +11,42 @@ jobs:
       - run: uv run pytest
   docker:
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: bazaar-docker-test
+      BAZAAR_RUNNER_TOKEN: ci-only-runner-token
+      BAZAAR_SNAPSHOT_VERSION: docker-smoke
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d --build --wait market
-      - run: docker compose up -d --build seller buyer
-      - run: sleep 8 && docker compose logs seller buyer | grep -c "market reachable"
+      - run: docker compose build market api web data-init data-download
+      - name: Missing snapshots must block initialization
+        run: |
+          if docker compose run --rm data-init; then
+            echo "An empty market must not pass initialization"
+            exit 1
+          fi
+      - name: Seed isolated synthetic source snapshots (no provider calls)
+        run: docker compose run --rm -T --entrypoint .venv/bin/python data-download < scripts/tests/docker_snapshots.py
+      - run: docker compose up -d --wait --wait-timeout 120
+      - name: All application services are reachable
+        run: |
+          curl --fail http://localhost:8000/health
+          curl --fail http://localhost:8001/health
+          curl --fail http://localhost:8080/submit
+          curl --fail http://localhost:8080/api/board
+          docker compose exec -T web .venv/bin/python -c "import bazaar_runner.submission, bazaar_agent.strategy_evaluation, bazaar_evaluation"
+          curl --fail http://localhost:8001/strategies \
+            -H 'Content-Type: application/json' \
+            -H 'Idempotency-Key: 00000000-0000-0000-0000-000000000065' \
+            -d '{"name":"docker-persistence-check","definition":{"instructions":"Hold cash throughout the experiment."}}'
+      - name: Recreate containers using existing volumes and re-import snapshots
+        run: |
+          docker compose down
+          docker compose up -d --wait --wait-timeout 120
+          curl --fail http://localhost:8080/api/board
+          curl --fail http://localhost:8001/agents | python -c 'import json, sys; assert any(a["name"] == "docker-persistence-check" for a in json.load(sys.stdin)["items"])'
+      - name: Run and judge a strategy inside Docker using local model fixtures
+        run: docker compose exec -T -e BAZAAR_DOCKER_SMOKE=1 web .venv/bin/python < scripts/tests/docker_run.py
+      - if: always()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down --volumes
