@@ -43,6 +43,8 @@ def test_evals_sample_round_trips():
     # The runner's own additions; the sample predates them.
     assert dumped.pop("failure_code") is None
     assert dumped.pop("decision_errors") == []
+    assert dumped.pop("submission_id") is None
+    assert dumped.pop("agent_usage") is None
     # Pydantic writes UTC as "Z"; the sample spells some times "+00:00". Same instants.
     assert dumped == json.loads(SAMPLE.read_text().replace("+00:00", "Z"))
     assert RunRecord.model_validate(dumped) == record

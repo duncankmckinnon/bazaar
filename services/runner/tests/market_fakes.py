@@ -84,6 +84,11 @@ class InMemoryMarket:
         self.cycles: tuple[FiscalCycle, ...] = ()
         self._ids = 0
 
+    @property
+    def data_version(self) -> str:
+        """The experiment's own data version (set by its first cutoff), as the market echoes it."""
+        return self.versions[0] if self.versions else DATA_VERSION
+
     def _id(self) -> UUID:
         self._ids += 1
         return UUID(int=self._ids)
@@ -244,7 +249,7 @@ class InMemoryMarket:
             portfolio_value=account.cash + sum(h.quantity * h.unit_mark for h in holdings),
             valuation_rule_version="value-v1",
             source="fixture",
-            data_version=DATA_VERSION,
+            data_version=self.data_version,
         )
 
     async def close_account(self, experiment_id, account_id):
@@ -299,20 +304,20 @@ def empty_page(eid, account, fake: InMemoryMarket, params) -> dict:
         "start_at": params["start_at"],
         "end_at": params["end_at"],
         "source": "fixture-filings",
-        "data_version": DATA_VERSION,
+        "data_version": fake.data_version,
         "coverage": "complete",
         "items": [],
         "next_cursor": None,
     }
 
 
-def news_page(symbol: str, available: int, params) -> list[dict]:
+def news_page(symbol: str, available: int, params, data_version: str = DATA_VERSION) -> list[dict]:
     limit = int(params.get("limit", 100))
     stamp = "2026-01-30T15:00:00Z"  # public before every demo decision
     return [
         {
             "source": "fixture-news",
-            "data_version": DATA_VERSION,
+            "data_version": data_version,
             "record_id": f"{symbol}-{i:03d}",
             "revision": "1",
             "published_at": stamp,
@@ -396,7 +401,7 @@ def delegating_transport(
                         "start_at": request.url.params["start_at"],
                         "end_at": request.url.params["end_at"],
                         "source": "fixture",
-                        "data_version": DATA_VERSION,
+                        "data_version": fake.data_version,
                         "coverage": "complete",
                         "items": [json.loads(r.model_dump_json()) for r in found],
                         "next_cursor": None,
@@ -427,10 +432,12 @@ def delegating_transport(
                         "start_at": request.url.params["start_at"],
                         "end_at": request.url.params["end_at"],
                         "source": "fixture-news",
-                        "data_version": DATA_VERSION,
+                        "data_version": fake.data_version,
                         "coverage": "complete",
                         # Like the market, at most `limit` articles per page.
-                        "items": news_page(symbol, news_articles, request.url.params),
+                        "items": news_page(
+                            symbol, news_articles, request.url.params, fake.data_version
+                        ),
                         "next_cursor": None,
                     }
                     fake.calls.append(("news", symbol, request.url.params.get("limit")))

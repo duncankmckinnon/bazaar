@@ -642,3 +642,20 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
         assert feedback[0].error.code == "unsupported" and feedback[0].data is None
         assert feedback[0].error.message == "Trusted fiscal cycle unavailable"
         assert ("filings", "AAPL") not in fake.calls
+
+
+async def test_agent_usage_is_recorded_per_error_and_in_total():
+    from bazaar_runner.run import AgentUsage
+
+    async def spends(ctx, account, client, client_order_id, cycles=()):
+        usage = AgentUsage(model_requests=4, tool_calls=3, total_tokens=1000)
+        error = "conflict: Decision budget exhausted; do not advance or retrade"
+        return AgentDecision(None, None, error if ctx.event_sequence == 2 else None, usage)
+
+    fake = InMemoryMarket()
+    result = await run_strategy(SPEC, fake, agent_step(fake, spends))
+    (error,) = result.decision_errors
+    assert error.usage == AgentUsage(model_requests=4, tool_calls=3, total_tokens=1000)
+    assert result.agent_usage == AgentUsage(
+        model_requests=4 * len(SESSIONS), tool_calls=3 * len(SESSIONS), total_tokens=10_000
+    )

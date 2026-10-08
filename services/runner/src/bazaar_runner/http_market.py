@@ -138,14 +138,14 @@ class HttpMarketPort:
         path: str,
         *,
         control: bool = False,
+        root: str | None = None,
         **kwargs,
     ) -> bytes:
         headers = self._headers | {RUNNER_TOKEN_HEADER: self._token} if control else self._headers
+        url = (self._root if root is None else root) + path
         # One attempt only: never resend a POST after an ambiguous failure (market-agent API docs).
         try:
-            response = await self._client.request(
-                method, self._root + path, headers=headers, **kwargs
-            )
+            response = await self._client.request(method, url, headers=headers, **kwargs)
         except httpx.TransportError as exc:
             detail = ErrorDetail(
                 code=ErrorCode.INTERNAL_ERROR, message=f"{type(exc).__name__}: {exc}"
@@ -154,6 +154,12 @@ class HttpMarketPort:
         if response.is_error:
             raise self._redact(_market_error(response, control=control))
         return response.content
+
+    async def grant(self, approval_id: UUID) -> None:
+        """Bind this run's approval to its experiment (market C1). 204, idempotent for the same
+        pair; an approval already bound to another experiment is a 409 MarketError."""
+        body = {"approval_id": str(approval_id), "experiment_id": str(self._experiment_id)}
+        await self._request("POST", "/control/grants", control=True, root="", json=body)
 
     async def set_cutoff(
         self,

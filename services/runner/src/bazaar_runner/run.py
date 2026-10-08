@@ -75,6 +75,21 @@ class OrderRecord(WireModel):
     result: OrderResult
 
 
+class AgentUsage(WireModel):
+    """What an agent decision used, as run_decision reports it (DecisionResult.usage)."""
+
+    model_requests: Index = 0
+    tool_calls: Index = 0
+    total_tokens: Index = 0
+
+    def __add__(self, other: "AgentUsage") -> "AgentUsage":
+        return AgentUsage(
+            model_requests=self.model_requests + other.model_requests,
+            tool_calls=self.tool_calls + other.tool_calls,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+
 class DecisionError(WireModel):
     """A decision that went wrong but was reconciled with the market, so the run went on."""
 
@@ -84,6 +99,8 @@ class DecisionError(WireModel):
     error: Annotated[str, Field(min_length=1)]
     # What the market's order list showed for the reserved id.
     reconciled: Literal["found", "absent"]
+    # The decision's usage when it ended, to tell which budget limit a failure hit.
+    usage: AgentUsage | None = None
 
 
 class PeriodOverrun(Exception):
@@ -109,6 +126,8 @@ class RunResult(WireModel):
     failure: str | None = None
     failure_code: FailureCode | None = None
     decision_errors: tuple[DecisionError, ...] = ()
+    # Totals over every agent decision; None for runs whose policy is not an agent.
+    agent_usage: AgentUsage | None = None
 
 
 def failure_code(exc: Exception) -> FailureCode:
@@ -165,6 +184,7 @@ def _at(kind: str, event_sequence: int, simulated_at: datetime) -> str:
 @dataclass(frozen=True)
 class StepOutcome:
     error: DecisionError | None = None
+    usage: AgentUsage | None = None
     # Added to the runner.decision span; never a credential.
     attributes: Mapping[str, str | bool | int] = field(default_factory=dict)
 
@@ -243,6 +263,7 @@ async def run_strategy(
     stepper = decide if isinstance(decide, DecisionStep) else OrdersStep(decide)
     schedule = build_schedule(spec.script)
     decision_errors: list[DecisionError] = []
+    agent_usage: AgentUsage | None = None
     account: AccountSnapshot | None = None
     orders: list[OrderRecord] = []
     marks: list[MarkRecord] = []
@@ -294,6 +315,8 @@ async def run_strategy(
                         account = orders[-1].result.account
                 for name, value in outcome.attributes.items():
                     span.set_attribute(name, value)
+                if outcome.usage is not None:
+                    agent_usage = (agent_usage or AgentUsage()) + outcome.usage
                 if outcome.error is not None:
                     decision_errors.append(outcome.error)
                     span.set_attribute("decision_error", outcome.error.error)
@@ -320,4 +343,5 @@ async def run_strategy(
         failure=failure,
         failure_code=code,
         decision_errors=tuple(decision_errors),
+        agent_usage=agent_usage,
     )
