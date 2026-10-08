@@ -1,5 +1,8 @@
 import dataclasses
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -145,8 +148,7 @@ def test_board_uses_the_arcade_design_on_the_podium_background():
     assert len(stylesheets) == 1
     assert stylesheets[0].startswith("https://fonts.googleapis.com/css2?")
     assert "family=Press+Start+2P" in stylesheets[0]
-    assert "const MAX_ROWS = 10;" in BOARD
-    assert 'all.filter(r => r.status !== "failed").slice(0, MAX_ROWS)' in BOARD
+    assert "const PHONE_ROWS = 10;" in BOARD and "selectRows(all, capacity)" in BOARD
 
 
 def test_board_respects_reduced_motion():
@@ -172,7 +174,7 @@ def test_board_defines_the_helpers_its_functions_call():
         assert f"const {helper} = " in script, helper
     for function in (
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
-        "renderBoard", "renderWire", "renderTape", "showTip", "applyFocus", "loadTickers",
+        "renderBoard", "selectRows", "measureCapacity", "renderWire", "renderTape", "showTip", "applyFocus", "loadTickers",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -186,7 +188,8 @@ def test_chart_and_tape_build_data_with_dom_apis_not_html():
     assert "b.textContent = best.s.name;" in script  # tooltip title
     assert "li.appendChild(document.createTextNode(s.name));" in script  # legend
     assert "b.textContent = String(q.symbol);" in script  # tape
-    # The only innerHTML writes are static skeletons, the logo, the QR and the empty state.
+    # The only innerHTML writes are static skeletons (row and probe row), the logo, the QR and
+    # the empty state.
     writes = re.findall(r"innerHTML = ([^;]+);", script)
     assert sorted(writes) == sorted(
         [
@@ -195,6 +198,7 @@ def test_chart_and_tape_build_data_with_dom_apis_not_html():
             "'<li class=\"empty\">Scan to submit the first strategy</li>'",
             '""',
             '\'<span class="rk"></span><span class="sc num"></span><span class="nm"></span><span class="rt num"></span>\'',
+            '\'<span class="rk">1ST</span><span class="sc num">$10,000</span><span class="nm">PROBE</span><span class="rt num">+0.00%</span>\'',
         ]
     )
 
@@ -204,3 +208,44 @@ def test_chart_draws_the_start_reference_and_replay_label():
     assert "stroke-dasharray: 6 6" in BOARD  # dashed $10,000 reference
     assert "REPLAY FEB 2-13 2026" in BOARD
     assert 'fetch("/api/tickers"' in BOARD
+
+
+def select_rows(rows, capacity):
+    """Run board.html's selectRows under node; there is no JS toolchain, only the function."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    source = re.search(r"^function selectRows\(.*?^}$", BOARD, re.DOTALL | re.MULTILINE).group(0)
+    script = f"{source}\nconsole.log(JSON.stringify(selectRows({json.dumps(rows)}, {capacity})));"
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
+    result = json.loads(out)
+    return [r["id"] for r in result["rows"]], result["more"]
+
+
+def rows_of(*spec):
+    return [{"id": f"{status}{i}", "status": status} for status, n in spec for i in range(n)]
+
+
+def test_capacity_pins_running_and_queued_and_fills_with_scored_by_rank():
+    rows = rows_of(("scored", 40), ("running", 2), ("queued", 2), ("failed", 3))
+
+    ids, more = select_rows(rows, 19)
+
+    assert ids == [f"scored{i}" for i in range(15)] + ["running0", "running1", "queued0", "queued1"]
+    assert more is None
+    assert select_rows(rows, 4) == (["running0", "running1", "queued0", "queued1"], None)
+    assert select_rows(rows_of(("scored", 5), ("failed", 2)), 19) == (
+        [f"scored{i}" for i in range(5)],
+        None,
+    )
+
+
+def test_pinned_rows_beyond_capacity_are_counted_not_dropped():
+    rows = rows_of(("scored", 3), ("running", 2), ("queued", 6))
+
+    assert select_rows(rows, 5) == (
+        ["running0", "running1", "queued0", "queued1"],
+        "+4 MORE QUEUED",
+    )
+    assert select_rows(rows_of(("running", 4)), 2) == (["running0"], "+3 MORE")
+    assert select_rows(rows, 0) == ([], "+8 MORE")  # capacity is at least 1
