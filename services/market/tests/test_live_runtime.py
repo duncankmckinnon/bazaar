@@ -218,3 +218,32 @@ def test_shutdown_commits_only_after_the_market_has_exited(ignore_term):
 
     assert exited_at_commit == [True]
     assert stopping.is_set()
+
+
+def test_the_watchdog_commits_the_volume_before_it_exits():
+    events: list[str] = []
+    committer = rt.VolumeCommitter(lambda: events.append("commit"), interval=3600)
+
+    rt.watch_market(
+        short_lived(),
+        threading.Event(),
+        exit=lambda code: events.append(f"exit {code}"),
+        before_exit=lambda: committer.commit_now("market exited"),
+    ).join(timeout=10)
+
+    assert events == ["commit", "exit 1"]
+
+
+def test_the_watchdog_still_exits_when_the_last_commit_fails(caplog):
+    exits: list[int] = []
+
+    def broken() -> None:
+        raise RuntimeError("volume unavailable")
+
+    with caplog.at_level("ERROR", logger="bazaar.live"):
+        rt.watch_market(
+            short_lived(), threading.Event(), exit=exits.append, before_exit=broken
+        ).join(timeout=10)
+
+    assert exits == [1]
+    assert "the last commit before exiting failed" in caplog.text

@@ -149,11 +149,13 @@ def watch_market(
     process: subprocess.Popen,
     stopping: threading.Event,
     exit: Callable[[int], object] = os._exit,
+    before_exit: Callable[[], object] | None = None,
 ) -> threading.Thread:
     """Exit the whole container if the market dies on its own, so the platform restarts it.
 
     Without this, every run would fail against a dead market while the web app looked healthy.
-    An exit during `shutdown` is expected and ignored.
+    `before_exit`, usually a last volume commit, runs first; a failure in it is logged and the
+    container still exits. An exit during `shutdown` is expected and ignored.
     """
 
     def watch() -> None:
@@ -161,6 +163,11 @@ def watch_market(
         if stopping.is_set():
             return
         logger.error("the market exited with status %s; stopping the container", status)
+        if before_exit is not None:
+            try:
+                before_exit()
+            except Exception:
+                logger.exception("the last commit before exiting failed")
         exit(1)
 
     thread = threading.Thread(target=watch, name="market-watchdog", daemon=True)

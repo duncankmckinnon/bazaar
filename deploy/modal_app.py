@@ -105,7 +105,11 @@ class Live:
         self.market = live_runtime.start_market(db)
         live_runtime.wait_healthy(f"{MARKET_URL}/health", timeout=30, process=self.market)
         self.stopping = threading.Event()
-        live_runtime.watch_market(self.market, self.stopping)
+        live_runtime.watch_market(
+            self.market,
+            self.stopping,
+            before_exit=lambda: self.committer.commit_now("market exited"),
+        )
 
     @modal.exit()
     def stop(self) -> None:
