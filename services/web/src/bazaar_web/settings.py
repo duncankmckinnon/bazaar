@@ -25,6 +25,8 @@ class Settings:
     admin_token: str | None = None
     fonts_dir: Path | None = None
     logfire_dashboard_url: str | None = None  # template with "{strategy}"
+    market_db: Path | None = None  # read-only, for the ticker bar
+    ticker_data_version: str = "demo-bundle-v1"
     max_concurrent: int = 3
 
     def __post_init__(self) -> None:
@@ -62,4 +64,6 @@ class Settings:
             admin_token=env.get("BAZAAR_ADMIN_TOKEN") or None,
             fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
             logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
+            market_db=Path(env["BAZAAR_MARKET_DB"]) if env.get("BAZAAR_MARKET_DB") else None,
+            ticker_data_version=env.get("BAZAAR_TICKER_DATA_VERSION") or "demo-bundle-v1",
         )
