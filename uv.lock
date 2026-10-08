@@ -193,6 +193,8 @@ dependencies = [
     { name = "bazaar-replay" },
     { name = "bazaar-runner" },
     { name = "fastapi" },
+    { name = "logfire" },
+    { name = "opentelemetry-api" },
     { name = "uvicorn" },
 ]
 
@@ -202,6 +204,8 @@ requires-dist = [
     { name = "bazaar-replay", editable = "packages/replay" },
     { name = "bazaar-runner", editable = "services/runner" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "logfire", specifier = ">=5.1.1" },
+    { name = "opentelemetry-api" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 

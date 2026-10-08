@@ -9,11 +9,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
+import logfire
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.settings import Settings
 from bazaar_web.store import CapReached, NameTaken, Now, Store
@@ -77,8 +79,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        telemetry.configure()  # before the worker starts; never at import
         settings.runs_dir.mkdir(parents=True, exist_ok=True)
-        store = Store(settings.web_db, now) if now else Store(settings.web_db)
+        with logfire.suppress_instrumentation():  # schema and migration queries at boot
+            store = Store(settings.web_db, now) if now else Store(settings.web_db)
         board = BoardSource(settings.runs_dir)
         worker = Worker(
             store, settings, board, run_submission, on_scored=lambda: app.state.on_scored
@@ -123,6 +127,8 @@ def create_app(
     def submit(body: SubmissionIn, request: Request) -> dict[str, Any]:
         store: Store = request.app.state.store
         ip_hash = hashlib.sha256(client_ip(request).encode()).hexdigest()
+        # The run joins this request's trace: the worker re-attaches this context.
+        carrier = logfire.propagate.get_context()
         try:
             submission_id = store.create(
                 name=body.name,
@@ -132,6 +138,7 @@ def create_app(
                 max_queue=settings.max_queue,
                 max_per_day=settings.max_per_day,
                 max_per_ip_hour=settings.max_per_ip_hour,
+                trace_context=json.dumps(carrier) if carrier else None,
             )
         except NameTaken:
             raise HTTPException(422, "that name is taken") from None
@@ -143,29 +150,35 @@ def create_app(
 
     @app.get("/api/submissions/{submission_id}")
     def submission_status(submission_id: str, request: Request) -> dict[str, Any]:
-        store: Store = request.app.state.store
-        submission = store.get(submission_id)
-        if submission is None or submission["hidden"]:
-            raise HTTPException(404, "no such submission")
-        row = next((r for r in board_payload(request)["rows"] if r["id"] == submission_id), None)
-        scored = row is not None and row["status"] == "scored"
-        provisional = row is not None and row["status"] == "running" and row["provisional"]
-        return {
-            "id": submission_id,
-            "name": submission["name"],
-            "status": submission["status"],
-            "day": submission["day"],
-            "error": submission["error"],
-            "position": store.position(submission_id),
-            "return_pct": row["return_pct"] if scored or provisional else None,
-            "rank": row["rank"] if scored else None,
-            "provisional": provisional,
-            "logfire_url": settings.logfire_url(submission["name"]),
-        }
+        # Polled every few seconds: no request span (excluded URL) and no sqlite spans either,
+        # which would otherwise become orphan root traces.
+        with logfire.suppress_instrumentation():
+            store: Store = request.app.state.store
+            submission = store.get(submission_id)
+            if submission is None or submission["hidden"]:
+                raise HTTPException(404, "no such submission")
+            row = next(
+                (r for r in board_payload(request)["rows"] if r["id"] == submission_id), None
+            )
+            scored = row is not None and row["status"] == "scored"
+            provisional = row is not None and row["status"] == "running" and row["provisional"]
+            return {
+                "id": submission_id,
+                "name": submission["name"],
+                "status": submission["status"],
+                "day": submission["day"],
+                "error": submission["error"],
+                "position": store.position(submission_id),
+                "return_pct": row["return_pct"] if scored or provisional else None,
+                "rank": row["rank"] if scored else None,
+                "provisional": provisional,
+                "logfire_url": settings.logfire_url(submission["name"]),
+            }
 
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:
-        return board_payload(request)
+        with logfire.suppress_instrumentation():  # polled; see submission_status
+            return board_payload(request)
 
     def require_admin(token: str | None) -> None:
         if settings.admin_token is None:
@@ -194,6 +207,13 @@ def create_app(
         }
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    logfire.instrument_fastapi(
+        app,
+        capture_headers=False,
+        # The default mapper records endpoint arguments, including the admin token header.
+        request_attributes_mapper=lambda request, attributes: None,
+        excluded_urls=list(telemetry.EXCLUDED_URLS),
+    )
     return app
 
 
