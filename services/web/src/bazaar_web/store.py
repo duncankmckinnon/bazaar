@@ -180,18 +180,20 @@ class Store:
                 ).rowcount
             )
 
-    def recover(self) -> list[str]:
-        """Fail runs a restart interrupted; return queued ids in FIFO order to re-enqueue."""
-        with self._tx() as conn:
-            conn.execute(
-                "UPDATE submissions SET status = 'failed', error = 'interrupted by a restart', "
-                "finished_at = ? WHERE status = 'running'",
-                (self._stamp(),),
-            )
+    def ids_with_status(self, status: str) -> list[str]:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT id FROM submissions WHERE status = 'queued' ORDER BY rowid"
+                "SELECT id FROM submissions WHERE status = ? ORDER BY rowid", (status,)
             ).fetchall()
         return [row["id"] for row in rows]
+
+    def requeue(self, submission_id: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE submissions SET status = 'queued', day = NULL, started_at = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (submission_id,),
+            )
 
     def in_flight(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as conn:

@@ -84,7 +84,7 @@ def create_app(
             store, settings, board, run_submission, on_scored=lambda: app.state.on_scored
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
-        worker.start()
+        await worker.start()
         try:
             yield
         finally:

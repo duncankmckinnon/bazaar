@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from bazaar_replay.leaderboard import Run, load_run
 
@@ -34,6 +35,20 @@ class RunSubmission(Protocol):
     ) -> Path: ...
 
 
+def expected_run_dir(runs_dir: Path, submission_id: str) -> Path:
+    """Where run_submission puts this submission's finished run.
+
+    Mirrors C2 on conf/runner-submission: bazaar_runner/submission.py:53 (experiment_id) and
+    bazaar_runner/demo.py:100 (run_id = uuid5(experiment_id, "run")); the dir is runs_dir/run_id.
+    """
+    experiment_id = uuid5(NAMESPACE_URL, f"bazaar:sub-{submission_id}")
+    return runs_dir / str(uuid5(experiment_id, "run"))
+
+
+def finished(run_dir: Path) -> bool:
+    return (run_dir / "record.json").is_file() and (run_dir / "evaluation.json").is_file()
+
+
 def import_run_submission() -> RunSubmission:
     from bazaar_runner.submission import run_submission  # C2; not on main yet
 
@@ -57,13 +72,32 @@ class Worker:
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.tasks: list[asyncio.Task[None]] = []
 
-    def start(self) -> None:
+    async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
-        for submission_id in self.store.recover():
-            self.queue.put_nowait(submission_id)
+        await self._recover()
         self.tasks = [
             asyncio.create_task(self._consume()) for _ in range(self.settings.max_concurrent)
         ]
+
+    async def _recover(self) -> None:
+        """Pick up after a restart without paying for a run twice.
+
+        A run that was "running" may have finished on disk before the restart: score it from its
+        run dir (a rerun would fail after the whole model run). Otherwise queue it again, ahead of
+        the waiting submissions, since it had already started. Staging dirs (.tmp-*) never match
+        the expected run dir.
+        """
+        restarted = []
+        for submission_id in self.store.ids_with_status("running"):
+            run_dir = expected_run_dir(self.settings.runs_dir, submission_id)
+            if finished(run_dir):
+                await self._scored(submission_id, run_dir)
+            else:
+                self.store.requeue(submission_id)
+                restarted.append(submission_id)
+        waiting = [i for i in self.store.ids_with_status("queued") if i not in restarted]
+        for submission_id in restarted + waiting:
+            self.queue.put_nowait(submission_id)
 
     async def stop(self) -> None:
         for task in self.tasks:
@@ -116,9 +150,12 @@ class Worker:
             self._fail(submission, FAILED, exc)
             return
 
-        run_dir = Path(run_dir)
+        await self._scored(submission_id, Path(run_dir))
+
+    async def _scored(self, submission_id: str, run_dir: Path) -> None:
         self.store.finish(submission_id, run_dir=run_dir.name, error=None)
         self.board.invalidate()
+        name = self.store.get(submission_id)["name"]
         self.store.add_event(scored_text(name, run_dir), submission_id)
         await self._notify(submission_id, run_dir)
 

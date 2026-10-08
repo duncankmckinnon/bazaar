@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from bazaar_web.app import create_app
 from bazaar_web.store import Store
+from bazaar_web.worker import expected_run_dir
 from fastapi.testclient import TestClient
 
 VALID = {"name": "alice-bot", "handle": "@alice", "instructions": "Buy KO on dips, hold MSFT."}
@@ -236,21 +237,71 @@ def test_at_most_three_run_at_once(settings, helpers):
     assert all(call["runner_token"] == "super-secret-token" for call in runner.calls)
 
 
-def test_restart_fails_interrupted_runs_and_requeues_queued(settings, helpers):
+def stored(settings, *names, running=()):
+    """Create submissions directly in the store, as a previous process would have."""
     store = Store(settings.web_db)
     common = {"handle": None, "ip_hash": "x", "max_queue": 30, "max_per_day": 150}
-    interrupted = store.create(
-        name="was-running", instructions="x" * 20, max_per_ip_hour=5, **common
+    ids = {
+        name: store.create(name=name, instructions="x" * 20, max_per_ip_hour=50, **common)
+        for name in names
+    }
+    for name in running:
+        store.mark_running(ids[name])
+    return ids
+
+
+def test_expected_run_dir_matches_the_runner_formula(tmp_path):
+    # uuid5(uuid5(NAMESPACE_URL, "bazaar:sub-<id>"), "run"), computed once by hand.
+    run_dir = expected_run_dir(tmp_path, "0123456789abcdef0123456789abcdef")
+
+    assert run_dir == tmp_path / "023a6981-d929-5ea8-9056-171cd1800d9e"
+
+
+def test_restart_scores_a_run_that_finished_on_disk(seeded, helpers):
+    ids = stored(seeded, "was-running", running=["was-running"])
+    run_dir = expected_run_dir(seeded.runs_dir, ids["was-running"])
+    helpers.write_run(
+        seeded.runs_dir, run_dir.name, policy_ref="submission-was-running", period_return="0.0450"
     )
-    waiting = store.create(name="was-queued", instructions="x" * 20, max_per_ip_hour=5, **common)
-    store.mark_running(interrupted)
+    runner, calls = helpers.FakeRunner(), []
+    app = create_app(seeded, runner, on_scored=lambda sid, path: calls.append((sid, path)))
+    with TestClient(app) as client:
+        done = status(client, ids["was-running"])
+        row = {r["id"]: r for r in rows(client)}[ids["was-running"]]
+        events = client.get("/api/board").json()["events"]
 
-    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        helpers.wait_for(lambda: status(client, waiting)["status"] == "scored")
-        gone = status(client, interrupted)
+    assert (done["status"], done["rank"], done["return_pct"]) == ("scored", 1, 4.5)
+    assert (row["name"], row["status"]) == ("was-running", "scored")
+    assert runner.calls == []
+    assert calls == [(ids["was-running"], run_dir)]
+    assert events[0]["text"] == "was-running finished at +4.50%"
 
-    assert gone["status"] == "failed"
-    assert gone["error"] == "interrupted by a restart"
+
+def test_restart_requeues_an_unfinished_run_ahead_of_waiting_ones(settings, helpers):
+    ids = stored(settings, "was-queued", "was-running", running=["was-running"])
+    runner = helpers.FakeRunner()
+    runner.gate.clear()
+    with TestClient(create_app(dataclasses.replace(settings, max_concurrent=1), runner)) as client:
+        helpers.wait_for(lambda: runner.calls)
+        first = runner.calls[0]["name"]
+        waiting = status(client, ids["was-queued"])
+        runner.gate.set()
+        helpers.wait_for(lambda: all(status(client, i)["status"] == "scored" for i in ids.values()))
+
+    assert first == "was-running"  # it had already started, so it goes first
+    assert waiting["status"] == "queued"
+    assert [c["name"] for c in runner.calls] == ["was-running", "was-queued"]
+
+
+def test_restart_ignores_staging_dirs(settings, helpers):
+    ids = stored(settings, "was-running", running=["was-running"])
+    staging = settings.runs_dir / ".tmp-0123abcd"
+    helpers.write_run(settings.runs_dir, staging.name, policy_ref="x", period_return="0.01")
+    runner = helpers.FakeRunner()
+    with TestClient(create_app(settings, runner)) as client:
+        helpers.wait_for(lambda: status(client, ids["was-running"])["status"] == "scored")
+
+    assert [c["name"] for c in runner.calls] == ["was-running"]
 
 
 def test_board_order_and_ranks(seeded, helpers):
