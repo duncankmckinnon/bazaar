@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     finished_at TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
     latest_value TEXT,
-    trace_context TEXT
+    trace_context TEXT,
+    rerun_of TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -43,6 +44,14 @@ Now = Callable[[], datetime]
 
 
 class NameTaken(Exception):
+    pass
+
+
+class NotFound(Exception):
+    pass
+
+
+class StillInFlight(Exception):
     pass
 
 
@@ -91,7 +100,7 @@ class Store:
         """
         with self._tx() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(submissions)")}
-            for column in ("latest_value", "trace_context"):
+            for column in ("latest_value", "trace_context", "rerun_of"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
 
@@ -132,18 +141,21 @@ class Store:
         with self._tx() as conn:
             if conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
                 raise NameTaken
+            # Admin reruns occupy the queue, so they count here, but not in the daily or per-IP caps.
             (in_flight,) = conn.execute(
                 "SELECT COUNT(*) FROM submissions WHERE status IN ('queued', 'running')"
             ).fetchone()
             if in_flight >= max_queue:
                 raise CapReached("The queue is full right now. Please try again in a few minutes.")
             (today,) = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE created_at >= ?", (midnight.isoformat(),)
+                "SELECT COUNT(*) FROM submissions WHERE created_at >= ? AND rerun_of IS NULL",
+                (midnight.isoformat(),),
             ).fetchone()
             if today >= max_per_day:
                 raise CapReached("Today's submission limit has been reached. Thanks for playing!")
             (recent,) = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE ip_hash = ? AND created_at >= ?",
+                "SELECT COUNT(*) FROM submissions "
+                "WHERE ip_hash = ? AND created_at >= ? AND rerun_of IS NULL",
                 (ip_hash, (now - timedelta(hours=1)).isoformat()),
             ).fetchone()
             if recent >= max_per_ip_hour:
@@ -166,6 +178,43 @@ class Store:
             )
             self._event(conn, f"{name} joined the queue", submission_id)
         return submission_id
+
+    def rerun(self, old_id: str, *, trace_context: str | None = None) -> str:
+        """Queue a finished submission again under the same name; return the new id.
+
+        In one transaction: the old row is renamed "<name>~<old id prefix>" and hidden, which
+        frees the name and keeps its run dir off the board, and a new queued row copies its
+        name, handle, instructions and ip hash. The new id gives the run new experiment and run
+        ids. An admin action: no caps apply, and reruns never count toward the daily or
+        per-IP caps of later submissions.
+        """
+        with self._tx() as conn:
+            old = conn.execute("SELECT * FROM submissions WHERE id = ?", (old_id,)).fetchone()
+            if old is None:
+                raise NotFound
+            if old["status"] in ("queued", "running"):
+                raise StillInFlight
+            conn.execute(
+                "UPDATE submissions SET name = ?, hidden = 1 WHERE id = ?",
+                (f"{old['name']}~{old_id[:8]}", old_id),
+            )
+            new_id = uuid4().hex
+            conn.execute(
+                "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
+                "created_at, trace_context, rerun_of) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+                (
+                    new_id,
+                    old["name"],
+                    old["handle"],
+                    old["instructions"],
+                    old["ip_hash"],
+                    self._stamp(),
+                    trace_context,
+                    old_id,
+                ),
+            )
+            self._event(conn, f"{old['name']} re-queued", new_id)
+        return new_id
 
     def _event(self, conn: TracedConnection, text: str, submission_id: str | None) -> None:
         conn.execute(

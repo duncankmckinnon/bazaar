@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.settings import Settings
-from bazaar_web.store import CapReached, NameTaken, Now, Store
+from bazaar_web.store import CapReached, NameTaken, NotFound, Now, StillInFlight, Store
 from bazaar_web.worker import RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -195,6 +195,24 @@ def create_app(
             raise HTTPException(404, "no such submission")
         request.app.state.board.invalidate()
         return Response(status_code=204)
+
+    @app.post("/api/admin/submissions/{submission_id}/rerun", status_code=201)
+    def rerun(submission_id: str, request: Request, token: AdminToken = None) -> dict[str, Any]:
+        require_admin(token)
+        store: Store = request.app.state.store
+        carrier = logfire.propagate.get_context()  # the rerun's run joins this request's trace
+        try:
+            new_id = store.rerun(
+                submission_id, trace_context=json.dumps(carrier) if carrier else None
+            )
+        except NotFound:
+            raise HTTPException(404, "no such submission") from None
+        except StillInFlight:
+            raise HTTPException(409, "that submission is still queued or running") from None
+        position = store.position(new_id)  # read before a worker can pick it up
+        request.app.state.worker.enqueue(new_id)
+        request.app.state.board.invalidate()
+        return {"id": new_id, "status": "queued", "position": position}
 
     @app.get("/api/admin/whoami")
     def whoami(request: Request, token: AdminToken = None) -> dict[str, str | None]:
