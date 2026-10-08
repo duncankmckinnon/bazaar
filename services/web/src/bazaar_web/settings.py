@@ -22,6 +22,7 @@ class Settings:
     max_per_day: int = 150
     max_per_ip_hour: int = 5
     admin_token: str | None = None
+    fonts_dir: Path | None = None
     max_concurrent: int = 3
 
     def __repr__(self) -> str:
@@ -40,4 +41,5 @@ class Settings:
             max_per_day=int(env.get("BAZAAR_MAX_SUBMISSIONS_PER_DAY", "150")),
             max_per_ip_hour=int(env.get("BAZAAR_MAX_PER_IP_PER_HOUR", "5")),
             admin_token=env.get("BAZAAR_ADMIN_TOKEN") or None,
+            fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
         )

@@ -2,6 +2,8 @@
 
 import hashlib
 import hmac
+import json
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bazaar_web.board import BoardSource, build_board
@@ -18,6 +21,7 @@ from bazaar_web.worker import RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
+FONT_NAME = re.compile(r"^[A-Za-z0-9_-]+\.woff2$")
 
 
 class SubmissionIn(BaseModel):
@@ -93,8 +97,23 @@ def create_app(
         return build_board(request.app.state.board, request.app.state.store)
 
     @app.get("/", include_in_schema=False)
-    def board_page() -> Response:
-        return static_page("board.html", "The live board")
+    def board_page(request: Request) -> Response:
+        page = STATIC / "board.html"
+        if not page.is_file():
+            return HTMLResponse(PLACEHOLDER.format("The live board"))
+        base = settings.public_url or str(request.base_url)
+        # A JS string literal inside <script>: JSON, with "</" broken so it can't end the tag.
+        submit_url = json.dumps(base.rstrip("/") + "/submit").replace("</", "<\\/")
+        html = page.read_text(encoding="utf-8").replace("__SUBMIT_URL__", submit_url, 1)
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    @app.get("/fonts/{name}", include_in_schema=False)
+    def font(name: str) -> Response:
+        # The brand font is licensed and baked into the image, never committed.
+        fonts = settings.fonts_dir
+        if fonts is None or not FONT_NAME.fullmatch(name) or not (fonts / name).is_file():
+            raise HTTPException(404, "not found")
+        return FileResponse(fonts / name, media_type="font/woff2")
 
     @app.get("/submit", include_in_schema=False)
     def submit_page() -> Response:
@@ -171,6 +190,7 @@ def create_app(
             "cap_ip": client_ip(request),
         }
 
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
 
 

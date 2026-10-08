@@ -356,12 +356,12 @@ def test_unknown_submission_is_404(settings, helpers):
         assert client.get("/api/submissions/nope").status_code == 404
 
 
-def test_pages_fall_back_to_placeholders(settings, helpers):
+def test_submit_page_falls_back_to_a_placeholder(settings, helpers):
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        board, form = client.get("/"), client.get("/submit")
+        form = client.get("/submit")
 
-    assert board.status_code == form.status_code == 200
-    assert "coming soon" in board.text and "coming soon" in form.text
+    assert form.status_code == 200
+    assert "coming soon" in form.text
 
 
 def test_empty_runs_dir_gives_default_window(settings, helpers):
