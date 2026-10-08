@@ -89,8 +89,8 @@ def fixture_model_factory(symbol: str = "AAPL", quantity: int = 10) -> Callable[
     At its first decision it reads one small page of `symbol` news (FIXTURE_NEWS_LIMIT articles)
     for the week before the decision, then buys
     `quantity` whole shares of `symbol` under the runner-reserved id (run_decision states the id
-    and the decision time in its context prompt). It never branches on the news; a news error
-    ends the decision, which the runner reconciles. At every later decision it holds. One factory
+    and the decision time in its context prompt). It does not interpret news content; if the
+    news read returns an error it holds instead of buying. At every later decision it holds. One factory
     per run, since it remembers its first decision.
     """
     from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
@@ -101,7 +101,8 @@ def fixture_model_factory(symbol: str = "AAPL", quantity: int = 10) -> Callable[
     def trade(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal first_decision_done
         parts = [p for m in messages for p in m.parts]
-        returned = {p.tool_name for p in parts if isinstance(p, ToolReturnPart)}
+        returns = {p.tool_name: p.content for p in parts if isinstance(p, ToolReturnPart)}
+        returned = set(returns)
 
         def output(action: str) -> ModelResponse:
             final = ToolCallPart(info.output_tools[0].name, {"action": action}, tool_call_id="out")
@@ -123,6 +124,8 @@ def fixture_model_factory(symbol: str = "AAPL", quantity: int = 10) -> Callable[
                 "limit": FIXTURE_NEWS_LIMIT,
             }
             return ModelResponse(parts=[ToolCallPart("news", window, tool_call_id="news")])
+        if returns["news"].error is not None:
+            return output("hold")
         order = {
             "client_order_id": _prompt_value(prompt, r"reserved client_order_id=([0-9a-f-]{36})"),
             "symbol": symbol,
