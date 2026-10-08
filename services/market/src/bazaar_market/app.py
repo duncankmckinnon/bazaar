@@ -130,6 +130,8 @@ def create_app(
     logfire.instrument_fastapi(
         app,
         capture_headers=False,
+        # Security, not noise: the default mapper records validation errors with their input,
+        # which would export a malformed approval or account id verbatim (test_telemetry).
         request_attributes_mapper=lambda request, attributes: None,
         excluded_urls="/health,/docs,/openapi.json",
     )

@@ -195,3 +195,68 @@ def test_no_span_or_log_carries_a_credential_or_a_bound_value(tmp_path, monkeypa
     ref = ApprovalId(APPROVAL).ref
     logged = [s for s in everything if s["name"].startswith(("approval allowed", "grant created"))]
     assert logged and all(ref in repr(s) for s in logged)
+
+
+def test_failure_paths_leak_no_credential_into_spans(tmp_path, monkeypatch, capfire):
+    """Exception text and stack traces are exported verbatim, so drive the failure paths with
+    sentinel credentials and check every attribute and event, exceptions included."""
+    monkeypatch.setattr(app_module, "configure_telemetry", lambda: None)
+    app_module.attach_log_handlers()
+    malformed = "approval-SENTINEL-malformed-6d2f"
+    unknown = "a11c0de5-5e47-4e47-8e47-5e471e1e0002"
+    experiment = uuid4()
+    url = f"/experiments/{experiment}"
+    app = create_app(seed(tmp_path), runner_token=TOKEN)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        capfire.exporter.clear()
+        runner = {"X-Bazaar-Runner-Token": TOKEN}
+
+        def grant(approval, experiment_id=experiment):
+            body = {"approval_id": approval, "experiment_id": str(experiment_id)}
+            return client.post("/control/grants", json=body, headers=runner).status_code
+
+        assert grant(malformed) == 422
+        wrong = {"X-Bazaar-Runner-Token": "wrong-" + TOKEN}
+        body = {"approval_id": str(APPROVAL), "experiment_id": str(experiment)}
+        assert client.post("/control/grants", json=body, headers=wrong).status_code == 401
+        assert grant(str(APPROVAL)) == 204
+        assert grant(str(APPROVAL), uuid4()) == 409
+
+        cutoff = {"cutoff": close_at(SESSIONS[0]).isoformat(), "data_version": "test-v1",
+                  "execution_rule_version": "exec-v1"}  # fmt: skip
+        for bad in (malformed, unknown):
+            sent = {"X-Bazaar-Approval": bad, **runner}
+            assert client.put(f"{url}/cutoff", json=cutoff, headers=sent).status_code == 403
+        assert client.put(f"{url}/cutoff", json=cutoff, headers=headers()).status_code == 200
+        account = {"request_id": str(uuid4()), "agent_id": str(uuid4()),
+                   "strategy_version_id": str(uuid4()), "cash": "10000.00"}  # fmt: skip
+        created = client.post(f"{url}/accounts", json=account, headers=headers()).json()
+        news = client.get(
+            f"{url}/news/AAPL",
+            params={
+                "start_at": close_at(SESSIONS[0]).isoformat(),
+                "end_at": close_at(SESSIONS[0]).isoformat(),
+            },
+            headers={"X-Bazaar-Approval": str(APPROVAL), "X-Bazaar-Account": malformed},
+        )
+        assert news.status_code == 403
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("forced failure inside an authorized order")
+
+        monkeypatch.setattr(app_module.Ledger, "_execute", explode)
+        order = {"client_order_id": str(uuid4()), "symbol": "AAPL", "side": "buy",
+                 "quantity": "1"}  # fmt: skip
+        failed = client.post(
+            f"{url}/accounts/{created['account_id']}/orders", json=order, headers=headers()
+        )
+        assert failed.status_code == 500
+
+    everything = spans(capfire)
+    assert any(e["name"] == "exception" for s in everything for e in s.get("events", ())), (
+        "the forced failure must be recorded, or this test proves nothing"
+    )
+    for span in everything:
+        text = repr(span)
+        for secret in (TOKEN, str(APPROVAL), malformed, unknown):
+            assert secret not in text, (secret, span["name"], text[:400])
