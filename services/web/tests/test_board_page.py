@@ -122,10 +122,10 @@ def test_board_formats_percent_without_scaling():
 def test_board_escapes_server_text():
     script = BOARD.split("<script>", 1)[1]
     assert 'setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));' in script
-    assert "ticker.textContent = typed;" in script
-    assert "ticker.textContent = target;" in script
+    assert "text.textContent = String(ev.text);" in script  # market wire
     # Server strings never reach an HTML string.
-    for field in ("r.name", "r.handle", "r.status", "r.day", "latest.text", "r.logfire_url"):
+    for field in ("r.name", "r.handle", "r.status", "r.day", "ev.text", "r.logfire_url",
+                  "s.name", "q.symbol", "day.date"):  # fmt: skip
         assert f"${{{field}}}" not in script
     assert 'innerHTML = \'<span class="rk">' in script  # static row skeleton only
     assert "DAY ${Number(r.day) || 0}/${DAYS}" in script  # numeric coercion, via textContent
@@ -133,7 +133,9 @@ def test_board_escapes_server_text():
 
 def test_board_uses_the_arcade_design_on_the_podium_background():
     assert "HIGH SCORES" in BOARD
-    assert "SCORE = PORTFOLIO VALUE AFTER 10 TRADING DAYS" in BOARD
+    assert "TRADING AGENT FACTORY DASHBOARD" in BOARD
+    assert "PORTFOLIO VALUE BY TRADING DAY" in BOARD
+    assert "MARKET WIRE" in BOARD and "INSERT POLICY" in BOARD
     assert (
         "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
         "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, "
@@ -149,7 +151,7 @@ def test_board_uses_the_arcade_design_on_the_podium_background():
 
 def test_board_respects_reduced_motion():
     script = BOARD.split("<script>", 1)[1]
-    assert "if (RM) { ticker.textContent = target; return; }" in script
+    assert "...(RM ? [] : quotes.map(quote))" in script  # one static copy of the tape
     assert "@media (prefers-reduced-motion: reduce)" in BOARD
     assert "animation: none;" in BOARD.split("@media (prefers-reduced-motion: reduce)", 1)[1]
 
@@ -168,6 +170,37 @@ def test_board_defines_the_helpers_its_functions_call():
     script = BOARD.split("<script>", 1)[1]
     for helper in ("esc", "pct", "money", "ordinal", "safeUrl"):
         assert f"const {helper} = " in script, helper
-    for function in ("setName", "reconcile", "countTo", "qrSVG", "render", "poll", "type"):
+    for function in (
+        "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
+        "renderBoard", "renderWire", "renderTape", "showTip", "applyFocus", "loadTickers",
+    ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
+
+
+def test_chart_and_tape_build_data_with_dom_apis_not_html():
+    script = BOARD.split("<script>", 1)[1]
+    # SVG nodes come from createElementNS + setAttribute; labels and names via textContent.
+    assert "document.createElementNS(SVG_NS, tag)" in script
+    assert "el.setAttribute(k, String(v))" in script
+    assert "b.textContent = best.s.name;" in script  # tooltip title
+    assert "li.appendChild(document.createTextNode(s.name));" in script  # legend
+    assert "b.textContent = String(q.symbol);" in script  # tape
+    # The only innerHTML writes are static skeletons, the logo, the QR and the empty state.
+    writes = re.findall(r"innerHTML = ([^;]+);", script)
+    assert sorted(writes) == sorted(
+        [
+            "LOGO_SVG",
+            'qrSVG(SUBMIT_URL, "#36182D", "#E320E7")',
+            "'<li class=\"empty\">Scan to submit the first strategy</li>'",
+            '""',
+            '\'<span class="rk"></span><span class="sc num"></span><span class="nm"></span><span class="rt num"></span>\'',
+        ]
+    )
+
+
+def test_chart_draws_the_start_reference_and_replay_label():
+    assert 'rt.textContent = money(start) + " START";' in BOARD
+    assert "stroke-dasharray: 6 6" in BOARD  # dashed $10,000 reference
+    assert "REPLAY FEB 2-13 2026" in BOARD
+    assert 'fetch("/api/tickers"' in BOARD
