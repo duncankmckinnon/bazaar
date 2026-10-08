@@ -12,8 +12,8 @@ database access, approval implementation or scheduler is added.
 ## Models and fixture usage
 
 With no `model_factory`, the model comes from the operator's environment: `BAZAAR_AGENT_MODEL`,
-default `gateway/anthropic:claude-haiku-4-5`, built with Pydantic AI's `infer_model` (from
-**pydantic-ai-slim[anthropic] 2.54.0**). Gateway models read `PYDANTIC_AI_GATEWAY_API_KEY`
+default `gateway/openai:gpt-5.6-sol`, built with Pydantic AI's `infer_model` (from
+**pydantic-ai-slim[anthropic,openai] 2.54.0**). Gateway models read `PYDANTIC_AI_GATEWAY_API_KEY`
 themselves; this code never reads, logs or echoes it. A model that cannot be built (for example a
 missing key or an unknown model) is a structured `unsupported` error naming the setting, never its
 value. Tests inject local `TestModel`/`FunctionModel` factories, as in the example below. Every
@@ -85,6 +85,52 @@ Strategy text cannot change scope, budgets, tool admission, factory, settings, s
 order identity. News, filings and private text are explicitly marked untrusted evidence;
 prompt-injection resistance is enforced by fixed capabilities and scoped DTO validation, not a
 claim that models ignore malicious prose.
+
+## Online strategy adherence evaluation
+
+Every completed `run_decision` invocation is wrapped with Pydantic Evals'
+[`OnlineEvalConfig.evaluate`](https://pydantic.dev/docs/ai/evals/online-evaluation/).
+`bazaar_agent.strategy_evaluation.StrategyAdherence` uses `LLMJudge` to assess the supplied
+strategy against the initial account/portfolio, fixed simulated time, model conversation,
+research tool observations (including nested Code Mode reads), and actual decision/order evidence.
+The rubric assesses research requirements, entry/exit conditions, sizing and risk constraints,
+without using later market outcomes. Uncertainty must be stated in the explanation.
+
+Logfire receives `gen_ai.evaluation.result` events under target `trading.decision`:
+
+- `strategy_adherence`: a 0–1 score with reasoning.
+- `strategy_adherence_pass`: a pass/fail assertion with reasoning.
+- `strategy_adherence_status=not_evaluated`: no decision or attempted order was produced.
+
+An attempted order is still evaluated when the final model output fails. Judge errors and
+the judge's 30-second timeout are reported as evaluation failures, without changing trade
+results or triggering another order. Cancellation propagates; a cancelled invocation has no
+returned decision to evaluate. Judge usage is separate from the trading decision's budget.
+There is no evaluation database, dataset file, or change to `DecisionResult`, `record.json`,
+or the period-scoring `evaluation.json`. The SDK sends the results through the application's
+existing Logfire configuration; view them in Logfire's **Live Evaluations**.
+
+The operator can set `BAZAAR_JUDGE_MODEL` (default `gateway/anthropic:claude-sonnet-5-5`),
+using the existing `PYDANTIC_AI_GATEWAY_API_KEY` for Gateway models. Evaluation is enabled by
+default for every decision, including fixture/demo decisions. Set `BAZAAR_STRATEGY_EVAL_ENABLED=0`
+to disable it. Strategy text cannot configure the judge. Each decision gets a separate online
+wrapper so the SDK's shared evaluator concurrency limit does not drop calls; judge concurrency
+therefore scales with the number of decisions in flight.
+
+The CLI and submission runner use `strategy_evaluation_session()` to let background judges
+finish before closing their event loop. Direct callers should do the same:
+
+```python
+from bazaar_agent.strategy_evaluation import strategy_evaluation_session
+
+async with strategy_evaluation_session():
+    result = await run_decision(...)  # returns without waiting for the judge
+# This run's evaluations have finished and their OTel events have been emitted.
+```
+
+Only completion signals and per-decision evidence are held temporarily in memory. Sessions
+are isolated across concurrent submissions and worker threads. Tests disable paid judges by
+default and exercise this path with local model fixtures and captured Logfire events.
 
 ## Market binding and initial protected reads
 
@@ -210,17 +256,26 @@ a malicious synchronous factory/function: injections are trusted test fixtures, 
 
 ## Monitoring and next interfaces
 
-A safe `trading.decision` operation span is emitted now. SDK content/GenAI instrumentation is
-explicitly disabled even when enabled globally; nested model/HTTP instrumentation is suppressed.
-Exceptions are caught inside the safe span and only fixed messages leave it. No messages, inputs,
-instructions, research/private contents, order payloads, response bodies, cursors or credentials
-are logged. Production HTTPX configuration explicitly sets `capture_all=False`, header/request/
-response capture false; do not add independently logging hooks. Payload-marker tests configure
-monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata is **#23**;
-the model itself can already be a Gateway model chosen by the operator.
+`RuntimeConfig(instrument=True)` includes PydanticAI agent, model and tool instrumentation
+inside each `trading.decision` span, including Code Mode, even if global SDK instrumentation is
+off. The submission runner and demo agent enable this setting. Other callers default to
+`instrument=False`, suppressing the model loop's SDK and nested HTTPX spans. Configure Logfire
+in the hosting process and supply `LOGFIRE_TOKEN` to export traces (the runner configures it for
+submissions). The model can be a Gateway model chosen by the operator.
 
-Code Mode does not add tracing or AI Gateway integration: SDK/HTTP content instrumentation remains
-suppressed as above. Computation over returned research data does not authorize future observations
+Online strategy evaluation is independent of this tracing switch: it captures decision evidence
+directly and emits its evaluation events in either mode. Use `BAZAAR_STRATEGY_EVAL_ENABLED=0`
+to disable judging separately. See [telemetry](telemetry.md) for the strategy tags attached by
+the runner and inherited by evaluation events.
+
+**Telemetry includes model inputs/outputs**, including strategy instructions, market snapshots,
+research/private content and tool arguments/results. Instrumented HTTP spans can include cursor
+query strings and exception details. Only send runs to an appropriate, trusted Logfire project.
+HTTPX header/request/response-body capture remains disabled in the placeholder process; that does
+not suppress spans. Returned harness errors remain sanitized, but nested telemetry is not a
+payload-free boundary. Do not put credentials in strategy text or research data.
+
+Computation over returned research data does not authorize future observations
 or bypass point-in-time validation. No real historical experiment was run; fixtures prove client
 behavior, not server authorization, source completeness, live grants or model quality. Provisioning,
 account-status and performance-statistics contracts remain deferred; no market service or Compose

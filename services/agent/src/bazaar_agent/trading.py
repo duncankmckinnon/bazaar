@@ -15,10 +15,10 @@ from bazaar_protocol import OrderRequest, OrderResult, WireModel
 from bazaar_protocol.registry import Reference, StrategyVersion
 from bazaar_protocol.research import ResearchRequest
 from pydantic import Field, ValidationError
-from pydantic_ai import Agent, ModelRetry, RunContext, Tool
+from pydantic_ai import Agent, ModelRetry, RunContext, Tool, capture_run_messages
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, ToolCallPart
 from pydantic_ai.models import Model, ModelRequestParameters, infer_model
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.wrapper import WrapperModel
@@ -26,8 +26,10 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness import CodeMode
+from pydantic_evals import set_eval_attribute
 
 from bazaar_agent.research import PrivateHistoryReader, ResearchContext, ResearchTools, ToolError
+from bazaar_agent.strategy_evaluation import EVIDENCE_ATTRIBUTE, evaluate_strategy
 
 # Trusted injection only. Never resolve a provider/model/URL from candidate text.
 ModelFactory = Callable[[str], Model]
@@ -35,7 +37,7 @@ ModelFactory = Callable[[str], Model]
 # The operator picks the model in the environment; the Gateway provider reads its own key
 # (PYDANTIC_AI_GATEWAY_API_KEY), which this module never reads, logs or echoes.
 AGENT_MODEL_ENV = "BAZAAR_AGENT_MODEL"
-DEFAULT_AGENT_MODEL = "gateway/anthropic:claude-haiku-4-5"
+DEFAULT_AGENT_MODEL = "gateway/openai:gpt-5.6-sol"
 # Research reads the model may page through; each page is capped to keep real articles and
 # filings inside the decision's token budget.
 RESEARCH_PAGE_LIMIT = 5
@@ -218,6 +220,7 @@ class _CheckedFixtureModel(WrapperModel):
         return response
 
 
+@evaluate_strategy
 async def run_decision(
     *,
     identity: MarketIdentity,
@@ -234,7 +237,7 @@ async def run_decision(
 
     Runner owns the reserved order ID and MUST preserve it across recovery/reconciliation.
     With no model_factory the model comes from the operator's environment (env_model_factory):
-    $BAZAAR_AGENT_MODEL, default gateway/anthropic:claude-haiku-4-5. A model that cannot be
+    $BAZAAR_AGENT_MODEL, default gateway/openai:gpt-5.6-sol. A model that cannot be
     built is an 'unsupported' decision error naming the setting, never its value.
     No model/user text can supply context, budgets, tools, factory or a new order ID.
     """
@@ -245,7 +248,12 @@ async def run_decision(
     decision: Decision | None = None
     error: ToolError | None = None
     cancelled = False
-    with logfire.span("trading decision", _span_name="trading.decision", _tags=["trading"]) as span:
+    evidence: dict[str, Any] | None = None
+    research_observations: list[dict[str, Any]] = []
+    with (
+        logfire.span("trading decision", _span_name="trading.decision", _tags=["trading"]) as span,
+        capture_run_messages() as messages,
+    ):
         try:
             # Revalidate even frozen DTOs: model_copy/model_construct can bypass validation.
             if type(identity) is not MarketIdentity:
@@ -306,6 +314,15 @@ async def run_decision(
             }:
                 _stop("invalid_response", "Initial account and portfolio snapshots disagree")
 
+            evidence = {
+                "instructions": strategy_instructions,
+                "runtime_instructions": TRADING_ROLE,
+                "simulated_at": ctx.simulated_at.isoformat(),
+                "initial_account": account.model_dump(mode="json"),
+                "initial_portfolio": portfolio.model_dump(mode="json"),
+                "research_observations": research_observations,
+            }
+
             def wrap(name: str) -> Tool:
                 # Preserve shared DTO signatures; no duplicated argument schemas.
                 fn = getattr(tools, name)
@@ -319,6 +336,21 @@ async def run_decision(
                         args = tuple(_clamp_research(a) for a in args)
                         kwargs = {k: _clamp_research(v) for k, v in kwargs.items()}
                     result = await fn(*args, **kwargs)
+                    # Includes nested Code Mode reads even when its returned summary omits them.
+                    research_observations.append(
+                        {
+                            "tool": name,
+                            "arguments": [
+                                a.model_dump(mode="json") if hasattr(a, "model_dump") else a
+                                for a in args
+                            ],
+                            "keyword_arguments": {
+                                k: v.model_dump(mode="json") if hasattr(v, "model_dump") else v
+                                for k, v in kwargs.items()
+                            },
+                            "result": result.model_dump(mode="json"),
+                        }
+                    )
                     # Scoped read errors are safe feedback, never invalid data. The model
                     # may correct arguments or retry within the same decision-wide budget.
                     return result
@@ -444,6 +476,9 @@ async def run_decision(
             error = ToolError(code="server_error", message="Decision model or harness failed")
     if cancelled:
         raise asyncio.CancelledError
+    if evidence is not None:
+        evidence["messages"] = ModelMessagesTypeAdapter.dump_python(messages, mode="json")
+        set_eval_attribute(EVIDENCE_ATTRIBUTE, evidence)
     return DecisionResult(
         decision=decision,
         error=error,

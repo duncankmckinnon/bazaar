@@ -1,3 +1,4 @@
+import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
@@ -227,7 +228,33 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     )
 
 
-def test_three_concurrent_submissions_do_not_cross(markets, tmp_path):
+@pytest.mark.parametrize("online_evaluation", [False, True])
+def test_three_concurrent_submissions_do_not_cross(
+    markets, tmp_path, monkeypatch, capfire, online_evaluation
+):
+    if online_evaluation:
+        from bazaar_agent import strategy_evaluation
+        from pydantic_ai.messages import ModelResponse, ToolCallPart
+        from pydantic_ai.models.function import FunctionModel
+
+        async def grade(messages, info):
+            # Keep the last evaluation pending when the trading loop finishes.
+            await asyncio.sleep(0.01)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        info.output_tools[0].name,
+                        {
+                            "pass": True,
+                            "score": 1.0,
+                            "reason": "The fixture followed its strategy.",
+                        },
+                    )
+                ]
+            )
+
+        monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+        monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
     ids = ["alpha", "bravo", "charlie"]
     for sid in ids:
         markets[f"http://{sid}"] = GrantingMarket()
@@ -254,3 +281,21 @@ def test_three_concurrent_submissions_do_not_cross(markets, tmp_path):
             own in p for p in markets[f"http://{sid}"].paths if p.startswith("/experiments/")
         )
     assert len(load_board(tmp_path).ranked) == 3
+    events = [
+        event
+        for event in capfire.log_exporter.exported_logs_as_dicts()
+        if event["attributes"].get("gen_ai.evaluation.name") == "strategy_adherence"
+    ]
+    assert len(events) == (30 if online_evaluation else 0)
+    if online_evaluation:
+        for sid in ids:
+            own_events = [
+                event for event in events if event["attributes"]["bazaar.submission_id"] == sid
+            ]
+            assert len(own_events) == 10
+            assert all(
+                event["attributes"]["bazaar.strategy_name"] == f"name-{sid}" for event in own_events
+            )
+    assert all(
+        "strategy_adherence" not in (directory / "record.json").read_text() for directory in dirs
+    )

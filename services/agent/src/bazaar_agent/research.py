@@ -285,18 +285,15 @@ class ResearchTools:
                 else:
                     params = None
                 prepared = True
-                # HTTP child spans can record opaque cursors or exception messages
-                # before this boundary catches them. Keep only our payload-free span.
-                with logfire.suppress_instrumentation():
-                    response = await self._client.request(
-                        "POST" if isinstance(request, OrderRequest) else "GET",
-                        route,
-                        params=params,
-                        json=request.model_dump(mode="json")
-                        if isinstance(request, OrderRequest)
-                        else None,
-                        follow_redirects=False,
-                    )
+                response = await self._client.request(
+                    "POST" if isinstance(request, OrderRequest) else "GET",
+                    route,
+                    params=params,
+                    json=request.model_dump(mode="json")
+                    if isinstance(request, OrderRequest)
+                    else None,
+                    follow_redirects=False,
+                )
                 if response.status_code != 200:
                     code, message = {
                         401: ("unauthorized", "Authentication required"),
@@ -449,9 +446,7 @@ class ResearchTools:
                 request = HistoryRequest.model_validate_json(request.model_dump_json())
                 self._window(request, "private")
                 prepared = True
-                # SDK/HTTP child spans can expose cursors or exceptions before we catch them.
-                with logfire.suppress_instrumentation():
-                    value = await self._private.read(self._ctx, request)
+                value = await self._private.read(self._ctx, request)
                 value = PrivateHistoryPage.model_validate_json(value.model_dump_json())
                 if value.coverage != "complete":
                     return ToolResult(

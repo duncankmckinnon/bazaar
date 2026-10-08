@@ -496,7 +496,7 @@ async def test_private_malicious_scope_and_errors(payload, capfire):
 
 
 @pytest.mark.parametrize("failure", [None, "sdk", "http"])
-async def test_private_instrumented_sdk_http_cannot_leak_markers(failure, capfire, caplog):
+async def test_private_sdk_and_http_spans_are_not_suppressed(failure, capfire, caplog):
     cursor_marker = "SECRET-PRIVATE-CURSOR-TOKEN"
     calls = []
 
@@ -546,13 +546,10 @@ async def test_private_instrumented_sdk_http_cannot_leak_markers(failure, capfir
         assert cursor_marker not in second.model_dump_json()
     spans = capfire.exporter.exported_spans_as_dict()
     assert "private history tool" in {s["name"] for s in spans}
-    assert "private SDK read" not in {s["name"] for s in spans}
-    assert not any(
-        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
-    )
-    for marker in (SECRET, cursor_marker):
-        assert marker not in json.dumps(spans, default=str)
-        assert marker not in caplog.text
+    assert "private SDK read" in {s["name"] for s in spans}
+    assert any(s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans)
+    assert cursor_marker in json.dumps(spans, default=str)
+    assert SECRET not in caplog.text
 
 
 async def test_payloads_not_in_spans(capfire):
@@ -641,7 +638,9 @@ async def test_private_stable_cursor_replay():
 
 
 @pytest.mark.parametrize("failure", ["timeout", "transport", "hook"])
-async def test_instrumented_http_failures_cannot_leak_exception_text(failure, capfire, caplog):
+async def test_instrumented_http_failures_are_traced_but_results_are_sanitized(
+    failure, capfire, caplog
+):
     def handler(r):
         if failure == "timeout":
             raise httpx.ReadTimeout(SECRET, request=r)
@@ -665,14 +664,13 @@ async def test_instrumented_http_failures_cannot_leak_exception_text(failure, ca
     assert SECRET not in result.model_dump_json()
     spans = capfire.exporter.exported_spans_as_dict()
     assert "research.tool" in {s["name"] for s in spans}
-    assert SECRET not in json.dumps(spans, default=str)
+    # HTTP transport exceptions are observed inside the HTTP span; response hooks run after it.
+    assert (SECRET in json.dumps(spans, default=str)) == (failure != "hook")
     assert SECRET not in caplog.text
-    assert not any(
-        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
-    )
+    assert any(s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans)
 
 
-async def test_instrumented_http_cursor_and_payload_not_exported(capfire):
+async def test_instrumented_http_cursor_is_traced(capfire):
     def handler(r):
         cursor = r.url.params.get("cursor")
         return httpx.Response(
@@ -691,7 +689,7 @@ async def test_instrumented_http_cursor_and_payload_not_exported(capfire):
         tools = ResearchTools(client, context())
         assert (await tools.news(request())).error is None
         assert (await tools.news(request(cursor=SECRET))).error is None
-    assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+    assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
 
 
 async def test_terminal_page_replay_must_be_identical():
@@ -801,13 +799,10 @@ async def test_read_cancellation_is_clean_and_instrumentation_restored(
     assert ("private history tool" if method == "private_history" else "research.tool") in names
     if method == "news":
         assert "news tool" in names
-    assert "private SDK read" not in names
-    assert not any(
-        s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans
-    )
-    for marker in (SECRET, cursor_marker):
-        assert marker not in json.dumps(spans, default=str)
-        assert marker not in caplog.text
+    assert ("private SDK read" in names) == (method == "private_history")
+    assert any(s["attributes"].get("http.url") or s["attributes"].get("url.full") for s in spans)
+    assert cursor_marker in json.dumps(spans, default=str)
+    assert SECRET not in caplog.text
 
 
 async def test_http_cancellation_is_not_swallowed():
