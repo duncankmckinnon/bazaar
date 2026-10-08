@@ -32,9 +32,12 @@ EXECUTION_RULE_VERSION = "exec-v1"
 STARTING_CASH = Decimal(10000)
 MARKET_TIMEOUT_SECONDS = 30.0
 
-# PM 14:01Z: submissions get 8 model requests; tool calls, tokens and timeout track the
-# harness defaults (whose model_requests stays 4 for every other launch).
-SUBMISSION_BUDGET = DecisionBudget().model_copy(update={"model_requests": 8})
+# PM 14:01Z and 14:08Z: submissions get 8 model requests and 48,000 tokens (smoke #2 hit the
+# 16k token limit at 3-4 requests). Tool calls and timeout track the harness defaults, and every
+# other launch keeps DecisionBudget() as it is.
+SUBMISSION_BUDGET = DecisionBudget().model_copy(
+    update={"model_requests": 8, "total_tokens": 48_000}
+)
 # PM 14:02Z, security: attendee text is untrusted and runs beside the Gateway key and the runner
 # token. Code mode is pinned off here and never taken from env, arguments or the submission.
 SUBMISSION_RUNTIME = RuntimeConfig(code_mode=False)

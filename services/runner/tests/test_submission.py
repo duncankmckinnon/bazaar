@@ -215,11 +215,16 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     run_dir, _ = submit(tmp_path, "http://m1")
 
     assert record_in(run_dir).status == "completed" and len(seen) == 10
-    assert {(b.model_requests, r.code_mode) for b, r in seen} == {(8, False)}
+    assert {(b.model_requests, b.total_tokens, r.code_mode) for b, r in seen} == {
+        (8, 48_000, False)
+    }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
+    # Only those two limits differ; the default every other launch uses is unchanged.
     default = trading.DecisionBudget()
-    assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4}) == default
-    assert default.model_requests == 4
+    assert (default.model_requests, default.total_tokens) == (4, 16_000)
+    assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4, "total_tokens": 16_000}) == (
+        default
+    )
 
 
 def test_three_concurrent_submissions_do_not_cross(markets, tmp_path):
