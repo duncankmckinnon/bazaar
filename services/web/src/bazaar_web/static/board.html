@@ -49,6 +49,7 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .ar-row.st-running, .ar-row.st-queued { --c: #d9c4d3; }
 .ar-row.st-running .rt { color: var(--pyai-cyan); animation: blink 1s steps(1) infinite; }
 .ar-row.st-queued .rt { color: #b48fa8; }
+.ar-row .sc.prov { opacity: .7; }
 .ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 calc(var(--u)*.8)/1 var(--pixel); color: var(--blackbean); background: var(--pyai-yellow); padding: .3em .5em; animation: blink .5s steps(1) 16; }
 .empty { font: 400 calc(var(--u)*1.4)/1.6 var(--pixel); color: var(--pyai-yellow); text-transform: uppercase; padding: calc(var(--u)*3) calc(var(--u)*.8); }
 .ar-side { min-height: 0; display: flex; flex-direction: column; gap: calc(var(--u)*1.8); align-items: stretch; }
@@ -221,7 +222,10 @@ function render(data) {
       li.style.setProperty("--c", scored && r.rank ? COLORS[Math.min(r.rank - 1, 3)] : "");
       li.querySelector(".rk").textContent = scored && r.rank ? ordinal(r.rank) : "";
       const sc = li.querySelector(".sc");
-      if (scored && typeof r.return_pct === "number") countTo(sc, start * (1 + r.return_pct / 100), money);
+      // Running rows may carry a provisional return (marked value so far); queued rows never do.
+      const live = r.status === "running" && r.provisional === true;
+      sc.className = "sc num" + (live ? " prov" : "");
+      if ((scored || live) && typeof r.return_pct === "number") countTo(sc, start * (1 + r.return_pct / 100), money);
       else { sc._v = undefined; sc.textContent = ""; }
       setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));
       li.querySelector(".rt").textContent = scored
