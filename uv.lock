@@ -10,6 +10,7 @@ members = [
     "bazaar-protocol",
     "bazaar-replay",
     "bazaar-runner",
+    "bazaar-web",
     "bazaar-workspace",
 ]
 
@@ -157,6 +158,27 @@ requires-dist = [
     { name = "bazaar-protocol", editable = "packages/protocol" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "logfire", specifier = ">=5.1.1" },
+]
+
+[[package]]
+name = "bazaar-web"
+version = "0.1.0"
+source = { editable = "services/web" }
+dependencies = [
+    { name = "bazaar-protocol" },
+    { name = "bazaar-replay" },
+    { name = "bazaar-runner" },
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "bazaar-replay", editable = "packages/replay" },
+    { name = "bazaar-runner", editable = "services/runner" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]

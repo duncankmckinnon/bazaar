@@ -323,7 +323,8 @@ def build_board(loaded: list[Run | Entry]) -> Leaderboard:
 
 
 def load_board(runs_dir: Path) -> Leaderboard:
-    run_dirs = sorted(path for path in runs_dir.iterdir() if path.is_dir())
+    # Dot-prefixed dirs (".tmp-<uuid>") are runs still being staged by the runner.
+    run_dirs = sorted(p for p in runs_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
     return build_board([load_run(path) for path in run_dirs])
 
 
