@@ -1,6 +1,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from uuid import UUID
 
 import httpx
@@ -202,12 +203,13 @@ def test_the_runner_token_never_reaches_the_files(markets, tmp_path):
 
 def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, monkeypatch):
     markets["http://m1"] = GrantingMarket()
-    seen, quoted = [], []
+    seen, quoted, days = [], [], []
     real = trading.run_decision
 
     async def spy(**kwargs):
         seen.append((kwargs["budget"], kwargs["runtime"]))
         quoted.append(kwargs["quote_symbols"])
+        days.append(kwargs["trading_day"])
         return await real(**kwargs)
 
     def no_code_mode(*args, **kwargs):
@@ -224,6 +226,8 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
     # Every decision is told the demo symbols' prices and affordable whole shares.
     assert quoted == [DEMO_SYMBOLS] * 10
+    # ...and which trading day of the run it is.
+    assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
     # Only those two limits differ; the default every other launch uses is unchanged.
     default = trading.DecisionBudget()
     assert (default.model_requests, default.total_tokens) == (4, 16_000)

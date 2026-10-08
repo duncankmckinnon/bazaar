@@ -1506,3 +1506,28 @@ async def test_market_order_says_quantity_is_whole_shares():
     (tool,) = [t for t in info.function_tools if t.name == "market_order"]
     assert "WHOLE SHARES, not dollars" in tool.description
     assert "floor(dollars / price)" in tool.description and "max_whole_shares" in tool.description
+
+
+def runner_context(messages):
+    (line,) = [p for p in user_prompts(messages) if p.startswith("RUNNER DECISION CONTEXT")]
+    return line
+
+
+async def test_the_trading_day_is_stated_in_the_runner_context():
+    from datetime import date
+
+    model, calls = script(lambda info: [output(info)])
+    result, _ = await invoke(model, overrides={"trading_day": (10, 10, date(2026, 2, 2))})
+    assert result.error is None
+    line = runner_context(calls[0][0])
+    assert line.endswith(
+        f"definition_digest={'a' * 64}; trading day 10 of 10 (first day 2026-02-02)."
+    )
+
+
+async def test_no_trading_day_adds_nothing():
+    model, calls = script(lambda info: [output(info)])
+    result, _ = await invoke(model)
+    assert result.error is None
+    line = runner_context(calls[0][0])
+    assert line.endswith(f"definition_digest={'a' * 64}.") and "trading day" not in line

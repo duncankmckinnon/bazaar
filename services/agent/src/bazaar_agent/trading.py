@@ -5,7 +5,7 @@ import contextlib
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Annotated, Any, Literal, NoReturn
 from uuid import UUID
@@ -272,6 +272,7 @@ async def run_decision(
     model_factory: ModelFactory | None = None,
     private_history: PrivateHistoryReader | None = None,
     quote_symbols: Sequence[str] = (),
+    trading_day: tuple[int, int, date] | None = None,
 ) -> DecisionResult:
     """Run once with fresh messages/cursors and at most one immutable market order.
 
@@ -281,6 +282,7 @@ async def run_decision(
     built is an 'unsupported' decision error naming the setting, never its value.
     No model/user text can supply context, budgets, tools, factory or a new order ID.
     quote_symbols get a MARKET QUOTES block (latest close, max whole shares) under exec-v1.
+    trading_day (N, total, first session date) is stated in the runner decision context.
     """
     usage = RunUsage()
     calls = 0
@@ -494,7 +496,14 @@ async def run_decision(
                                 f"RUNNER DECISION CONTEXT: fixed simulated time {ctx.simulated_at.isoformat()}; "
                                 f"reserved client_order_id={client_order_id}; "
                                 f"strategy_version_id={version.version_id}; "
-                                f"definition_digest={version.definition_digest}."
+                                f"definition_digest={version.definition_digest}"
+                                + (
+                                    f"; trading day {trading_day[0]} of {trading_day[1]} "
+                                    f"(first day {trading_day[2].isoformat()})"
+                                    if trading_day is not None
+                                    else ""
+                                )
+                                + "."
                             ),
                             *(
                                 [

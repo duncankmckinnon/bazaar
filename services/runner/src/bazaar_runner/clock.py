@@ -108,6 +108,16 @@ def build_schedule(script: ClockScript) -> Schedule:
     )
 
 
+def trading_day(
+    sessions: tuple[TradingSession, ...], at: dt.datetime
+) -> tuple[int, int, dt.date] | None:
+    """(N, total, first session date) for the session that contains `at`; N counts from 1."""
+    for index, session in enumerate(sessions):
+        if session.open_at <= at <= session.close_at:
+            return index + 1, len(sessions), sessions[0].date
+    return None
+
+
 def schedule_digest(schedule: Schedule) -> str:
     """SHA-256 of the canonical schedule, so two runs can prove they share decisions and marks."""
     return hashlib.sha256(_schedule_adapter.dump_json(schedule)).hexdigest()

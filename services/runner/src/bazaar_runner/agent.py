@@ -14,6 +14,7 @@ import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext
 
 from bazaar_runner.agent_step import AgentDecision, DecideWithAgent
+from bazaar_runner.clock import TradingSession, trading_day
 from bazaar_runner.market import FiscalCycle
 from bazaar_runner.run import AgentUsage
 
@@ -42,11 +43,13 @@ def make_agent_decider(
     budget: Any = None,
     runtime: Any = None,
     quote_symbols: Sequence[str] = (),
+    sessions: tuple[TradingSession, ...] = (),
 ) -> DecideWithAgent:
     """Fiscal cycles arrive per decision from the market (AgentStep), never invented here.
     With no model_factory the model is the operator's default (env_model_factory), as in
     run_decision; either way its errors are redacted (redacting_model_factory).
-    quote_symbols get their latest close and affordable whole shares in the agent's context."""
+    quote_symbols get their latest close and affordable whole shares in the agent's context.
+    sessions (the run's script) let each decision say which trading day of the run it is."""
     from bazaar_agent.registry_store import digest
     from bazaar_agent.research import FiscalCycle as ResearchFiscalCycle
     from bazaar_agent.research import ResearchContext
@@ -92,6 +95,7 @@ def make_agent_decider(
             runtime=runtime,
             model_factory=model_factory,
             quote_symbols=quote_symbols,
+            trading_day=trading_day(sessions, ctx.simulated_at) if sessions else None,
         )
         error = f"{result.error.code}: {result.error.message}" if result.error else None
         usage = AgentUsage(
