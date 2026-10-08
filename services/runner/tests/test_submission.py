@@ -287,6 +287,15 @@ def test_three_concurrent_submissions_do_not_cross(
         if event["attributes"].get("gen_ai.evaluation.name") == "strategy_adherence"
     ]
     assert len(events) == (30 if online_evaluation else 0)
+    if online_evaluation:
+        for sid in ids:
+            own_events = [
+                event for event in events if event["attributes"]["bazaar.submission_id"] == sid
+            ]
+            assert len(own_events) == 10
+            assert all(
+                event["attributes"]["bazaar.strategy_name"] == f"name-{sid}" for event in own_events
+            )
     assert all(
         "strategy_adherence" not in (directory / "record.json").read_text() for directory in dirs
     )

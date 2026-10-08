@@ -256,11 +256,17 @@ a malicious synchronous factory/function: injections are trusted test fixtures, 
 
 ## Monitoring and next interfaces
 
-Each `trading.decision` span contains enabled PydanticAI agent, model and tool instrumentation,
-including Code Mode. Instrumentation is enabled per agent even if global SDK instrumentation is
-off. Nested SDK and instrumented HTTPX spans are no longer suppressed. Configure Logfire in the
-hosting process and supply `LOGFIRE_TOKEN` to export traces (the runner configures it for submissions).
-The model can be a Gateway model chosen by the operator.
+`RuntimeConfig(instrument=True)` includes PydanticAI agent, model and tool instrumentation
+inside each `trading.decision` span, including Code Mode, even if global SDK instrumentation is
+off. The submission runner and demo agent enable this setting. Other callers default to
+`instrument=False`, suppressing the model loop's SDK and nested HTTPX spans. Configure Logfire
+in the hosting process and supply `LOGFIRE_TOKEN` to export traces (the runner configures it for
+submissions). The model can be a Gateway model chosen by the operator.
+
+Online strategy evaluation is independent of this tracing switch: it captures decision evidence
+directly and emits its evaluation events in either mode. Use `BAZAAR_STRATEGY_EVAL_ENABLED=0`
+to disable judging separately. See [telemetry](telemetry.md) for the strategy tags attached by
+the runner and inherited by evaluation events.
 
 **Telemetry includes model inputs/outputs**, including strategy instructions, market snapshots,
 research/private content and tool arguments/results. Instrumented HTTP spans can include cursor

@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -101,7 +102,9 @@ def submission_row(submission: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_board(source: BoardSource, store: Store) -> dict[str, Any]:
+def build_board(
+    source: BoardSource, store: Store, logfire_url: Callable[[str], str | None] = lambda _: None
+) -> dict[str, Any]:
     board, histories = source.load()
     by_dir = store.by_run_dir()
     rows = []
@@ -119,6 +122,7 @@ def build_board(source: BoardSource, store: Store) -> dict[str, Any]:
     rows.sort(key=lambda r: STATUS_ORDER[r["status"]])
     scored = 0
     for row in rows:
+        row["logfire_url"] = logfire_url(row["name"])
         if row["status"] == "scored":
             scored += 1
             row["rank"] = scored

@@ -56,6 +56,7 @@ body { margin: 0; background: var(--blackbean); font-family: var(--sans); }
 .fl-row.lead { background: linear-gradient(90deg, rgba(229,32,233,.16), rgba(229,32,233,0) 70%); }
 .fl-row .nm { min-width: 0; }
 .fl-row .nm b { display: block; font: 600 calc(var(--u)*1.55)/1.15 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-row .nm b a { color: inherit; text-decoration: none; cursor: pointer; }
 .fl-row .nm small { display: block; font: 400 calc(var(--u)*.9)/1.3 var(--mono); color: #7e9896; margin-top: .25em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-row .sp { height: calc(var(--u)*2.6); }
 .fl-row .ret { font: 600 calc(var(--u)*1.9)/1 var(--mono); text-align: right; }
@@ -138,6 +139,21 @@ const pct = (v) => (v > 0 ? "+" : v < 0 ? MINUS : "") + Math.abs(v).toFixed(2) +
 const dir = (v) => v == null ? "flat" : v > 0.004 ? "up" : v < -0.004 ? "down" : "flat";
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const STATUSES = new Set(["queued", "running", "scored", "failed"]);
+const safeUrl = (u) => typeof u === "string" && /^https?:\/\//i.test(u) ? u : null;
+function setName(b, name, url) {
+  // No link: plain text, exactly as before (this also drops a link the row used to have).
+  if (!url) { b.textContent = name; return; }
+  let a = b.firstElementChild;
+  if (!a || a.tagName !== "A") {
+    b.textContent = "";
+    a = document.createElement("a");
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    b.appendChild(a);
+  }
+  a.setAttribute("href", url);
+  a.textContent = name;
+}
 const statusText = (r) => r.status === "running" ? `running · day ${Number(r.day) || 0} of ${DAYS}` : r.status;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -243,7 +259,7 @@ function render(data) {
       const status = STATUSES.has(r.status) ? r.status : "failed";
       li.className = `fl-row st-${status}` + (r.rank === 1 ? " lead" : "");
       li.querySelector(".rk").textContent = r.rank ?? "";
-      li.querySelector(".nm b").textContent = r.name;
+      setName(li.querySelector(".nm b"), r.name, safeUrl(r.logfire_url));
       li.querySelector(".st").textContent = statusText({ ...r, status });
       li.querySelector(".hd").textContent = r.handle || (r.kind === "baseline" ? "baseline" : "");
       li.querySelector(".sp").innerHTML = sparkSVG(r.history, (r.return_pct ?? 0) >= 0 ? "#77FFD8" : "#FF6550");

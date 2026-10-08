@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 # Env vars whose values must never reach a log line; redacted by value.
 SECRET_ENV_VARS = (
@@ -23,7 +24,25 @@ class Settings:
     max_per_ip_hour: int = 5
     admin_token: str | None = None
     fonts_dir: Path | None = None
+    logfire_dashboard_url: str | None = None  # template with "{strategy}"
     max_concurrent: int = 3
+
+    def __post_init__(self) -> None:
+        template = self.logfire_dashboard_url
+        if template is None:
+            return
+        parts = urlsplit(template)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError("BAZAAR_LOGFIRE_DASHBOARD_URL must be an http:// or https:// URL")
+        if "{strategy}" not in template:
+            raise ValueError("BAZAAR_LOGFIRE_DASHBOARD_URL must contain {strategy}")
+
+    def logfire_url(self, strategy: str) -> str | None:
+        """The dashboard link for one strategy name, or None when no template is configured."""
+        if self.logfire_dashboard_url is None:
+            return None
+        # replace, not format: other braces in the template are left as they are.
+        return self.logfire_dashboard_url.replace("{strategy}", quote(strategy, safe=""))
 
     def __repr__(self) -> str:
         return "Settings(...)"  # keeps the runner and admin tokens out of logs and tracebacks
@@ -42,4 +61,5 @@ class Settings:
             max_per_ip_hour=int(env.get("BAZAAR_MAX_PER_IP_PER_HOUR", "5")),
             admin_token=env.get("BAZAAR_ADMIN_TOKEN") or None,
             fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
+            logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
         )

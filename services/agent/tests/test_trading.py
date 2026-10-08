@@ -491,8 +491,9 @@ async def test_fixture_factory_error_sanitized():
 
 
 @pytest.mark.parametrize("global_instrumentation", [False, True])
-async def test_model_tool_and_http_spans_are_not_suppressed(
-    capfire, caplog, global_instrumentation
+@pytest.mark.parametrize("instrument", [False, True])
+async def test_runtime_controls_model_tool_and_http_spans(
+    capfire, caplog, global_instrumentation, instrument
 ):
     Agent.instrument_all(global_instrumentation)
     try:
@@ -520,15 +521,18 @@ async def test_model_tool_and_http_spans_are_not_suppressed(
                 capture_response_body=False,
             )
             result = await run_decision(
-                client=client, model_factory=lambda ref: model, **inputs(tools=("news",))
+                client=client,
+                model_factory=lambda ref: model,
+                runtime=RuntimeConfig(instrument=instrument),
+                **inputs(tools=("news",)),
             )
         assert result.error is None and result.decision.action == "hold"
         spans = capfire.exporter.exported_spans_as_dict()
         assert "trading.decision" in {span["name"] for span in spans}
-        assert SECRET in json.dumps(spans, default=str)
+        assert (SECRET in json.dumps(spans, default=str)) is instrument
         assert SECRET not in caplog.text
-        assert any("gen_ai" in json.dumps(span, default=str) for span in spans)
-        assert any(span["name"] == "execute_tool news" for span in spans)
+        assert any("gen_ai" in json.dumps(span, default=str) for span in spans) is instrument
+        assert any(span["name"] == "execute_tool news" for span in spans) is instrument
         assert any(span["attributes"].get("http.url") for span in spans)
     finally:
         Agent.instrument_all(False)
@@ -593,7 +597,12 @@ async def test_cancelled_order_is_traced_and_cancellation_propagates(capfire):
             capture_response_body=False,
         )
         with pytest.raises(asyncio.CancelledError):
-            await run_decision(client=client, model_factory=lambda ref: model, **inputs())
+            await run_decision(
+                client=client,
+                model_factory=lambda ref: model,
+                runtime=RuntimeConfig(instrument=True),
+                **inputs(),
+            )
     assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
 
 
@@ -717,6 +726,7 @@ async def test_research_order_and_model_failures_are_traced(kind, capfire, caplo
             client=client,
             model_factory=lambda ref: model,
             private_history=Reader(),
+            runtime=RuntimeConfig(instrument=True),
             **inputs(tools=(capability,)),
         )
     assert (result.error is None) == (kind != "model_failure")
@@ -1150,7 +1160,12 @@ async def test_initial_market_payload_is_in_genai_trace(capfire, caplog):
             capture_request_body=False,
             capture_response_body=False,
         )
-        result = await run_decision(client=client, model_factory=lambda ref: model, **inputs())
+        result = await run_decision(
+            client=client,
+            model_factory=lambda ref: model,
+            runtime=RuntimeConfig(instrument=True),
+            **inputs(),
+        )
     assert result.error is None
     assert SECRET in "\n".join(user_prompts(calls[0][0]))
     assert SECRET not in result.model_dump_json()
@@ -1305,16 +1320,23 @@ async def test_code_mode_state_and_cursor_isolation_under_concurrency():
     assert "left-strategy" not in "\n".join(user_prompts(right[0][0]))
 
 
-async def test_code_mode_content_included_in_telemetry(capfire, caplog):
+@pytest.mark.parametrize("instrument", [False, True])
+async def test_runtime_controls_code_mode_content_in_telemetry(capfire, caplog, instrument):
     Agent.instrument_all(True)
     try:
         model, _ = script(
             [code_call(f"print({SECRET!r})\n{news_code()}")],
             lambda info: [output(info)],
         )
-        result, _ = await invoke(model, payload=page([news(text=SECRET)]), overrides=code_runtime())
+        result, _ = await invoke(
+            model,
+            payload=page([news(text=SECRET)]),
+            overrides={"runtime": RuntimeConfig(code_mode=True, instrument=instrument)},
+        )
         assert result.error is None
-        assert SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+        assert (
+            SECRET in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
+        ) is instrument
         assert SECRET not in caplog.text
     finally:
         Agent.instrument_all(False)

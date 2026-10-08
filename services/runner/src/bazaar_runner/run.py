@@ -256,6 +256,22 @@ async def submit_order(
     )
 
 
+def decision_attributes(new: list[OrderRecord], outcome: StepOutcome) -> dict[str, str]:
+    """bazaar.action and, when it ordered, the last order of the decision (docs/telemetry.md)."""
+    if not new:
+        return {"bazaar.action": "failed" if outcome.error is not None else "hold"}
+    result = new[-1].result
+    attributes = {
+        "bazaar.action": "ordered",
+        "bazaar.symbol": result.symbol,
+        "bazaar.side": result.side.value,
+        "bazaar.quantity": str(result.quantity),
+    }
+    if result.status == "filled":
+        attributes["bazaar.fill_price"] = str(result.unit_price)
+    return attributes
+
+
 async def run_strategy(
     spec: RunSpec, market: MarketPort, decide: DecisionPolicy | DecisionStep
 ) -> RunResult:
@@ -314,6 +330,8 @@ async def run_strategy(
                     if len(orders) > settled:
                         account = orders[-1].result.account
                 for name, value in outcome.attributes.items():
+                    span.set_attribute(name, value)
+                for name, value in decision_attributes(orders[settled:], outcome).items():
                     span.set_attribute(name, value)
                 if outcome.usage is not None:
                     agent_usage = (agent_usage or AgentUsage()) + outcome.usage

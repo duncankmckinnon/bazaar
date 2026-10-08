@@ -11,6 +11,7 @@ from pydantic_evals.online import wait_for_evaluations
 from .test_research import account, news, order, order_request, page, portfolio
 from .test_trading import (
     DecisionBudget,
+    RuntimeConfig,
     code_call,
     code_runtime,
     invoke,
@@ -63,13 +64,17 @@ def judge(monkeypatch):
     return prompts
 
 
-async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfire):
+@pytest.mark.parametrize("instrument", [False, True])
+async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfire, instrument):
     model, _ = script(
         [ToolCallPart("news", query())],
         lambda info: [output(info)],
     )
     result, requests = await invoke(
-        model, payload=page([news()]), instructions="Read the news, then hold."
+        model,
+        payload=page([news()]),
+        instructions="Read the news, then hold.",
+        overrides={"runtime": RuntimeConfig(instrument=instrument)},
     )
     await wait_for_evaluations()
 

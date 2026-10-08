@@ -144,13 +144,26 @@ async def record_run(
     runs_dir: Path,
     evaluate: Evaluate | None = None,
     submission_id: str | None = None,
+    strategy_name: str | None = None,
+    handle: str | None = None,
 ) -> tuple[RunRecord, BaseModel | None]:
-    """Run, build the record and evaluate it inside one runner.run span, then write the files."""
+    """Run, build the record and evaluate it inside one runner.run span, then write the files.
+
+    The bazaar.* attributes (docs/telemetry.md) go on runner.run and, as Logfire baggage, on
+    every span and log the run creates: decisions, orders, marks, the agent's own spans, evals.
+    """
     run_dir = runs_dir / str(spec.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
-    with logfire.span(
-        "runner.run", experiment_id=str(spec.experiment_id), policy_ref=policy_ref
-    ) as span:
+    attributes = bazaar_attributes(spec, policy_ref, strategy_name, submission_id, handle)
+    with (
+        logfire.set_baggage(**attributes),
+        logfire.span(
+            "runner.run",
+            experiment_id=str(spec.experiment_id),
+            policy_ref=policy_ref,
+            **attributes,
+        ) as span,
+    ):
         result = await run_strategy(spec, market, policy)
         record = build_record(spec, result, policy_ref, _trace_id(span), submission_id)
         span.set_attribute("status", record.status)
@@ -161,10 +174,48 @@ async def record_run(
         # Written before evaluation, so an evaluator failure can never lose the run.
         (run_dir / "record.json").write_text(record.model_dump_json(indent=2))
         evaluation = _evaluate(evaluate, record) if evaluate else None
+        if evaluation is not None:
+            logfire.info("bazaar.run scored", **attributes, **scored(record, evaluation))
 
     if evaluation is not None:
         (run_dir / "evaluation.json").write_text(evaluation.model_dump_json(indent=2))
     return record, evaluation
+
+
+def bazaar_attributes(
+    spec: RunSpec,
+    policy_ref: str,
+    strategy_name: str | None,
+    submission_id: str | None,
+    handle: str | None,
+) -> dict[str, str]:
+    """The names a Logfire dashboard filters on; baggage values are strings."""
+    attributes = {
+        "bazaar.strategy_name": strategy_name or policy_ref,
+        "bazaar.experiment_id": str(spec.experiment_id),
+        "bazaar.run_id": str(spec.run_id),
+        "bazaar.policy_kind": "baseline" if policy_ref.startswith("baseline-") else "agent",
+    }
+    if submission_id is not None:
+        attributes["bazaar.submission_id"] = submission_id
+    if handle is not None:
+        attributes["bazaar.handle"] = handle
+    return attributes
+
+
+def scored(record: RunRecord, evaluation: BaseModel) -> dict[str, float | int]:
+    """Performance for the 'bazaar.run scored' log. A value evals did not compute is omitted;
+    excess over buy-and-hold needs the other run, so it is never known here."""
+    period = getattr(evaluation, "period", None)
+    values: dict[str, float | int] = {
+        "fills": sum(o.result.status == "filled" for o in record.orders),
+        "decisions_exhausted": sum("budget exhausted" in e.error for e in record.decision_errors),
+    }
+    if (period_return := getattr(period, "period_return", None)) is not None:
+        values["return_pct"] = float(period_return * 100)
+    if (end_value := getattr(period, "end_value", None)) is not None:
+        values["ending_value"] = float(end_value)
+    return values
 
 
 def _evaluate(evaluate: Evaluate, record: RunRecord) -> BaseModel | None:
