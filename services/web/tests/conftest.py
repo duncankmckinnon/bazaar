@@ -1,6 +1,7 @@
 """Offline fixtures: synthetic run directories shaped like RunRecord v1 / RunEvaluation."""
 
 import json
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -119,7 +120,9 @@ class FakeRunner:
         if not self.gate.wait(timeout=10):
             raise TimeoutError("test gate never opened")
         if name in self.fail:
-            raise RuntimeError("market said no: token=super-secret-token")
+            raise RuntimeError(
+                f"market said no: token=super-secret-token key={os.environ.get('PYDANTIC_AI_GATEWAY_API_KEY')}"
+            )
         return write_run(
             runs_dir,
             f"sub-{submission_id}",

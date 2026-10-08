@@ -181,7 +181,9 @@ def test_percent_is_applied_exactly_once(seeded, helpers):
     assert agent["trace_id"] == "0af7651916cd43dd8448eb211c80319c"
 
 
-def test_failed_run_reports_a_generic_error(seeded, helpers, caplog):
+def test_failed_run_reports_a_generic_error(seeded, helpers, caplog, monkeypatch):
+    monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "SENTINEL-GATEWAY-KEY-7f3a")
+    monkeypatch.setenv("LOGFIRE_TOKEN", "")
     runner = helpers.FakeRunner(fail={"alice-bot"})
     with TestClient(create_app(seeded, runner)) as client:
         submission_id = submit(client).json()["id"]
@@ -194,8 +196,10 @@ def test_failed_run_reports_a_generic_error(seeded, helpers, caplog):
     assert done["rank"] is None
     assert "market said no" not in board_text
     assert "super-secret-token" not in board_text
-    assert "RuntimeError: market said no: token=***" in caplog.text
+    assert "RuntimeError: market said no: token=*** key=***" in caplog.text
     assert "super-secret-token" not in caplog.text
+    assert "SENTINEL-GATEWAY-KEY-7f3a" not in caplog.text
+    assert "SENTINEL-GATEWAY-KEY-7f3a" not in board_text
     assert submission_id not in [r["id"] for r in rows_from(board_text)]
 
 
@@ -372,3 +376,37 @@ def test_empty_runs_dir_gives_default_window(settings, helpers):
         "days": 10,
     }
     assert payload["rows"] == []
+
+
+def test_numeric_fields_are_json_numbers(seeded, helpers):
+    with TestClient(create_app(seeded, helpers.FakeRunner())) as client:
+        submission_id = submit(client).json()["id"]
+        helpers.wait_for(lambda: status(client, submission_id)["status"] == "scored")
+        payload = client.get("/api/board").json()
+        done = status(client, submission_id)
+
+    assert isinstance(payload["window"]["starting_cash"], float)
+    for row in payload["rows"]:
+        for field in ("return_pct", "excess_pct"):
+            assert row[field] is None or isinstance(row[field], float), (field, row)
+        assert row["fills"] is None or isinstance(row["fills"], int)
+        assert row["rank"] is None or isinstance(row["rank"], int)
+        assert row["history"] is None or all(isinstance(v, float) for v in row["history"])
+    assert isinstance(done["return_pct"], float)
+    assert isinstance(done["rank"], int)
+
+
+def test_admin_whoami_shows_the_cap_ip(settings, helpers):
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        headers = {"X-Forwarded-For": "198.51.100.1, 203.0.113.7"}
+        denied = client.get("/api/admin/whoami", headers=headers)
+        seen = client.get(
+            "/api/admin/whoami", headers=headers | {"X-Bazaar-Admin-Token": "admin-secret"}
+        )
+
+    assert denied.status_code == 403
+    assert seen.json() == {
+        "x_forwarded_for": "198.51.100.1, 203.0.113.7",
+        "peer": "testclient",
+        "cap_ip": "203.0.113.7",
+    }

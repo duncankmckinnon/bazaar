@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -9,7 +10,7 @@ from typing import Any, Protocol
 from bazaar_replay.leaderboard import Run, load_run
 
 from bazaar_web.board import BoardSource, percent
-from bazaar_web.settings import Settings
+from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
 
 log = logging.getLogger("bazaar_web.worker")
@@ -124,9 +125,10 @@ class Worker:
     def _redact(self, exc: Exception) -> str:
         """The exception class and message, with any configured secret masked."""
         text = f"{type(exc).__name__}: {exc}"
-        for secret in (self.settings.runner_token, self.settings.admin_token):
-            if secret:
-                text = text.replace(secret, "***")
+        secrets = [os.environ.get(name) for name in SECRET_ENV_VARS]
+        secrets += [self.settings.runner_token, self.settings.admin_token]
+        for secret in sorted(filter(None, secrets), key=len, reverse=True):
+            text = text.replace(secret, "***")
         return text
 
     def _fail(self, submission: dict[str, Any], error: str, exc: Exception) -> None:

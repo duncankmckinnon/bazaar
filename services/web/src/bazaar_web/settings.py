@@ -2,6 +2,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Env vars whose values must never reach a log line; redacted by value.
+SECRET_ENV_VARS = (
+    "PYDANTIC_AI_GATEWAY_API_KEY",
+    "BAZAAR_RUNNER_TOKEN",
+    "BAZAAR_ADMIN_TOKEN",
+    "LOGFIRE_TOKEN",
+)
+
 
 @dataclass(frozen=True)
 class Settings:

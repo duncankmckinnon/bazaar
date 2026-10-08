@@ -145,20 +145,31 @@ def create_app(
     def board(request: Request) -> dict[str, Any]:
         return board_payload(request)
 
-    @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
-    def hide(
-        submission_id: str,
-        request: Request,
-        token: Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")] = None,
-    ) -> Response:
+    def require_admin(token: str | None) -> None:
         if settings.admin_token is None:
             raise HTTPException(404, "not found")
         if token is None or not hmac.compare_digest(token.encode(), settings.admin_token.encode()):
             raise HTTPException(403, "forbidden")
+
+    AdminToken = Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")]
+
+    @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
+    def hide(submission_id: str, request: Request, token: AdminToken = None) -> Response:
+        require_admin(token)
         if not request.app.state.store.hide(submission_id):
             raise HTTPException(404, "no such submission")
         request.app.state.board.invalidate()
         return Response(status_code=204)
+
+    @app.get("/api/admin/whoami")
+    def whoami(request: Request, token: AdminToken = None) -> dict[str, str | None]:
+        """Temporary: shows which address the per-IP cap sees behind the deploy's proxy."""
+        require_admin(token)
+        return {
+            "x_forwarded_for": request.headers.get("x-forwarded-for"),
+            "peer": request.client.host if request.client else None,
+            "cap_ip": client_ip(request),
+        }
 
     return app
 
