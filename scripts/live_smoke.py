@@ -52,6 +52,11 @@ def _detail(response: httpx.Response) -> str:
     return text[:200] or "(empty body)"
 
 
+def _one_line(text: str) -> str:
+    """Server text can hold newlines (tracebacks); the report must stay a single line."""
+    return " ".join(text.split())[:300]
+
+
 def _request(client: httpx.Client, step: str, method: str, url: str, **kwargs) -> httpx.Response:
     try:
         return client.request(method, url, **kwargs)
@@ -123,12 +128,16 @@ def run(
 
         deadline = now() + timeout
         status, day, rank = "unknown", None, None
+        problem = None  # why the last poll told us nothing, for the timeout reason
         while True:
             try:
                 response = client.get(f"{base_url}/api/submissions/{submission_id}")
-            except httpx.HTTPError:
+            except httpx.HTTPError as error:
                 response = None  # transient: keep polling until the deadline
-            if response is not None:
+                problem = type(error).__name__
+            if response is not None and response.status_code >= 500:
+                problem = f"HTTP {response.status_code}"
+            elif response is not None:
                 if response.status_code == 404:
                     raise SmokeFailure("poll", f"submission {submission_id} not found (HTTP 404)")
                 if 400 <= response.status_code < 500:
@@ -137,7 +146,12 @@ def run(
                     try:
                         body = response.json()
                     except ValueError:
+                        body = None
+                    if not isinstance(body, dict):
+                        problem = "response was not a JSON object"
                         body = {}
+                    else:
+                        problem = None
                     status, day, rank = (
                         body.get("status", status),
                         body.get("day"),
@@ -150,8 +164,9 @@ def run(
                             "run", f"run failed: {body.get('error') or 'no error given'}"
                         )
             if now() >= deadline:
+                last = f"; last poll: {problem}" if problem else ""
                 raise SmokeFailure(
-                    "poll", f"timed out after {timeout:g}s in status {status} (day {day})"
+                    "poll", f"timed out after {timeout:g}s in status {status} (day {day}{last})"
                 )
             sleep(poll)
 
@@ -167,7 +182,7 @@ def run(
         if isinstance(return_pct, bool) or not isinstance(return_pct, (int, float)):
             raise SmokeFailure("board", f"return_pct is not a JSON number: {return_pct!r}")
     except SmokeFailure as failure:
-        return False, f"FAIL {failure.step}: {failure.reason}"
+        return False, f"FAIL {failure.step}: {_one_line(failure.reason)}"
 
     elapsed = now() - started
     return True, (
@@ -187,8 +202,11 @@ def main() -> None:
     if not args.base_url:
         parser.error("BASE_URL is required (argument or environment variable)")
 
-    with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-        ok, line = run(client, args.base_url, submit=args.submit, timeout=args.timeout)
+    try:
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            ok, line = run(client, args.base_url, submit=args.submit, timeout=args.timeout)
+    except Exception as error:  # noqa: BLE001 - last resort: one FAIL line, never a traceback
+        ok, line = False, f"FAIL internal: {type(error).__name__}: {_one_line(str(error))}"
     print(line)
     sys.exit(0 if ok else 1)
 

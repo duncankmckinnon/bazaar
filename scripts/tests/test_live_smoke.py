@@ -237,3 +237,53 @@ def test_missing_base_url_exits_2(monkeypatch, capsys):
 
     assert exit_info.value.code == 2
     assert "BASE_URL is required" in capsys.readouterr().err
+
+
+def test_multi_line_server_text_gives_exactly_one_line():
+    error = "ModelHTTPError: status_code: 502\nTraceback (most recent call last):\n  File x"
+    client, _ = server(("failed",), error=error)
+    ok, line = run(client)
+
+    assert not ok and "\n" not in line
+    assert (
+        line
+        == "FAIL run: run failed: ModelHTTPError: status_code: 502 Traceback (most recent call last): File x"
+    )
+
+    taken = httpx.Response(409, json={"detail": "taken\nby another"})
+    client, _ = server(post=taken)
+    assert run(client)[1] == "FAIL submit: HTTP 409: taken by another"
+
+
+def test_non_object_poll_body_fails_in_one_line_without_raising():
+    client, _ = server((httpx.Response(200, json=[]),))
+    ok, line = run(client, timeout=9.0)
+
+    assert (ok, line) == (
+        False,
+        (
+            "FAIL poll: timed out after 9s in status unknown "
+            "(day None; last poll: response was not a JSON object)"
+        ),
+    )
+
+
+def test_timeout_under_persistent_5xx_names_the_last_poll_problem():
+    client, _ = server((httpx.Response(503, text="busy"),))
+    assert run(client, timeout=9.0) == (
+        False,
+        "FAIL poll: timed out after 9s in status unknown (day None; last poll: HTTP 503)",
+    )
+
+
+def test_unexpected_errors_become_one_fail_line(monkeypatch, capsys):
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom\nsecond line")
+
+    monkeypatch.setattr(live_smoke, "run", explode)
+    monkeypatch.setattr(sys, "argv", ["live_smoke.py", BASE])
+    with pytest.raises(SystemExit) as exit_info:
+        live_smoke.main()
+
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().out == "FAIL internal: RuntimeError: boom second line\n"
