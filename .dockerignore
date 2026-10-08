@@ -3,5 +3,13 @@
 **/__pycache__
 **/.pytest_cache
 **/.ruff_cache
-.env
+.env*
 docs
+data
+runs
+.agents
+.codex
+.aws
+.claude
+**/*.sqlite3*
+**/*.db

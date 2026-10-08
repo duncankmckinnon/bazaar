@@ -1,20 +1,64 @@
-x-agent: &agent
-  build:
-    context: .
-    dockerfile: services/agent/Dockerfile
-  depends_on:
-    market:
-      condition: service_healthy
-  environment: &agent-env
-    MARKET_URL: http://market:8000
+x-market-build: &market-build
+  context: .
+  dockerfile: services/market/Dockerfile
 
 services:
+  # One-time setup: docker compose run --rm --build data-download
+  data-download:
+    profiles: [data]
+    build: *market-build
+    environment:
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      BAZAAR_SNAPSHOT_VERSION: ${BAZAAR_SNAPSHOT_VERSION:-demo}
+      BAZAAR_ALPACA_FEED: ${BAZAAR_ALPACA_FEED:-sip}
+    volumes:
+      - source-snapshots:/snapshots
+    command:
+      - sh
+      - -ec
+      - |
+        .venv/bin/python -m bazaar_market.sources bars --root /snapshots --version "$$BAZAAR_SNAPSHOT_VERSION" --feed "$$BAZAAR_ALPACA_FEED"
+        .venv/bin/python -m bazaar_market.sources news --root /snapshots --version "$$BAZAAR_SNAPSHOT_VERSION"
+        .venv/bin/python -m bazaar_market.sources edgar --root /snapshots --version "$$BAZAAR_SNAPSHOT_VERSION"
+
+  # Re-importing identical snapshots is safe. Failed imports block market startup.
+  data-init:
+    build: *market-build
+    environment:
+      BAZAAR_SNAPSHOT_VERSION: ${BAZAAR_SNAPSHOT_VERSION:-demo}
+    volumes:
+      - source-snapshots:/snapshots:ro
+      - market-data:/data
+    command:
+      - sh
+      - -ec
+      - |
+        for source in alpaca-bars alpaca-news edgar; do
+          if [ ! -f "/snapshots/$$source/$$BAZAAR_SNAPSHOT_VERSION/manifest.json" ]; then
+            echo "Missing $$source snapshot. Run: docker compose run --rm --build data-download" >&2
+            exit 1
+          fi
+        done
+        .venv/bin/python -m bazaar_market.sources import-bars --snapshot "/snapshots/alpaca-bars/$$BAZAAR_SNAPSHOT_VERSION" --db /data/market.sqlite3
+        .venv/bin/python -m bazaar_market.sources import-news --snapshot "/snapshots/alpaca-news/$$BAZAAR_SNAPSHOT_VERSION" --db /data/market.sqlite3
+        .venv/bin/python -m bazaar_market.sources import-filings --snapshot "/snapshots/edgar/$$BAZAAR_SNAPSHOT_VERSION" --db /data/market.sqlite3
+
   market:
-    build:
-      context: .
-      dockerfile: services/market/Dockerfile
+    build: *market-build
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    environment:
+      BAZAAR_MARKET_DB: /data/market.sqlite3
+      BAZAAR_RUNNER_TOKEN: ${BAZAAR_RUNNER_TOKEN:?Set BAZAAR_RUNNER_TOKEN in .env}
+      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
+      BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
+    volumes:
+      - market-data:/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 2s
@@ -42,21 +86,42 @@ services:
       timeout: 3s
       retries: 15
 
-  seller:
-    <<: *agent
+  # The web queue runs the runner, trading agent and online judge in-process.
+  web:
+    build:
+      context: .
+      dockerfile: services/web/Dockerfile
+    depends_on:
+      market:
+        condition: service_healthy
     environment:
-      <<: *agent-env
-      AGENT_NAME: seller
+      PORT: "8080"
+      BAZAAR_MARKET_URL: http://market:8000
+      BAZAAR_RUNNER_TOKEN: ${BAZAAR_RUNNER_TOKEN:?Set BAZAAR_RUNNER_TOKEN in .env}
+      BAZAAR_WEB_DB: /data/web.sqlite3
+      BAZAAR_RUNS_DIR: /data/runs
+      PYDANTIC_AI_GATEWAY_API_KEY: ${PYDANTIC_AI_GATEWAY_API_KEY:-}
+      BAZAAR_AGENT_MODEL: ${BAZAAR_AGENT_MODEL:-gateway/openai:gpt-5.6-sol}
+      BAZAAR_JUDGE_MODEL: ${BAZAAR_JUDGE_MODEL:-gateway/anthropic:claude-sonnet-5-5}
+      BAZAAR_STRATEGY_EVAL_ENABLED: ${BAZAAR_STRATEGY_EVAL_ENABLED:-1}
       LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
       BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
-
-  buyer:
-    <<: *agent
-    environment:
-      <<: *agent-env
-      AGENT_NAME: buyer
-      LOGFIRE_TOKEN: ${LOGFIRE_TOKEN:-}
-      BAZAAR_ENVIRONMENT: ${BAZAAR_ENVIRONMENT:-development}
+      BAZAAR_ADMIN_TOKEN: ${BAZAAR_ADMIN_TOKEN:-}
+      BAZAAR_LOGFIRE_DASHBOARD_URL: ${BAZAAR_LOGFIRE_DASHBOARD_URL:-}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - web-data:/data
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/board')"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
 volumes:
+  source-snapshots:
+  market-data:
   registry-data:
+  web-data:
