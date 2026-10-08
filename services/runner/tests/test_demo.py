@@ -39,6 +39,9 @@ HOLD = Launch(BUY_AND_HOLD_REF, UUID(int=0xE3), UUID(int=0xA3))
 REFUSED = Launch(MOMENTUM_REF, UUID(int=0xE4), UUID(int=0xA4))
 DEMO = {"data_version": "synthetic-v1", "execution_rule_version": "exec-v1"}
 
+# ScriptedMomentum on the fixture prices: every demo symbol it can afford a share of.
+MOMENTUM_BUYS = set(DEMO_SYMBOLS) - {"META", "MSFT"}
+
 
 class CountingMarket(InMemoryMarket):
     def __init__(self) -> None:
@@ -99,8 +102,9 @@ async def test_demo_runs_share_a_schedule_and_the_refusal_is_recorded(tmp_path):
         CASH.experiment_id,
         REFUSED.experiment_id,
     }
-    # Fixture prices only rise: the momentum agent buys each symbol at the second open.
-    assert {o.request.symbol for o in momentum.orders} == set(DEMO_SYMBOLS)
+    # Fixture prices only rise: at the second open momentum puts 30% of its remaining cash into
+    # each symbol in turn; by META ($701) and MSFT ($401) that buys no whole share.
+    assert {o.request.symbol for o in momentum.orders} == MOMENTUM_BUYS
     assert {o.result.status for o in momentum.orders} == {"filled"}
     assert cash.orders == () and cash.final_account.cash == Decimal(10000)
     # Each policy reads only its own run's port.
@@ -379,7 +383,7 @@ async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfi
     assert {r.manifest.schedule_digest for r in (agent, momentum, cash)} == {
         agent.manifest.schedule_digest
     }
-    assert {o.request.symbol for o in momentum.orders} == set(DEMO_SYMBOLS)
+    assert {o.request.symbol for o in momentum.orders} == MOMENTUM_BUYS
     assert cash.orders == ()
 
     spans = capfire.exporter.exported_spans_as_dict()
@@ -480,3 +484,88 @@ def test_the_trading_day_counts_the_demo_sessions():
     assert last.date == date(2026, 2, 13)
     assert trading_day(sessions, first.open_at - timedelta(minutes=1)) is None
     assert trading_day(sessions, first.close_at + timedelta(minutes=1)) is None
+
+
+def baseline_policies():
+    baselines = pytest.importorskip("bazaar_replay.baselines")
+    return {
+        MOMENTUM_REF: lambda prices: ScriptedMomentum(DEMO_SYMBOLS, prices),
+        CASH_ONLY_REF: lambda prices: baselines.CashOnly(),
+        BUY_AND_HOLD_REF: lambda prices: baselines.BuyAndHold(DEMO_SYMBOLS, prices),
+    }
+
+
+async def run_baselines(runs_dir, markets=None):
+    launches = [MOMENTUM, CASH, HOLD]
+    markets = markets or {launch: InMemoryMarket() for launch in launches}
+    return await run_demo(
+        launches,
+        markets,
+        baseline_policies(),
+        starting_cash=Decimal(10000),
+        runs_dir=runs_dir,
+        **DEMO,
+    )
+
+
+async def test_buy_and_hold_buys_all_twelve_on_day_one_and_never_overdraws(tmp_path):
+    *_, hold = await run_baselines(tmp_path)
+    assert hold.status == "completed"
+    assert sorted(o.request.symbol for o in hold.orders) == sorted(DEMO_SYMBOLS)
+    assert len(DEMO_SYMBOLS) == 12
+    # Day 1 only: every order at the first open, whole shares, all filled.
+    assert {o.decided_at for o in hold.orders} == {SESSIONS[0].open_at}
+    assert all(o.result.status == "filled" and o.request.quantity >= 1 for o in hold.orders)
+    # About $833 a slot: even the priciest fixture stocks (META, MSFT) get a share.
+    assert {o.request.symbol for o in hold.orders} >= {"META", "MSFT"}
+    assert all(o.result.account.cash >= 0 for o in hold.orders)
+    assert Decimal(0) <= hold.final_account.cash < Decimal(10000) / 12
+
+
+async def test_two_identical_runs_on_twelve_symbols_give_identical_records(tmp_path):
+    first = await run_baselines(tmp_path / "first")
+    second = await run_baselines(tmp_path / "second")
+
+    # Everything but the trace id, which names each run's own Logfire trace.
+    def dumped(records):
+        return [r.model_dump(mode="json", exclude={"trace_id"}) for r in records]
+
+    assert dumped(first) == dumped(second)
+    assert sum(len(r.orders) for r in first) > 12
+
+
+async def test_every_record_json_carries_the_marked_value_series(tmp_path):
+    """The web chart draws record.json's marks: one value per session for every completed run,
+    including the baselines, and the sessions marked so far for a run that failed part way."""
+    failing = InMemoryMarket()
+    original = failing.set_cutoff
+    cutoffs = []
+
+    async def fails_on_day_four(experiment_id, cutoff, *versions):
+        cutoffs.append(cutoff)
+        if len(cutoffs) == 8:  # the 4th session's open: three closes are already marked
+            raise MissingPriceForTest()
+        return await original(experiment_id, cutoff, *versions)
+
+    failing.set_cutoff = fails_on_day_four
+    markets = {MOMENTUM: failing, CASH: InMemoryMarket(), HOLD: InMemoryMarket()}
+    momentum, *_ = await run_baselines(tmp_path, markets)
+    on_disk = {
+        record["manifest"]["policy_ref"]: record
+        for record in (json.loads(p.read_text()) for p in tmp_path.glob("*/record.json"))
+    }
+    assert len(on_disk) == 3 and momentum.status == "failed"
+    for policy_ref in (CASH_ONLY_REF, BUY_AND_HOLD_REF):
+        marks = on_disk[policy_ref]["marks"]
+        assert len(marks) == len(SESSIONS) == 10
+        assert all(Decimal(m["snapshot"]["portfolio_value"]) > 0 for m in marks)
+    assert {Decimal(m["snapshot"]["portfolio_value"]) for m in on_disk[CASH_ONLY_REF]["marks"]} == {
+        Decimal(10000)
+    }
+    partial = on_disk[MOMENTUM_REF]
+    assert partial["status"] == "failed"
+    assert [m["event_sequence"] for m in partial["marks"]] == [1, 3, 5]
+
+
+class MissingPriceForTest(Exception):
+    """A market failure part way through a run."""
