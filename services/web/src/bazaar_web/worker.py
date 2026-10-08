@@ -1,21 +1,27 @@
 """In-process FIFO queue running submissions in threads, a few at a time."""
 
 import asyncio
+import json
 import logging
 import os
 from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+import logfire
 from bazaar_replay.leaderboard import Run, load_run
+from opentelemetry import trace
 
 from bazaar_web.board import BoardSource, percent
 from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
 
 log = logging.getLogger("bazaar_web.worker")
+
+TRACER = trace.get_tracer("bazaar-web")
 
 FAILED = "the run failed; please try again"
 UNAVAILABLE = "runner unavailable"
@@ -44,6 +50,14 @@ def expected_run_dir(runs_dir: Path, submission_id: str) -> Path:
     """
     experiment_id = uuid5(NAMESPACE_URL, f"bazaar:sub-{submission_id}")
     return runs_dir / str(uuid5(experiment_id, "run"))
+
+
+def carrier_of(submission: dict[str, Any]) -> dict[str, str]:
+    """The trace context saved when the submission was posted ({} if none)."""
+    try:
+        return json.loads(submission.get("trace_context") or "{}")
+    except ValueError:
+        return {}
 
 
 def finished(run_dir: Path) -> bool:
@@ -89,14 +103,20 @@ class Worker:
         the expected run dir.
         """
         restarted = []
-        for submission_id in self.store.ids_with_status("running"):
-            run_dir = expected_run_dir(self.settings.runs_dir, submission_id)
-            if finished(run_dir):
-                await self._scored(submission_id, run_dir)
-            else:
-                self.store.requeue(submission_id)
-                restarted.append(submission_id)
-        waiting = [i for i in self.store.ids_with_status("queued") if i not in restarted]
+        with logfire.suppress_instrumentation():
+            running = self.store.ids_with_status("running")
+        for submission_id in running:
+            # Each recovered run keeps the trace of the request that submitted it.
+            with logfire.propagate.attach_context(self._carrier(submission_id)):
+                run_dir = expected_run_dir(self.settings.runs_dir, submission_id)
+                if finished(run_dir):
+                    await self._scored(submission_id, run_dir)
+                else:
+                    self.store.requeue(submission_id)
+                    restarted.append(submission_id)
+        with logfire.suppress_instrumentation():
+            queued = self.store.ids_with_status("queued")
+        waiting = [i for i in queued if i not in restarted]
         for submission_id in restarted + waiting:
             self.queue.put_nowait(submission_id)
 
@@ -119,10 +139,22 @@ class Worker:
             finally:
                 self.queue.task_done()
 
+    def _carrier(self, submission_id: str) -> dict[str, str]:
+        with logfire.suppress_instrumentation():
+            submission = self.store.get(submission_id)
+        return carrier_of(submission) if submission else {}
+
     async def _run(self, submission_id: str) -> None:
-        submission = self.store.get(submission_id)
+        with logfire.suppress_instrumentation():
+            submission = self.store.get(submission_id)
         if submission is None or submission["status"] != "queued":
             return
+        # Everything for this job, including its store writes, joins the submission's trace.
+        with logfire.propagate.attach_context(carrier_of(submission)):
+            await self._run_submission(submission)
+
+    async def _run_submission(self, submission: dict[str, Any]) -> None:
+        submission_id = submission["id"]
         name = submission["name"]
         self.store.mark_running(submission_id)
         self.store.add_event(f"{name} started trading", submission_id)
@@ -137,17 +169,29 @@ class Worker:
         except ImportError as exc:
             self._fail(submission, UNAVAILABLE, exc)
             return
+
+        def in_thread() -> Path:
+            # Attach in the thread itself, so the run is a child of the submission trace.
+            with logfire.propagate.attach_context(carrier_of(submission)):
+                queued = TRACER.start_span(
+                    "submission queued",
+                    start_time=created_ns(submission["created_at"]),
+                    attributes={"submission_id": submission_id},
+                )
+                queued.end()  # the queue wait ends as the run starts; the run nests under it
+                with trace.use_span(queued, end_on_exit=False):
+                    return run(
+                        submission_id=submission_id,
+                        name=name,
+                        instructions=submission["instructions"],
+                        market_url=self.settings.market_url,
+                        runner_token=self.settings.runner_token,
+                        runs_dir=self.settings.runs_dir,
+                        on_progress=on_progress,
+                    )
+
         try:
-            run_dir = await asyncio.to_thread(
-                run,
-                submission_id=submission_id,
-                name=name,
-                instructions=submission["instructions"],
-                market_url=self.settings.market_url,
-                runner_token=self.settings.runner_token,
-                runs_dir=self.settings.runs_dir,
-                on_progress=on_progress,
-            )
+            run_dir = await asyncio.to_thread(in_thread)
         except Exception as exc:  # noqa: BLE001 - the runner raises on any failed run
             self._fail(submission, FAILED, exc)
             return
@@ -183,6 +227,10 @@ class Worker:
             await asyncio.to_thread(hook, submission_id, run_dir)
         except Exception as exc:  # noqa: BLE001 - a hook must never change the status
             log.warning("on_scored hook failed for %s: %s", submission_id, self._redact(exc))
+
+
+def created_ns(created_at: str) -> int:
+    return int(datetime.fromisoformat(created_at).timestamp() * 1_000_000_000)
 
 
 def scored_text(name: str, run_dir: Path) -> str:

@@ -72,6 +72,8 @@ secret = modal.Secret.from_name(
     "bazaar-live", required_keys=["BAZAAR_RUNNER_TOKEN", "PYDANTIC_AI_GATEWAY_API_KEY"]
 )
 WEB_ENV = {
+    # The market runs as a subprocess of the web app and inherits this environment.
+    "BAZAAR_ENVIRONMENT": "production",
     "BAZAAR_MARKET_URL": MARKET_URL,
     "BAZAAR_MARKET_DB": f"{DATA}/market.sqlite3",
     "BAZAAR_RUNS_DIR": f"{DATA}/runs",

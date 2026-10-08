@@ -4,13 +4,15 @@ Each operation opens its own connection, so worker threads can report progress s
 """
 
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+import logfire
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
@@ -27,7 +29,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     started_at TEXT,
     finished_at TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
-    latest_value TEXT
+    latest_value TEXT,
+    trace_context TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -49,6 +52,27 @@ class CapReached(Exception):
         self.detail = detail
 
 
+class TracedConnection:
+    """A connection whose queries emit sqlite spans.
+
+    logfire.instrument_sqlite3 traces cursor().execute only, not Connection.execute, so every
+    query goes through a cursor. Transaction control uses the raw connection: no span each.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.raw = conn
+        self.traced = logfire.instrument_sqlite3(conn)
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
+        return self.traced.cursor().execute(sql, params)
+
+    def executescript(self, script: str) -> sqlite3.Cursor:
+        return self.raw.executescript(script)
+
+    def close(self) -> None:
+        self.raw.close()
+
+
 class Store:
     def __init__(self, path: Path, now: Now = lambda: datetime.now(UTC)) -> None:
         self.path = path
@@ -67,24 +91,25 @@ class Store:
         """
         with self._tx() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(submissions)")}
-            if "latest_value" not in columns:
-                conn.execute("ALTER TABLE submissions ADD COLUMN latest_value TEXT")
+            for column in ("latest_value", "trace_context"):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> "TracedConnection":
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        return conn
+        return TracedConnection(conn)
 
     @contextmanager
-    def _tx(self) -> Iterator[sqlite3.Connection]:
+    def _tx(self) -> Iterator["TracedConnection"]:
         with closing(self._connect()) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.raw.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
             except BaseException:
-                conn.execute("ROLLBACK")
+                conn.raw.execute("ROLLBACK")
                 raise
-            conn.execute("COMMIT")
+            conn.raw.execute("COMMIT")
 
     def _stamp(self) -> str:
         return self.now().isoformat()
@@ -99,6 +124,7 @@ class Store:
         max_queue: int,
         max_per_day: int,
         max_per_ip_hour: int,
+        trace_context: str | None = None,
     ) -> str:
         """Insert a queued submission, checking the name and every cap in one transaction."""
         now = self.now()
@@ -127,13 +153,21 @@ class Store:
             submission_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-                (submission_id, name, handle, instructions, ip_hash, now.isoformat()),
+                "created_at, trace_context) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (
+                    submission_id,
+                    name,
+                    handle,
+                    instructions,
+                    ip_hash,
+                    now.isoformat(),
+                    trace_context,
+                ),
             )
             self._event(conn, f"{name} joined the queue", submission_id)
         return submission_id
 
-    def _event(self, conn: sqlite3.Connection, text: str, submission_id: str | None) -> None:
+    def _event(self, conn: TracedConnection, text: str, submission_id: str | None) -> None:
         conn.execute(
             "INSERT INTO events (t, text, submission_id) VALUES (?, ?, ?)",
             (self._stamp(), text, submission_id),

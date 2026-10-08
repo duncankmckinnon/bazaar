@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
+import bazaar_web.telemetry
 import pytest
 from bazaar_web.settings import Settings
 
@@ -160,6 +161,21 @@ class Clock:
 
     def __call__(self) -> datetime:
         return self.at
+
+
+REAL_CONFIGURE = bazaar_web.telemetry.configure
+
+
+@pytest.fixture(autouse=True)
+def no_global_telemetry_setup(monkeypatch):
+    """The lifespan configures Logfire for real; tests keep capfire's (or no) configuration."""
+    monkeypatch.setattr("bazaar_web.telemetry.configure", lambda: None)
+    monkeypatch.setenv("LOGFIRE_IGNORE_NO_CONFIG", "1")
+
+
+@pytest.fixture
+def real_configure():
+    return REAL_CONFIGURE.__wrapped__  # undecorated: no once-per-process cache
 
 
 @pytest.fixture

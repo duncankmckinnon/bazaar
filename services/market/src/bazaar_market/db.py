@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import logfire
 from bazaar_protocol import ErrorCode
 
 SCHEMA = """
@@ -68,6 +69,44 @@ def connect(database_path: Path) -> sqlite3.Connection:
     return connection
 
 
+class _Statements:
+    """Routes statements through cursors of a connection from logfire.instrument_sqlite3, which
+    traces cursor().execute but not connection.execute, and counts them."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        # No kwargs: logfire's per-connection path drops them, and OTel's defaults keep parameter
+        # capture off. tests/test_telemetry.py fails if bound values ever reach a span.
+        self._connection = logfire.instrument_sqlite3(connection)
+        self.count = 0
+
+    def execute(self, sql: str, parameters: object = ()) -> sqlite3.Cursor:
+        self.count += 1
+        return self._connection.cursor().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: object) -> sqlite3.Cursor:
+        self.count += 1
+        return self._connection.cursor().executemany(sql, parameters)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._connection, name)
+
+
+@contextmanager
+def _span(
+    kind: str, operation: str | None, connection: sqlite3.Connection
+) -> Iterator[sqlite3.Connection]:
+    """With an operation: one span for the transaction, and a child span per statement."""
+    if operation is None:
+        yield connection
+        return
+    statements = _Statements(connection)
+    with logfire.span("ledger db {kind}", kind=kind, operation=operation) as span:
+        try:
+            yield statements  # type: ignore[misc]
+        finally:
+            span.set_attribute("statement_count", statements.count)
+
+
 def initialize(database_path: Path, *schemas: str) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = connect(database_path)
@@ -79,12 +118,15 @@ def initialize(database_path: Path, *schemas: str) -> None:
 
 
 @contextmanager
-def write_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
+def write_transaction(
+    database_path: Path, *, operation: str | None = None
+) -> Iterator[sqlite3.Connection]:
     connection = connect(database_path)
     try:
         connection.execute("BEGIN IMMEDIATE")
         try:
-            yield connection
+            with _span("write", operation, connection) as traced:
+                yield traced
         except BaseException:
             connection.execute("ROLLBACK")
             raise
@@ -94,9 +136,12 @@ def write_transaction(database_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def read_connection(database_path: Path) -> Iterator[sqlite3.Connection]:
+def read_connection(
+    database_path: Path, *, operation: str | None = None
+) -> Iterator[sqlite3.Connection]:
     connection = connect(database_path)
     try:
-        yield connection
+        with _span("read", operation, connection) as traced:
+            yield traced
     finally:
         connection.close()

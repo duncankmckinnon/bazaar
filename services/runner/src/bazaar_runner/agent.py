@@ -26,21 +26,33 @@ FIXTURE_CREATED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 FIXTURE_CREATED_BY = "bazaar-runner-fixture"
 
 
+def redacting_model_factory(model_factory: Callable[[str], Any]) -> Callable[[str], Any]:
+    """The agent's spans record a model error before the runner sees it, and Logfire never
+    scrubs exception text. So an error whose text holds a configured secret leaves the model as a
+    RedactedError with the secret removed and no chain; any other error is unchanged."""
+    from bazaar_agent.redaction import RedactingModel
+
+    return lambda model_ref: RedactingModel(model_factory(model_ref))
+
+
 def make_agent_decider(
     instructions: str,
-    model_factory: Callable[[str], Any],
+    model_factory: Callable[[str], Any] | None,
     *,
     budget: Any = None,
     runtime: Any = None,
 ) -> DecideWithAgent:
-    """Fiscal cycles arrive per decision from the market (AgentStep), never invented here."""
+    """Fiscal cycles arrive per decision from the market (AgentStep), never invented here.
+    With no model_factory the model is the operator's default (env_model_factory), as in
+    run_decision; either way its errors are redacted (redacting_model_factory)."""
     from bazaar_agent.registry_store import digest
     from bazaar_agent.research import FiscalCycle as ResearchFiscalCycle
     from bazaar_agent.research import ResearchContext
-    from bazaar_agent.trading import MarketIdentity, run_decision
+    from bazaar_agent.trading import MarketIdentity, env_model_factory, run_decision
     from bazaar_protocol.registry import StrategyDefinition, StrategyVersion
 
     definition = StrategyDefinition(instructions=instructions)
+    model_factory = redacting_model_factory(model_factory or env_model_factory())
 
     def version_for(ctx: ExperimentContext) -> StrategyVersion:
         return StrategyVersion(

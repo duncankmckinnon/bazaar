@@ -136,7 +136,7 @@ def test_a_refused_grant_raises_and_leaves_nothing(markets, tmp_path):
     with pytest.raises(SubmissionFailed) as error:
         submit(tmp_path, "http://m1")
     assert "the market refused the run" in str(error.value)
-    assert TOKEN not in str(error.value) and "[redacted]" in str(error.value)
+    assert TOKEN not in str(error.value) and "[REDACTED]" in str(error.value)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -303,3 +303,74 @@ def test_three_concurrent_submissions_do_not_cross(
     assert all(
         "strategy_adherence" not in (directory / "record.json").read_text() for directory in dirs
     )
+
+
+def run_with(tmp_path, on_progress):
+    return run_submission(
+        submission_id="sub-marks",
+        name="marks",
+        instructions=INSTRUCTIONS,
+        market_url="http://m1",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+        on_progress=on_progress,
+    )
+
+
+def test_a_one_argument_progress_callback_still_gets_the_day(markets, tmp_path):
+    markets["http://m1"] = GrantingMarket()
+    days = []
+
+    def day_only(day):
+        days.append(day)
+
+    run_with(tmp_path, day_only)
+    assert days == list(range(1, 11))
+
+
+def test_a_two_argument_progress_callback_gets_each_closes_marked_value(markets, tmp_path):
+    from decimal import Decimal
+
+    markets["http://m1"] = GrantingMarket()
+    seen = []
+
+    def day_and_value(day, value):
+        seen.append((day, value))
+
+    run_dir = run_with(tmp_path, day_and_value)
+    marks = record_in(run_dir).marks
+    assert [day for day, _ in seen] == list(range(1, 11))
+    assert all(isinstance(value, Decimal) for _, value in seen)
+    assert [value for _, value in seen] == [m.snapshot.portfolio_value for m in marks]
+
+
+def test_a_var_args_progress_callback_gets_both(markets, tmp_path):
+    markets["http://m1"] = GrantingMarket()
+    seen = []
+    run_dir = run_with(tmp_path, lambda *args: seen.append(args))
+    marks = record_in(run_dir).marks
+    assert seen == [(i + 1, m.snapshot.portfolio_value) for i, m in enumerate(marks)]
+
+
+def test_a_progress_callback_with_an_optional_value_gets_it(markets, tmp_path):
+    markets["http://m1"] = GrantingMarket()
+    seen = []
+
+    def day_and_optional_value(day, value=None):
+        seen.append((day, value))
+
+    run_dir = run_with(tmp_path, day_and_optional_value)
+    marks = record_in(run_dir).marks
+    assert seen == [(i + 1, m.snapshot.portfolio_value) for i, m in enumerate(marks)]
+
+
+def test_keyword_only_value_is_not_passed_positionally():
+    from bazaar_runner.submission import _progress_reporter
+
+    seen = []
+
+    def keyword_value(day, *, value=None):
+        seen.append((day, value))
+
+    _progress_reporter(keyword_value)(3, 7)
+    assert seen == [(3, None)]

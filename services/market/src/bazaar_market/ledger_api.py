@@ -7,6 +7,7 @@ runner's X-Bazaar-Runner-Token, and refuse every call when no runner token is co
 this is decided before the request body is read, so a refused call writes nothing.
 """
 
+import hashlib
 import hmac
 import logging
 from collections.abc import Callable
@@ -43,6 +44,23 @@ ORDER_HISTORY_SOURCE = "market-ledger-v1"
 APPROVAL_HEADER = "X-Bazaar-Approval"
 ACCOUNT_HEADER = "X-Bazaar-Account"
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
+
+
+class ApprovalId:
+    """An approval id in a log message. Approvals are bearer credentials: the terminal shows the
+    full id (str), and the Logfire handler replaces it with `ref`, a short hash."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: object) -> None:
+        self.value = str(value)
+
+    def __str__(self) -> str:
+        return self.value
+
+    @property
+    def ref(self) -> str:
+        return "ref:" + hashlib.sha256(self.value.encode()).hexdigest()[:12]
 
 
 class GrantChecker(Protocol):
@@ -98,7 +116,7 @@ def approval_check(grants: GrantChecker) -> Callable[..., UUID]:
         if approval_id is None or not grants.allows(approval_id, experiment_id):
             logger.warning(
                 "approval denied: approval_id=%s experiment_id=%s on %s",
-                approval,
+                ApprovalId(approval),
                 experiment_id,
                 route,
             )
@@ -107,7 +125,7 @@ def approval_check(grants: GrantChecker) -> Callable[..., UUID]:
             )
         logger.info(
             "approval allowed: approval_id=%s experiment_id=%s on %s",
-            approval_id,
+            ApprovalId(approval_id),
             experiment_id,
             route,
         )

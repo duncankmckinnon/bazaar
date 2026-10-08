@@ -8,8 +8,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import wraps
 
+from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models import Model
+from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_ai.models.typesafe import TypeSafeModel
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.gateway import _infer_base_url
@@ -23,11 +25,17 @@ from pydantic_evals.evaluators import (
 )
 from pydantic_evals.online import OnlineEvalConfig
 
+from bazaar_agent.redaction import RedactingModel
+
 JUDGE_MODEL_ENV = "BAZAAR_JUDGE_MODEL"
 DEFAULT_JUDGE_MODEL = "jev-1.13.0"
 GATEWAY_JEV_ROUTE = "typesafe"
 JUDGE_TIMEOUT_SECONDS = 30.0
 EVIDENCE_ATTRIBUTE = "strategy_adherence_evidence"
+# As the trader's runs (RuntimeConfig.instrument): the judge's model requests are traced with
+# content and token usage, so Logfire shows the judge's prompt and its cost. Process scrubbing
+# applies to them like any other span.
+JUDGE_INSTRUMENTATION = InstrumentationSettings(include_content=True, include_binary_content=False)
 _pending: ContextVar[set[asyncio.Event] | None] = ContextVar("strategy_evaluations", default=None)
 
 STRATEGY_RUBRIC = """The trading decision adheres to the supplied strategy.
@@ -95,11 +103,20 @@ class StrategyAdherence(Evaluator):
                 )
             }
         judge_context = replace(ctx, inputs=evidence, output=ctx.output.model_dump(mode="json"))
+        # pydantic-evals records a judge failure's text on its span and event verbatim, and
+        # Logfire never scrubs exception text: a secret in it leaves redacted, without its chain.
+        with redacted_exceptions():
+            return await self._judge(judge_context)
+
+    async def _judge(self, judge_context: EvaluatorContext) -> EvaluatorOutput:
         judge = ConfidentJudge(judge_model())
         async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
             results = await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
-                model=judge,
+                # pydantic-evals' shared judge agents are not instrumented; an InstrumentedModel
+                # passed to the run supplies the instrumentation for this judge call. Redaction
+                # sits inside it, so the judge's chat span never records a raw model error.
+                model=InstrumentedModel(RedactingModel(judge), JUDGE_INSTRUMENTATION),
                 include_input=True,
                 score={"evaluation_name": "strategy_adherence", "include_reason": True},
                 assertion={"evaluation_name": "strategy_adherence_pass", "include_reason": True},

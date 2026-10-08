@@ -4,20 +4,18 @@ Run locally:
     BAZAAR_MARKET_DB=data/market.sqlite3 uv run uvicorn bazaar_market.app:app --port 8000
 """
 
+import copy
 import logging
 import os
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, closing
 from functools import cache
-from importlib.metadata import version
 from pathlib import Path
-from typing import Any
 from uuid import UUID
 
 import logfire
+from bazaar_protocol import telemetry
 from fastapi import Depends, FastAPI
-from logfire._internal.scrubbing import DEFAULT_PATTERNS
 
 from bazaar_market import (
     bundles,
@@ -33,47 +31,42 @@ from bazaar_market import (
 )
 from bazaar_market.clock import SqliteClock
 from bazaar_market.ledger import Ledger
-from bazaar_market.ledger_api import GrantChecker
+from bazaar_market.ledger_api import ApprovalId, GrantChecker
 
 DEFAULT_DB = Path("data/market.sqlite3")
 
 
-# Logfire scrubs any value or key matching its default patterns. "session" is everyday trading
-# language ("trading session"), so a value whose only match is "session" is kept. Logfire hands
-# the callback only the FIRST match, so the whole value and its key path are searched again for
-# every other default pattern; any hit keeps it scrubbed. Scrubbing is never turned off. The
-# runner has the same rule (bazaar_runner.telemetry); keep the two in step.
-_OTHER_SECRET_PATTERNS = re.compile(
-    "|".join(p for p in DEFAULT_PATTERNS if p != "session"), re.IGNORECASE
-)
+class RedactingLogfireHandler(logfire.LogfireLoggingHandler):
+    """Sends market logs to Logfire with each ApprovalId replaced by its short ref. It emits a
+    copy, so other handlers (the terminal) still see the full id."""
 
-
-def keep_trading_sessions(match: logfire.ScrubMatch) -> Any:
-    if match.pattern_match.group(0).lower() != "session":
-        return None
-    text = " ".join(map(str, match.path)) + " " + str(match.value)
-    return None if _OTHER_SECRET_PATTERNS.search(text) else match.value
+    def emit(self, record: logging.LogRecord) -> None:
+        if isinstance(record.args, tuple) and any(isinstance(a, ApprovalId) for a in record.args):
+            record = copy.copy(record)
+            record.args = tuple(a.ref if isinstance(a, ApprovalId) else a for a in record.args)
+        super().emit(record)
 
 
 @cache
-def configure_telemetry() -> None:
-    logfire.configure(
-        send_to_logfire="if-token-present",
-        service_name="bazaar-market",
-        service_version=version("bazaar-market"),
-        environment=os.getenv("BAZAAR_ENVIRONMENT", "development"),
-        console=False,
-        inspect_arguments=False,
-        distributed_tracing=True,
-        scrubbing=logfire.ScrubbingOptions(callback=keep_trading_sessions),
-    )
+def attach_log_handlers() -> None:
+    """The market's own logs go to Logfire (redacted) and to the terminal (in full)."""
     market_logger = logging.getLogger("bazaar_market")
     market_logger.setLevel(logging.INFO)
-    market_logger.addHandler(logfire.LogfireLoggingHandler())
+    market_logger.addHandler(RedactingLogfireHandler())
     # Approval allows and denials must also be visible in the server's own terminal.
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     market_logger.addHandler(console)
+
+
+@cache
+def configure_telemetry() -> None:
+    """Once per process: Logfire as bazaar-market, system metrics, and the market's own logs."""
+    # Shared with the runner (bazaar_protocol.telemetry): one configuration per process, the
+    # trading-session and token scrubbing rules.
+    telemetry.configure("bazaar-market")
+    logfire.instrument_system_metrics(base="basic")
+    attach_log_handlers()
 
 
 def create_app(
@@ -137,6 +130,8 @@ def create_app(
     logfire.instrument_fastapi(
         app,
         capture_headers=False,
+        # Security, not noise: the default mapper records validation errors with their input,
+        # which would export a malformed approval or account id verbatim (test_telemetry).
         request_attributes_mapper=lambda request, attributes: None,
         excluded_urls="/health,/docs,/openapi.json",
     )

@@ -190,7 +190,7 @@ async def test_the_runner_token_never_reaches_spans_or_files(capfire, tmp_path):
 
     spans = json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
     assert "runner.decision" in spans and "exception" in spans
-    assert TOKEN not in spans and "[redacted]" in spans
+    assert TOKEN not in spans and "[REDACTED]" in spans
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert TOKEN not in path.read_text()

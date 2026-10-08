@@ -233,7 +233,7 @@ class Ledger:
         body = fingerprint(
             {"agent_id": agent_id, "strategy_version_id": strategy_version_id, "cash": cents}
         )
-        with db.write_transaction(self.database_path) as connection:
+        with db.write_transaction(self.database_path, operation="create_account") as connection:
             experiment = self._running_experiment(connection, experiment_id)
             replay = connection.execute(
                 "SELECT request_fingerprint, created_response FROM acct_accounts "
@@ -282,7 +282,7 @@ class Ledger:
             return snapshot
 
     def account(self, experiment_id: UUID, account_id: UUID) -> AccountSnapshot:
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="account") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
             return self._snapshot(account, account.closed_at or experiment.cutoff_at)
@@ -319,7 +319,7 @@ class Ledger:
                 "quantity": str(order.quantity.normalize()),
             }
         )
-        with db.write_transaction(self.database_path) as connection:
+        with db.write_transaction(self.database_path, operation="submit") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
             replay = connection.execute(
@@ -360,7 +360,7 @@ class Ledger:
 
     def close_account(self, experiment_id: UUID, account_id: UUID) -> AccountSnapshot:
         """Freeze the account at the current cutoff. Holdings are kept, not liquidated."""
-        with db.write_transaction(self.database_path) as connection:
+        with db.write_transaction(self.database_path, operation="close_account") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
             if account.closed_at is not None:
@@ -373,7 +373,7 @@ class Ledger:
 
     def page_scope(self, experiment_id: UUID, account_id: UUID) -> PageScope:
         """The research scope for an account named by the caller. A foreign account is 403."""
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="page_scope") as connection:
             experiment = self._experiment(connection, experiment_id)
             try:
                 account = self._load(connection, experiment_id, account_id)
@@ -387,7 +387,7 @@ class Ledger:
         self, experiment_id: UUID, account_id: UUID
     ) -> tuple[PageScope, list[FilledOrder | RejectedOrder]]:
         """Every stored order result for the account, exactly as it was first returned."""
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="order_history") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
             rows = connection.execute(
@@ -397,7 +397,7 @@ class Ledger:
         return self._page_scope(experiment, account), results
 
     def portfolio(self, experiment_id: UUID, account_id: UUID) -> PortfolioSnapshot:
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="portfolio") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
         at = account.closed_at or experiment.cutoff_at
@@ -407,7 +407,7 @@ class Ledger:
         self, experiment_id: UUID, account_id: UUID
     ) -> tuple[PageScope, list[AccountSnapshot]]:
         """The account as created (state 0), then as it stood after each fill."""
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="account_history") as connection:
             experiment = self._experiment(connection, experiment_id)
             account = self._load(connection, experiment_id, account_id)
             states = self._states(connection, account_id)
@@ -423,7 +423,7 @@ class Ledger:
         marked with the close available at that cutoff (value-v1).
         """
         experiment, cutoffs = self.clock.cutoff_history(experiment_id)
-        with db.read_connection(self.database_path) as connection:
+        with db.read_connection(self.database_path, operation="portfolio_history") as connection:
             account = self._load(connection, experiment_id, account_id)
             states = self._states(connection, account_id)
         scope = self._page_scope(experiment, account)
