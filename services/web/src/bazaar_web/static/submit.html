@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Enter Bazaar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+@font-face { font-family: "Dwight"; src: url("/fonts/DwightMedium.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+
+:root {
+  color-scheme: dark;
+  --lithium: #E520E9; --calcium: #FF6550; --aqua: #77FFD8;
+  --sugar: #FBFFEA; --petroleum: #092224; --blackbean: #061314;
+  --dim: #9fb6b4; --faint: #6f8a88; --line: rgba(251,255,234,.16); --field: #0b2629;
+  --display: "Dwight", "IBM Plex Sans", sans-serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100vh; color: var(--sugar); font: 400 16px/1.5 var(--sans);
+  background: radial-gradient(120% 70% at 85% 0%, #0f3336 0%, var(--petroleum) 45%, var(--blackbean) 100%) fixed, var(--blackbean);
+}
+button, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--lithium); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+main { max-width: 34rem; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.brand { font: 600 13px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+a { color: var(--sugar); text-underline-offset: 3px; }
+.board-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; font: 500 14px/1 var(--mono); }
+h1 { font: 500 clamp(32px, 9vw, 44px)/1.02 var(--display); letter-spacing: -.02em; margin: 0 0 12px; }
+h2 { font: 500 24px/1.1 var(--display); margin: 0 0 8px; }
+.lede { color: #c9d6cf; margin: 0 0 24px; }
+.lede b { color: var(--sugar); font-weight: 600; }
+
+.field { margin-bottom: 22px; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+label .opt { font-weight: 400; color: var(--dim); }
+input[type="text"], textarea {
+  display: block; width: 100%; min-height: 50px; padding: 12px 14px; font-size: 16px;
+  background: var(--field); border: 1px solid var(--line); border-radius: 12px;
+}
+input[type="text"] { font-family: var(--mono); }
+textarea { min-height: 180px; resize: vertical; line-height: 1.45; }
+input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--calcium); }
+.hint { font-size: 14px; color: var(--dim); margin: 6px 0 0; }
+.hint.ok { color: var(--aqua); }
+.hint.bad, .error { color: var(--calcium); }
+.error { font-size: 14px; margin: 6px 0 0; }
+.counter { font: 500 13px/1 var(--mono); color: var(--dim); }
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+
+.examples { display: grid; gap: 8px; margin: 10px 0 0; }
+.examples p { margin: 0; font-size: 14px; color: var(--dim); }
+.example {
+  text-align: left; min-height: 48px; padding: 10px 14px; border-radius: 12px; cursor: pointer;
+  background: rgba(251,255,234,.05); border: 1px solid var(--line);
+}
+.example b { display: block; font-weight: 600; }
+.example span { display: block; font-size: 13px; color: var(--dim); }
+.example:active { transform: scale(.99); }
+
+.primary {
+  display: block; width: 100%; min-height: 54px; border: 0; border-radius: 999px; cursor: pointer;
+  background: var(--lithium); color: var(--blackbean); font-weight: 700; font-size: 17px;
+}
+.primary:disabled { opacity: .55; cursor: progress; }
+.secondary {
+  display: block; width: 100%; min-height: 50px; border-radius: 999px; cursor: pointer;
+  background: transparent; border: 1px solid var(--line); font-weight: 600;
+}
+.form-error { margin: 0 0 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,101,80,.5); background: rgba(255,101,80,.08); }
+
+.card { border: 1px solid var(--line); border-radius: 16px; padding: 18px 16px; background: rgba(6,19,20,.55); margin-bottom: 16px; }
+.card .who { font: 500 14px/1.3 var(--mono); color: var(--dim); margin: 0 0 10px; word-break: break-word; }
+.state { font: 500 22px/1.25 var(--display); margin: 0; }
+.detail { margin: 10px 0 0; color: #c9d6cf; word-break: break-word; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin: 14px 0 0; }
+.stat { border-radius: 12px; padding: 10px 12px; background: rgba(251,255,234,.05); }
+.stat dt { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.stat dd { margin: 6px 0 0; font: 600 22px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.up { color: var(--aqua); } .down { color: var(--calcium); }
+.reconnecting { font: 500 13px/1 var(--mono); color: var(--calcium); margin: 12px 0 0; }
+.actions { display: grid; gap: 10px; }
+.actions a { display: flex; align-items: center; justify-content: center; min-height: 48px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="brand">Bazaar</span>
+    <a class="board-link" href="/">View the board</a>
+  </header>
+
+  <section id="form-view" aria-labelledby="form-title">
+    <h1 id="form-title">Enter your trading agent</h1>
+    <p class="lede">Your agent sees prices, news and filings for <b>AAPL, MSFT and KO</b>, Feb 2 to 13 2026, starting with <b>$10,000</b>.</p>
+
+    <form id="submit-form" novalidate>
+      <p id="form-error" class="form-error" role="alert" hidden></p>
+
+      <div class="field">
+        <label for="name">Strategy name</label>
+        <input id="name" name="name" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" required aria-describedby="name-hint name-error">
+        <p id="name-hint" class="hint">3 to 40 characters: lowercase letters, numbers and hyphens.</p>
+        <p id="name-error" class="error" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="handle">Your handle <span class="opt">(optional)</span></label>
+        <input id="handle" name="handle" type="text" autocomplete="nickname" autocapitalize="none" spellcheck="false" maxlength="64" aria-describedby="handle-error">
+        <p id="handle-error" class="error" hidden></p>
+      </div>
+
+      <div class="field">
+        <div class="row">
+          <label for="instructions">Strategy</label>
+          <span id="counter" class="counter" aria-live="polite">0 / 4000</span>
+        </div>
+        <textarea id="instructions" name="instructions" maxlength="4000" required aria-describedby="instructions-hint instructions-error" placeholder="Tell your agent how to trade, in plain English."></textarea>
+        <p id="instructions-hint" class="hint">20 to 4000 characters.</p>
+        <p id="instructions-error" class="error" hidden></p>
+        <div class="examples">
+          <p>Or start from an example:</p>
+          <div id="examples" class="examples"></div>
+        </div>
+      </div>
+
+      <button id="submit" class="primary" type="submit">Submit strategy</button>
+    </form>
+  </section>
+
+  <section id="status-view" aria-labelledby="status-title" hidden>
+    <h1 id="status-title">Your agent</h1>
+    <div class="card">
+      <p id="status-name" class="who"></p>
+      <div id="status" aria-live="polite">
+        <p id="status-state" class="state">Checking status</p>
+        <p id="status-detail" class="detail" hidden></p>
+        <dl id="status-stats" class="stats" hidden></dl>
+      </div>
+      <p id="reconnecting" class="reconnecting" hidden>Reconnecting</p>
+    </div>
+    <div class="actions">
+      <a href="/">Back to the board</a>
+      <button id="another" class="secondary" type="button">Submit another</button>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+(function () {
+  var SLUG = /^[a-z0-9-]{3,40}$/;
+  var MIN_CHARS = 20;
+  var MAX_CHARS = 4000;
+  var DAYS = 10;
+  var STORAGE_KEY = "bazaar.submission";
+  var EXAMPLES = [
+    {
+      title: "Momentum",
+      text: "Each morning, look at the last five days of prices for AAPL, MSFT and KO. " +
+        "Put a third of your cash into whichever stock has risen the most over those five days. " +
+        "Sell any holding that falls more than 3% below the price you paid."
+    },
+    {
+      title: "Read the news",
+      text: "Read the news for AAPL, MSFT and KO every morning. If a company has clearly good " +
+        "news, such as beating earnings or an analyst upgrade, buy up to $3,000 of it. If the news " +
+        "is clearly bad, sell it. Otherwise hold what you have."
+    },
+    {
+      title: "Steady with KO",
+      text: "On the first day, buy $6,000 of KO as a steady holding and keep it. Use the rest of " +
+        "your cash to buy AAPL or MSFT after any day it drops more than 2%, and sell that position " +
+        "once it is up 4%."
+    }
+  ];
+
+  function byId(id) { return document.getElementById(id); }
+
+  var form = byId("submit-form");
+  var nameInput = byId("name");
+  var handleInput = byId("handle");
+  var instructionsInput = byId("instructions");
+  var submitButton = byId("submit");
+  var formError = byId("form-error");
+  var nameHint = byId("name-hint");
+  var counter = byId("counter");
+  var instructionsHint = byId("instructions-hint");
+  var fields = { name: nameInput, handle: handleInput, instructions: instructionsInput };
+
+  // Storage can throw (private mode, blocked site data); the page works without it.
+  var store = {
+    get: function () {
+      try {
+        var saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY));
+        return saved && typeof saved.id === "string" ? saved : null;
+      } catch (e) { return null; }
+    },
+    set: function (value) {
+      try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value)); } catch (e) { /* ignore */ }
+    },
+    clear: function () {
+      try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+    }
+  };
+
+  function setText(node, text) {
+    node.textContent = text;
+    node.hidden = !text;
+  }
+
+  // ---------- form ----------
+
+  EXAMPLES.forEach(function (example) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "example";
+    var title = document.createElement("b");
+    title.textContent = example.title;
+    var preview = document.createElement("span");
+    preview.textContent = example.text.slice(0, 70) + "…";
+    button.appendChild(title);
+    button.appendChild(preview);
+    button.addEventListener("click", function () {
+      instructionsInput.value = example.text;
+      updateInstructions();
+      instructionsInput.focus();
+    });
+    byId("examples").appendChild(button);
+  });
+
+  function setFieldError(field, message) {
+    setText(byId(field + "-error"), message);
+    fields[field].setAttribute("aria-invalid", message ? "true" : "false");
+  }
+
+  function clearErrors() {
+    setText(formError, "");
+    Object.keys(fields).forEach(function (field) { setFieldError(field, ""); });
+  }
+
+  function updateName() {
+    var value = nameInput.value;
+    setFieldError("name", "");
+    if (!value) {
+      nameHint.className = "hint";
+      nameHint.textContent = "3 to 40 characters: lowercase letters, numbers and hyphens.";
+    } else if (SLUG.test(value)) {
+      nameHint.className = "hint ok";
+      nameHint.textContent = "Looks good.";
+    } else {
+      nameHint.className = "hint bad";
+      nameHint.textContent = /[A-Z]/.test(value)
+        ? "Use lowercase letters only."
+        : value.length < 3
+          ? "At least 3 characters."
+          : "Only lowercase letters, numbers and hyphens. No spaces.";
+    }
+  }
+
+  function updateInstructions() {
+    var length = instructionsInput.value.trim().length;
+    counter.textContent = length + " / " + MAX_CHARS;
+    setFieldError("instructions", "");
+    if (length > 0 && length < MIN_CHARS) {
+      instructionsHint.className = "hint bad";
+      instructionsHint.textContent = (MIN_CHARS - length) + " more characters needed.";
+    } else {
+      instructionsHint.className = "hint";
+      instructionsHint.textContent = "20 to 4000 characters.";
+    }
+  }
+
+  nameInput.addEventListener("input", updateName);
+  instructionsInput.addEventListener("input", updateInstructions);
+
+  function validate() {
+    var ok = true;
+    if (!SLUG.test(nameInput.value)) {
+      setFieldError("name", "Choose a name of 3 to 40 lowercase letters, numbers or hyphens.");
+      ok = false;
+    }
+    var length = instructionsInput.value.trim().length;
+    if (length < MIN_CHARS || length > MAX_CHARS) {
+      setFieldError("instructions", "Describe your strategy in 20 to 4000 characters.");
+      ok = false;
+    }
+    return ok;
+  }
+
+  // An error `detail` is a plain string or FastAPI's list of {loc, msg}.
+  function showDetail(detail, fallback) {
+    if (typeof detail === "string" && detail.trim()) {
+      setText(formError, detail);
+      return;
+    }
+    var general = [];
+    var shown = false;
+    if (Array.isArray(detail)) {
+      detail.forEach(function (item) {
+        var message = item && typeof item.msg === "string" ? item.msg : "";
+        if (!message) { return; }
+        var loc = item && Array.isArray(item.loc) ? item.loc : [];
+        var field = null;
+        loc.forEach(function (part) {
+          if (Object.prototype.hasOwnProperty.call(fields, part)) { field = part; }
+        });
+        if (field) {
+          setFieldError(field, message);
+          shown = true;
+        } else {
+          general.push(message);
+        }
+      });
+    }
+    if (general.length) {
+      setText(formError, general.join(" "));
+    } else if (!shown) {
+      setText(formError, fallback);
+    }
+  }
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    clearErrors();
+    if (!validate()) { return; }
+    var handle = handleInput.value.trim();
+    var payload = {
+      name: nameInput.value,
+      handle: handle ? handle : null,
+      instructions: instructionsInput.value.trim()
+    };
+    submitButton.disabled = true;
+    submitButton.textContent = "Sending";
+    fetch("/api/submissions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (response) {
+      return response.json().catch(function () { return null; }).then(function (body) {
+        if (response.ok && body && typeof body.id === "string") {
+          var saved = { id: body.id, name: payload.name, position: body.position };
+          store.set(saved);
+          showStatus(saved);
+          return;
+        }
+        // Never show the raw body: only a JSON `detail`, else a generic message with the code.
+        var fallback = response.status === 429
+          ? "Too many entries right now. Please try again later."
+          : "Something went wrong (error " + response.status + "). Please try again in a moment.";
+        showDetail(body && typeof body === "object" ? body.detail : null, fallback);
+      });
+    }).catch(function () {
+      setText(formError, "Could not reach the server. Check your connection and try again.");
+    }).then(function () {
+      submitButton.disabled = false;
+      submitButton.textContent = "Submit strategy";
+    });
+  });
+
+  // ---------- status ----------
+
+  var statusState = byId("status-state");
+  var statusDetail = byId("status-detail");
+  var statusStats = byId("status-stats");
+  var reconnecting = byId("reconnecting");
+  var pollTimer = null;
+  var failures = 0;
+  var current = null;
+
+  // The API may send numbers or decimal strings (the repo's wire convention for Decimal).
+  function toNumber(value) {
+    if (typeof value === "string" && value.trim() !== "") { value = Number(value); }
+    return typeof value === "number" && isFinite(value) ? value : null;
+  }
+
+  function percent(value) {
+    var number = toNumber(value);
+    if (number === null) { return null; }
+    return (number > 0 ? "+" : "") + number.toFixed(2) + "%";
+  }
+
+  function rankLabel(value) {
+    var number = toNumber(value);
+    return number !== null && number > 0 && Math.floor(number) === number ? "#" + number : null;
+  }
+
+  function stat(label, value) {
+    if (value === null) { return; }
+    var wrap = document.createElement("div");
+    wrap.className = "stat";
+    var dt = document.createElement("dt");
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.textContent = value;
+    if (value.charAt(0) === "+") { dd.className = "up"; }
+    if (value.charAt(0) === "-") { dd.className = "down"; }
+    wrap.appendChild(dt);
+    wrap.appendChild(dd);
+    statusStats.appendChild(wrap);
+  }
+
+  function render(state, detail) {
+    statusState.textContent = state;
+    setText(statusDetail, detail || "");
+    statusStats.textContent = "";
+    statusStats.hidden = true;
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) { window.clearTimeout(pollTimer); }
+    pollTimer = null;
+  }
+
+  function schedule(delay) {
+    stopPolling();
+    pollTimer = window.setTimeout(poll, delay);
+  }
+
+  function retryLater() {
+    failures += 1;
+    reconnecting.hidden = false;
+    schedule(Math.min(2000 * Math.pow(2, failures - 1), 15000));
+  }
+
+  function showScored(body) {
+    var rank = rankLabel(body.rank);
+    render(rank ? "Scored: " + rank : "Scored", "");
+    stat("Return", percent(body.return_pct));
+    stat("Rank", rank);
+    statusStats.hidden = !statusStats.childNodes.length;
+  }
+
+  function poll() {
+    if (!current) { return; }
+    var id = current.id;
+    fetch("/api/submissions/" + encodeURIComponent(id), { cache: "no-store" }).then(function (response) {
+      if (response.status === 404) { return { missing: true }; }
+      if (!response.ok) { throw new Error("status " + response.status); }
+      return response.json();
+    }).then(function (body) {
+      if (!current || current.id !== id) { return; }
+      failures = 0;
+      reconnecting.hidden = true;
+      if (body.missing) {
+        render("We could not find this entry.", "It may have been removed. You can submit another.");
+        return;
+      }
+      var status = body && body.status;
+      if (status === "queued") {
+        render(queued(body.position), "");
+      } else if (status === "running") {
+        render(typeof body.day === "number" && body.day > 0
+          ? "Running: day " + body.day + " of " + DAYS : "Running: starting", "");
+      } else if (status === "scored") {
+        showScored(body);
+        return;
+      } else if (status === "failed") {
+        render("Your agent did not finish.",
+          typeof body.error === "string" && body.error ? body.error : "The run failed.");
+        return;
+      } else {
+        render("Checking status", "");
+      }
+      schedule(2000);
+    }).catch(function () {
+      if (current && current.id === id) { retryLater(); }
+    });
+  }
+
+  function queued(position) {
+    return typeof position === "number" ? "Queued, number " + position + " in line" : "Queued";
+  }
+
+  function showStatus(saved) {
+    current = saved;
+    failures = 0;
+    byId("form-view").hidden = true;
+    byId("status-view").hidden = false;
+    byId("status-name").textContent = saved.name || "";
+    reconnecting.hidden = true;
+    // The POST position stands in until the first poll returns the live one.
+    render(typeof saved.position === "number" ? queued(saved.position) : "Checking status", "");
+    poll();
+  }
+
+  byId("another").addEventListener("click", function () {
+    stopPolling();
+    current = null;
+    store.clear();
+    form.reset();
+    clearErrors();
+    updateName();
+    updateInstructions();
+    byId("status-view").hidden = true;
+    byId("form-view").hidden = false;
+    nameInput.focus();
+  });
+
+  var saved = store.get();
+  if (saved) { showStatus(saved); }
+})();
+</script>
+</body>
+</html>
