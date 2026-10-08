@@ -587,3 +587,35 @@ def test_the_judge_model_requests_are_traced_under_the_evaluator(judged_run):
     exported = json.dumps([spans, logs], default=str)
     for secret in (*SENTINELS.values(), TOKEN):
         assert secret not in exported
+
+
+def test_the_baggage_allow_list_is_exactly_the_strategy_attributes():
+    """bazaar_attributes() becomes OTel baggage, which is sent to the Gateway (and the market) as
+    a header. Adding a key, such as the instructions or an IP hash, must fail this test."""
+    from bazaar_runner.demo import Launch, demo_spec
+    from bazaar_runner.record import bazaar_attributes
+
+    spec = demo_spec(
+        Launch("submission:x", submission_experiment_id("b-1"), submission_experiment_id("a")),
+        data_version="demo-bundle-v1",
+        execution_rule_version="exec-v1",
+        starting_cash=10000,
+    )
+    full = bazaar_attributes(spec, "submission:x", "momo", "b-1", "@attendee")
+    assert set(full) == {
+        "bazaar.strategy_name",
+        "bazaar.experiment_id",
+        "bazaar.run_id",
+        "bazaar.policy_kind",
+        "bazaar.submission_id",
+        "bazaar.handle",
+    }
+    assert all(isinstance(value, str) for value in full.values())
+    # A demo launch has no submission or handle; nothing else is ever added.
+    assert set(bazaar_attributes(spec, "baseline-cash-only", None, None, None)) == {
+        "bazaar.strategy_name",
+        "bazaar.experiment_id",
+        "bazaar.run_id",
+        "bazaar.policy_kind",
+    }
+    assert INSTRUCTIONS not in "".join(full.values())

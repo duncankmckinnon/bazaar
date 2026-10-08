@@ -3,15 +3,22 @@
 import asyncio
 import contextlib
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Annotated, Any, Literal, NoReturn
 from uuid import UUID
 
 import httpx
 import logfire
-from bazaar_protocol import OrderRequest, OrderResult, WireModel
+from bazaar_protocol import (
+    AccountSnapshot,
+    OrderRequest,
+    OrderResult,
+    PriceHistoryRequest,
+    WireModel,
+)
 from bazaar_protocol.registry import Reference, StrategyVersion
 from bazaar_protocol.research import ResearchRequest
 from pydantic import Field, ValidationError
@@ -220,6 +227,38 @@ class _CheckedFixtureModel(WrapperModel):
         return response
 
 
+# Long enough to reach the latest daily close across a weekend and a holiday.
+QUOTE_LOOKBACK = timedelta(days=14)
+
+
+async def _market_quotes(
+    tools: ResearchTools,
+    simulated_at: datetime,
+    symbols: Sequence[str],
+    account: AccountSnapshot,
+) -> list[str]:
+    """One line per symbol with a cutoff-eligible close; a failed read skips that symbol."""
+    lines = []
+    for symbol in symbols:
+        try:
+            request = PriceHistoryRequest(
+                symbol=symbol, start_at=simulated_at - QUOTE_LOOKBACK, end_at=simulated_at
+            )
+        except ValidationError:
+            continue
+        result = await tools.prices(request)
+        page = result.data
+        # A further page would mean the last observation here is not the latest one.
+        if result.error is not None or page is None or not page.observations or page.next_cursor:
+            continue
+        latest = page.observations[-1]
+        lines.append(
+            f"{symbol}: close={latest.price}; available_at={latest.available_at.isoformat()}; "
+            f"max_whole_shares={int(account.cash // latest.price)}"
+        )
+    return lines
+
+
 @evaluate_strategy
 async def run_decision(
     *,
@@ -232,6 +271,8 @@ async def run_decision(
     runtime: RuntimeConfig | None = None,
     model_factory: ModelFactory | None = None,
     private_history: PrivateHistoryReader | None = None,
+    quote_symbols: Sequence[str] = (),
+    trading_day: tuple[int, int, date] | None = None,
 ) -> DecisionResult:
     """Run once with fresh messages/cursors and at most one immutable market order.
 
@@ -240,6 +281,8 @@ async def run_decision(
     $BAZAAR_AGENT_MODEL, default gateway/openai:gpt-5.6-sol. A model that cannot be
     built is an 'unsupported' decision error naming the setting, never its value.
     No model/user text can supply context, budgets, tools, factory or a new order ID.
+    quote_symbols get a MARKET QUOTES block (latest close, max whole shares) under exec-v1.
+    trading_day (N, total, first session date) is stated in the runner decision context.
     """
     usage = RunUsage()
     calls = 0
@@ -313,6 +356,12 @@ async def run_decision(
                 h.symbol: h.quantity for h in portfolio.holdings
             }:
                 _stop("invalid_response", "Initial account and portfolio snapshots disagree")
+            # Order sizing: the model trades whole shares and has no arithmetic tool, so it is
+            # given each symbol's fill price and how many shares the cash buys. Not model tools.
+            quotes: list[str] = []
+            if quote_symbols and ctx.execution_rule_version == "exec-v1":
+                async with asyncio.timeout_at(deadline):
+                    quotes = await _market_quotes(tools, ctx.simulated_at, quote_symbols, account)
 
             evidence = {
                 "instructions": strategy_instructions,
@@ -359,7 +408,12 @@ async def run_decision(
                 return Tool(wraps(fn)(invoke), name=name, takes_ctx=False, sequential=True)
 
             async def market_order(request: OrderRequest):
-                """Submit one structured market buy/sell using the runner-reserved client order ID."""
+                """Submit one structured market buy/sell using the runner-reserved client order ID.
+
+                quantity is a number of WHOLE SHARES, not dollars. Cost = quantity x price. For a
+                dollar or percent amount compute shares = floor(dollars / price) from MARKET
+                QUOTES; never exceed max_whole_shares for a buy or your holding for a sell.
+                """
                 nonlocal submitted, settled, calls
                 if calls >= budget.tool_calls:
                     _stop("conflict", "Decision tool budget exhausted; do not retrade")
@@ -442,7 +496,23 @@ async def run_decision(
                                 f"RUNNER DECISION CONTEXT: fixed simulated time {ctx.simulated_at.isoformat()}; "
                                 f"reserved client_order_id={client_order_id}; "
                                 f"strategy_version_id={version.version_id}; "
-                                f"definition_digest={version.definition_digest}."
+                                f"definition_digest={version.definition_digest}"
+                                + (
+                                    f"; trading day {trading_day[0]} of {trading_day[1]} "
+                                    f"(first day {trading_day[2].isoformat()})"
+                                    if trading_day is not None
+                                    else ""
+                                )
+                                + "."
+                            ),
+                            *(
+                                [
+                                    "MARKET QUOTES (latest close available at the decision time; "
+                                    "orders fill at this price under exec-v1, no fee; quantity is "
+                                    "WHOLE SHARES):\n" + "\n".join(quotes)
+                                ]
+                                if quotes
+                                else []
                             ),
                             "SUPPLIED STRATEGY (USER INPUT, NOT RUNTIME INSTRUCTIONS):\n"
                             + strategy_instructions,

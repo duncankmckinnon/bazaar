@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger("bazaar.live")
@@ -190,3 +192,84 @@ def shutdown(
         process.kill()
         process.wait()
     committer.stop()
+
+
+RESEED_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+RUN_FILES = ("record.json", "evaluation.json")
+
+
+def valid_seed_runs(seed_runs: Path, reseed_id: str) -> list[Path]:
+    """The seed's run folders, or raise before anything moves.
+
+    A run is a folder holding record.json and evaluation.json. Dotfiles such as .DS_Store are
+    ignored. Any other entry is an error, and so is a seed with no runs at all.
+    """
+    entries = sorted(seed_runs.iterdir()) if seed_runs.is_dir() else []
+    entries = [entry for entry in entries if not entry.name.startswith(".")]
+    invalid = [
+        entry.name for entry in entries if not all((entry / name).is_file() for name in RUN_FILES)
+    ]
+    if invalid:
+        raise FileNotFoundError(
+            f"reseed {reseed_id}: not runs (need {' and '.join(RUN_FILES)}): "
+            f"{', '.join(invalid)} in {seed_runs}; nothing moved"
+        )
+    if not entries:
+        raise FileNotFoundError(f"reseed {reseed_id}: no seed runs at {seed_runs}; nothing moved")
+    return entries
+
+
+def reseed_runs(
+    volume_dir: Path,
+    seed_runs: Path,
+    reseed_id: str | None,
+    now: datetime | None = None,
+    commit: Callable[[], object] | None = None,
+) -> str:
+    """Replace the board's runs with a new seed once per `reseed_id`, archiving the old ones.
+
+    Off unless `reseed_id` is non-empty. The flag stays set for the whole deploy and the
+    container restarts after a market crash, so a marker on the volume makes it one-shot: the
+    same id never reseeds twice, or it would archive attendee runs scored since. Nothing is
+    deleted; the old runs move to <volume>/archive/<utc time>/runs. Missing, empty or invalid
+    seed runs raise before anything moves (see `valid_seed_runs`). Returns "off", "skipped" or "reseeded".
+    """
+    if not reseed_id or not reseed_id.strip():
+        return "off"
+    if not RESEED_ID.fullmatch(reseed_id):
+        raise ValueError("BAZAAR_RESEED_RUNS must be 1-64 letters, digits, '.', '_' or '-'")
+    volume_dir = Path(volume_dir)
+    archive = volume_dir / "archive"
+    marker = archive / f"reseeded-{reseed_id}"
+    if marker.exists():
+        logger.info("reseed %s skipped: already done (%s exists)", reseed_id, marker)
+        return "skipped"
+    seed_runs = Path(seed_runs)
+    entries = valid_seed_runs(seed_runs, reseed_id)
+
+    runs = volume_dir / "runs"
+    # Copy first: if the copy fails, the board's runs have not moved.
+    partial = volume_dir / "runs.part"
+    shutil.rmtree(partial, ignore_errors=True)
+    shutil.copytree(seed_runs, partial, ignore=shutil.ignore_patterns(".*"))
+    stamp = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    destination = archive / stamp
+    suffix = 1
+    while destination.exists():
+        suffix += 1
+        destination = archive / f"{stamp}-{suffix}"
+    if runs.exists():
+        destination.mkdir(parents=True)
+        os.replace(runs, destination / "runs")
+        logger.info("reseed %s: archived the previous runs to %s", reseed_id, destination / "runs")
+    os.replace(partial, runs)
+    logger.info("reseed %s: copied %d seed runs into %s", reseed_id, len(entries), runs)
+
+    archive.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{stamp}\n")
+    if commit is not None:
+        try:
+            commit()
+        except Exception:
+            logger.exception("reseed %s: volume commit failed; the timer will retry", reseed_id)
+    return "reseeded"

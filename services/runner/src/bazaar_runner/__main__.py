@@ -35,6 +35,7 @@ from bazaar_runner.demo import (
     PolicyFactory,
     ScriptedMomentum,
     check_one_agent_per_experiment,
+    demo_script,
     run_demo,
 )
 from bazaar_runner.http_market import DEFAULT_BASE_URL, HttpMarketPort, RunnerConfigError
@@ -195,6 +196,9 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
             AGENT_FIXTURE_INSTRUCTIONS,
             fixture_model_factory(),
             runtime=RuntimeConfig(instrument=True),
+            quote_symbols=DEMO_SYMBOLS,
+            # demo_spec gives every launch demo_script(), so this is the run's own schedule.
+            sessions=demo_script().sessions,
         )
         return AgentStep(
             decider,

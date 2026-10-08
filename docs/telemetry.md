@@ -9,6 +9,13 @@ Every span and log of a run carries these attributes. The runner sets them on `r
 as Logfire baggage around the run, so the decisions, orders, marks, the agent's own spans and the
 evaluator's spans all inherit them. Values are strings.
 
+The baggage also leaves the process: pydantic-ai's Gateway provider injects the OpenTelemetry
+context into every model request, so these attributes (including `bazaar.handle`) reach the
+Pydantic AI Gateway as a W3C `baggage` header. They reach the market the same way once the
+runner's market clients propagate the trace (`instrument_market_client`, T2a). So the strategy's
+instruction text, an IP address or its hash, and any secret must never be put in baggage; a test
+pins the allow-list (`test_the_baggage_allow_list_is_exactly_the_strategy_attributes`).
+
 | Attribute | Value |
 | --- | --- |
 | `bazaar.strategy_name` | The submission's name; for demo launches, the policy_ref (for example `baseline-cash-only`) |

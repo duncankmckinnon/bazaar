@@ -1,6 +1,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from uuid import UUID
 
 import httpx
@@ -10,6 +11,7 @@ from bazaar_protocol import ApiError, ErrorCode, ErrorDetail
 from bazaar_replay.leaderboard import Run, load_board, load_run
 from bazaar_runner import submission
 from bazaar_runner.agent import fixture_model_factory
+from bazaar_runner.demo import DEMO_SYMBOLS
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import RunRecord
@@ -201,11 +203,13 @@ def test_the_runner_token_never_reaches_the_files(markets, tmp_path):
 
 def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, monkeypatch):
     markets["http://m1"] = GrantingMarket()
-    seen = []
+    seen, quoted, days = [], [], []
     real = trading.run_decision
 
     async def spy(**kwargs):
         seen.append((kwargs["budget"], kwargs["runtime"]))
+        quoted.append(kwargs["quote_symbols"])
+        days.append(kwargs["trading_day"])
         return await real(**kwargs)
 
     def no_code_mode(*args, **kwargs):
@@ -216,13 +220,17 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     run_dir, _ = submit(tmp_path, "http://m1")
 
     assert record_in(run_dir).status == "completed" and len(seen) == 10
-    assert {(b.model_requests, b.tool_calls, b.total_tokens, r.code_mode) for b, r in seen} == {
-        (8, 20, 48_000, False)
+    assert {(b.model_requests, b.total_tokens, b.tool_calls, r.code_mode) for b, r in seen} == {
+        (8, 48_000, 20, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
+    # Every decision is told the demo symbols' prices and affordable whole shares.
+    assert quoted == [DEMO_SYMBOLS] * 10
+    # ...and which trading day of the run it is.
+    assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
     # Only those two limits differ; the default every other launch uses is unchanged.
     default = trading.DecisionBudget()
-    assert (default.model_requests, default.tool_calls, default.total_tokens) == (4, 20, 16_000)
+    assert (default.model_requests, default.total_tokens, default.tool_calls) == (4, 16_000, 20)
     assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4, "total_tokens": 16_000}) == (
         default
     )

@@ -41,9 +41,9 @@ EXECUTION_RULE_VERSION = "exec-v1"
 STARTING_CASH = Decimal(10000)
 MARKET_TIMEOUT_SECONDS = 30.0
 
-# PM 14:01Z and 14:08Z: submissions get 8 model requests and 48,000 tokens (smoke #2 hit the
-# 16k token limit at 3-4 requests). Tool calls and timeout track the harness defaults, and every
-# other launch keeps DecisionBudget() as it is.
+# PM 14:01Z and 14:08Z (2026-10-08): submissions get 8 model requests and 48,000 tokens (smoke #2
+# hit the 16k token limit at 3-4 requests). Tool calls and timeout track the harness defaults, and
+# every other launch keeps DecisionBudget() as it is.
 SUBMISSION_BUDGET = DecisionBudget().model_copy(
     update={"model_requests": 8, "total_tokens": 48_000}
 )
@@ -202,6 +202,8 @@ async def _run(
                 _model_factory(model),
                 budget=SUBMISSION_BUDGET,
                 runtime=SUBMISSION_RUNTIME,
+                quote_symbols=DEMO_SYMBOLS,
+                sessions=spec.script.sessions,
             ),
             market_url=market_url,
             symbols=DEMO_SYMBOLS,

@@ -18,7 +18,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.settings import Settings
-from bazaar_web.store import CapReached, NameTaken, Now, Store
+from bazaar_web.store import (
+    CapReached,
+    Hidden,
+    NameTaken,
+    NotFound,
+    Now,
+    StillInFlight,
+    Store,
+)
+from bazaar_web.tickers import TickerSource
 from bazaar_web.worker import RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -96,6 +105,7 @@ def create_app(
 
     app = FastAPI(title="Bazaar web", lifespan=lifespan)
     app.state.on_scored = on_scored
+    tickers = TickerSource(settings.market_db, settings.ticker_data_version)
 
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(request.app.state.board, request.app.state.store, settings.logfire_url)
@@ -175,6 +185,11 @@ def create_app(
                 "logfire_url": settings.logfire_url(submission["name"]),
             }
 
+    @app.get("/api/tickers")
+    def ticker_days() -> dict[str, Any]:
+        with logfire.suppress_instrumentation():  # polled; see submission_status
+            return tickers.payload()
+
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:
         with logfire.suppress_instrumentation():  # polled; see submission_status
@@ -195,6 +210,26 @@ def create_app(
             raise HTTPException(404, "no such submission")
         request.app.state.board.invalidate()
         return Response(status_code=204)
+
+    @app.post("/api/admin/submissions/{submission_id}/rerun", status_code=201)
+    def rerun(submission_id: str, request: Request, token: AdminToken = None) -> dict[str, Any]:
+        require_admin(token)
+        store: Store = request.app.state.store
+        carrier = logfire.propagate.get_context()  # the rerun's run joins this request's trace
+        try:
+            new_id = store.rerun(
+                submission_id, trace_context=json.dumps(carrier) if carrier else None
+            )
+        except NotFound:
+            raise HTTPException(404, "no such submission") from None
+        except StillInFlight:
+            raise HTTPException(409, "that submission is still queued or running") from None
+        except Hidden:
+            raise HTTPException(409, "that submission was already rerun or is hidden") from None
+        position = store.position(new_id)  # read before a worker can pick it up
+        request.app.state.worker.enqueue(new_id)
+        request.app.state.board.invalidate()
+        return {"id": new_id, "status": "queued", "position": position}
 
     @app.get("/api/admin/whoami")
     def whoami(request: Request, token: AdminToken = None) -> dict[str, str | None]:

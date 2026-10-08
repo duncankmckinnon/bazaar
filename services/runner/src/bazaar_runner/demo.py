@@ -15,7 +15,21 @@ from bazaar_runner.policy import Decision, DecisionPolicy, PriceAt
 from bazaar_runner.record import Evaluate, RunRecord, record_run
 from bazaar_runner.run import DecisionStep, RunSpec
 
-DEMO_SYMBOLS = ("AAPL", "MSFT", "KO")
+# The demo universe (Anthony, v2): twelve large US stocks, all with bars across the window.
+DEMO_SYMBOLS = (
+    "AAPL",
+    "AMZN",
+    "EA",
+    "FISV",
+    "JNJ",
+    "JPM",
+    "KO",
+    "META",
+    "MSFT",
+    "NVDA",
+    "WMT",
+    "XOM",
+)
 MOMENTUM_REF = "scripted-momentum-v1"
 AGENT_FIXTURE_REF = "agent-fixture-v1"
 BUY_AND_HOLD_REF = "baseline-buy-and-hold"
