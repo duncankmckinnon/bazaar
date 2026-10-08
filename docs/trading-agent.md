@@ -50,7 +50,7 @@ result = await run_decision(
     client=client,  # fixed MockTransport base URL, bounded timeout, no logging hooks
     client_order_id=order_id,  # reserve once; preserve across recovery
     runtime=RuntimeConfig(model_settings={"temperature": 0, "max_tokens": 4_000}),
-    budget=DecisionBudget(model_requests=4, tool_calls=12, total_tokens=16_000),
+    budget=DecisionBudget(model_requests=4, tool_calls=20, total_tokens=16_000),
     model_factory=lambda ref: TestModel(
         call_tools=[], custom_output_args={"action": "hold"}
     ),
@@ -230,7 +230,7 @@ with a fresh ID or advance the clock just because the decision failed. Cancellat
 the runner already owns the reserved ID and must reconcile it even when no result is returned.
 Across invocations this harness has no durable order ledger: the future runner/market own that.
 
-Default hard limits: 4 model requests (including validation retries), 12 executed tools, 16,000
+Default hard limits: 4 model requests (including validation retries), 20 executed tools, 16,000
 reported total tokens and 30 seconds. Tool execution is sequential; SDK batch checks reject an
 over-budget validated tool batch before executing it. Local failed tool executions count too.
 Schema-invalid/unknown calls do not execute tools; their retries consume model requests. Token
