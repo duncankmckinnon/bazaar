@@ -37,7 +37,7 @@ GATEWAY = "https://gateway.test/proxy"
 
 def verdict(probability):
     return {
-        "model": "jev-1.13.0",
+        "model": "jev-1.13.0",  # Jev resolves the jev-latest alias.
         "answers": {"pass": {"type": "noul", "noul": probability}},
         "usage": {"input_tokens": 120, "output_tokens": 1},
     }
@@ -49,6 +49,7 @@ def route_judge(monkeypatch, handler):
 
     provider = strategy_evaluation.TypeSafeProvider
     monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.delenv("BAZAAR_JUDGE_MODEL", raising=False)
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", GATEWAY)
     monkeypatch.setattr(
@@ -66,10 +67,10 @@ def judge(monkeypatch):
     prompts = []
 
     def grade(request):
-        assert str(request.url) == f"{GATEWAY}/typesafe/v1/systemone"
+        assert str(request.url) == f"{GATEWAY}/jev-duncan/v1/systemone"
         assert request.headers["authorization"] == "Bearer test-gateway-key"
         body = json.loads(request.content)
-        assert body["model"] == "jev-1.13.0" and set(body["questions"]) == {"pass"}
+        assert body["model"] == "jev-latest" and set(body["questions"]) == {"pass"}
         prompts.append(json.dumps(body["state"], ensure_ascii=False))
         return httpx2.Response(200, json=verdict(0.9))
 
@@ -133,6 +134,17 @@ async def test_failed_judge_does_not_change_a_decision(monkeypatch, capfire):
     [event] = evaluations(capfire)
     assert event["attributes"]["error.type"] == "ModelHTTPError"
     assert "gen_ai.evaluation.score.value" not in event["attributes"]
+
+
+@pytest.mark.parametrize("judge_model", ["jev-latest", "jev/duncan:jev-latest", "jev-duncan:"])
+async def test_judge_model_must_name_a_gateway_route_and_model(monkeypatch, capfire, judge_model):
+    route_judge(monkeypatch, lambda request: pytest.fail("A malformed judge model was called"))
+    monkeypatch.setenv("BAZAAR_JUDGE_MODEL", judge_model)
+    result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
+    await wait_for_evaluations()
+    assert result.error is None
+    [event] = evaluations(capfire)
+    assert event["attributes"]["error.type"] == "UserError"
 
 
 async def test_missing_gateway_key_is_an_evaluation_error(monkeypatch, capfire):

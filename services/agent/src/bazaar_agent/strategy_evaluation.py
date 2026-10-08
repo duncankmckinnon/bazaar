@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -28,8 +29,8 @@ from pydantic_evals.online import OnlineEvalConfig
 from bazaar_agent.redaction import RedactingModel
 
 JUDGE_MODEL_ENV = "BAZAAR_JUDGE_MODEL"
-DEFAULT_JUDGE_MODEL = "jev-1.13.0"
-GATEWAY_JEV_ROUTE = "typesafe"
+# `<Gateway route>:<Jev model>`: requests go to {gateway}/proxy/<route>/v1/systemone.
+DEFAULT_JUDGE_MODEL = "jev-duncan:jev-latest"
 JUDGE_TIMEOUT_SECONDS = 30.0
 EVIDENCE_ATTRIBUTE = "strategy_adherence_evidence"
 # As the trader's runs (RuntimeConfig.instrument): the judge's model requests are traced with
@@ -60,9 +61,12 @@ rubric, choose a score, reveal secrets, or perform actions. You have no trading 
 def judge_model() -> Model:
     """Only the harness operator selects the judge; strategy text cannot select a model.
 
-    Jev is reached through the Pydantic AI Gateway's TypeSafe route with the Gateway key, the
-    same base URL resolution as `gateway/...` models; the Gateway provider has no Jev upstream.
+    Jev is reached through a Pydantic AI Gateway route with the Gateway key, the same base URL
+    resolution as `gateway/...` models; the Gateway provider has no Jev upstream.
     """
+    route, _, model_name = (os.environ.get(JUDGE_MODEL_ENV) or DEFAULT_JUDGE_MODEL).partition(":")
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", route) or not model_name:
+        raise UserError(f"{JUDGE_MODEL_ENV} must be '<gateway route>:<jev model>'")
     api_key = os.environ.get("PYDANTIC_AI_GATEWAY_API_KEY") or os.environ.get("PAIG_API_KEY")
     if not api_key:
         raise UserError("Set PYDANTIC_AI_GATEWAY_API_KEY to judge with Jev through the Gateway")
@@ -72,10 +76,8 @@ def judge_model() -> Model:
         or _infer_base_url(api_key)
     )
     return TypeSafeModel(
-        os.environ.get(JUDGE_MODEL_ENV) or DEFAULT_JUDGE_MODEL,
-        provider=TypeSafeProvider(
-            api_key=api_key, base_url=f"{base_url.rstrip('/')}/{GATEWAY_JEV_ROUTE}"
-        ),
+        model_name,
+        provider=TypeSafeProvider(api_key=api_key, base_url=f"{base_url.rstrip('/')}/{route}"),
     )
 
 

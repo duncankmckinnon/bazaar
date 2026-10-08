@@ -250,6 +250,7 @@ def test_three_concurrent_submissions_do_not_cross(
 
         provider = strategy_evaluation.TypeSafeProvider
         monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+        monkeypatch.delenv("BAZAAR_JUDGE_MODEL", raising=False)
         monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
         monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", "https://gateway.test/proxy")
         monkeypatch.setattr(
