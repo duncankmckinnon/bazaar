@@ -4,6 +4,7 @@ Run locally:
     BAZAAR_MARKET_DB=data/market.sqlite3 uv run uvicorn bazaar_market.app:app --port 8000
 """
 
+import copy
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -30,23 +31,42 @@ from bazaar_market import (
 )
 from bazaar_market.clock import SqliteClock
 from bazaar_market.ledger import Ledger
-from bazaar_market.ledger_api import GrantChecker
+from bazaar_market.ledger_api import ApprovalId, GrantChecker
 
 DEFAULT_DB = Path("data/market.sqlite3")
 
 
+class RedactingLogfireHandler(logfire.LogfireLoggingHandler):
+    """Sends market logs to Logfire with each ApprovalId replaced by its short ref. It emits a
+    copy, so other handlers (the terminal) still see the full id."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if isinstance(record.args, tuple) and any(isinstance(a, ApprovalId) for a in record.args):
+            record = copy.copy(record)
+            record.args = tuple(a.ref if isinstance(a, ApprovalId) else a for a in record.args)
+        super().emit(record)
+
+
 @cache
-def configure_telemetry() -> None:
-    # Shared with the runner (bazaar_protocol.telemetry): one configuration per process, the
-    # trading-session and token scrubbing rules.
-    telemetry.configure("bazaar-market")
+def attach_log_handlers() -> None:
+    """The market's own logs go to Logfire (redacted) and to the terminal (in full)."""
     market_logger = logging.getLogger("bazaar_market")
     market_logger.setLevel(logging.INFO)
-    market_logger.addHandler(logfire.LogfireLoggingHandler())
+    market_logger.addHandler(RedactingLogfireHandler())
     # Approval allows and denials must also be visible in the server's own terminal.
     console = logging.StreamHandler()
     console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
     market_logger.addHandler(console)
+
+
+@cache
+def configure_telemetry() -> None:
+    """Once per process: Logfire as bazaar-market, system metrics, and the market's own logs."""
+    # Shared with the runner (bazaar_protocol.telemetry): one configuration per process, the
+    # trading-session and token scrubbing rules.
+    telemetry.configure("bazaar-market")
+    logfire.instrument_system_metrics(base="basic")
+    attach_log_handlers()
 
 
 def create_app(
