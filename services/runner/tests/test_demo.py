@@ -398,7 +398,7 @@ async def test_demo_agent_launch_places_its_own_order_beside_the_baselines(capfi
     assert TOKEN not in json.dumps(spans, default=str)
 
 
-async def test_demo_agent_news_error_ends_the_decision_and_is_reconciled(tmp_path):
+async def test_demo_agent_news_error_feedback_holds_without_order(tmp_path):
     pytest.importorskip("bazaar_agent.trading")
     from bazaar_runner.agent import (
         AGENT_FIXTURE_INSTRUCTIONS,
@@ -429,8 +429,7 @@ async def test_demo_agent_news_error_ends_the_decision_and_is_reconciled(tmp_pat
         **DEMO,
     )
     assert agent.status == "completed" and agent.orders == ()
-    (error,) = agent.decision_errors
-    assert (error.event_sequence, error.reconciled) == (0, "absent")
+    assert agent.decision_errors == ()
     assert [c[0] for c in agent_market.calls].count("submit") == 0
 
 

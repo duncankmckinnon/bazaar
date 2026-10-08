@@ -4,7 +4,7 @@
 model/tool loop, not a period runner. Registration remains nonexecuting. The caller supplies a
 trusted `MarketIdentity`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
 client, a runner-reserved `client_order_id`, and optionally `RuntimeConfig`, `DecisionBudget`,
-`ModelFactory`, the existing `PrivateHistoryReader`, and an optional trusted `MontyCalculator`.
+`ModelFactory`, and the existing `PrivateHistoryReader`.
 Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
@@ -12,14 +12,17 @@ database access, approval implementation or scheduler is added.
 ## Fixture usage
 
 The only accepted models today are explicitly injected local `TestModel`/`FunctionModel`
-instances (from **pydantic-ai-slim 1.70.0**, no provider extras). Missing factories and non-fixture
+instances (from **pydantic-ai-slim 2.54.0**, no provider extras). Code Mode dependencies are pinned
+at **pydantic-ai-harness[codemode] 0.54.0** and **pydantic-monty 1.0.0**. Missing factories and non-fixture
 models return structured `unsupported` errors before model execution. `RuntimeConfig` accepts
 only `harness="builtin"`, with `model_ref="fixture"` by default. Its supported model settings
 are `temperature` (default 0, range 0–2), `max_tokens` (default 4,000, range 1–100,000), and
 optional integer `seed`. These are converted to SDK `ModelSettings` and passed to `Agent`,
 independently of strategy text. Unknown runtime/settings fields are rejected. Model references
 are passed to an explicitly trusted factory, never parsed as gateway routes, URLs or credentials.
-No API key is needed.
+No API key is needed. The trusted `RuntimeConfig.code_mode` boolean defaults to `False`;
+set `RuntimeConfig(code_mode=True)` to enable the SDK's `CodeMode` capability. This is a runtime
+choice, not a strategy flag or a new harness value.
 
 ```python
 from pydantic_ai.models.test import TestModel
@@ -103,7 +106,9 @@ client corroboration does not replace market-side authorization, approval or set
 
 ## Public tool mapping and failure semantics
 
-All twelve tools are always registered, independent of the strategy definition:
+The fixed tool surface is registered independently of the strategy definition. With Code Mode
+disabled, these are native tools; with it enabled, the research reads are exposed through
+`run_code` and `market_order` remains native:
 
 | Purpose | Exposed tools |
 | --- | --- |
@@ -113,9 +118,32 @@ All twelve tools are always registered, independent of the strategy definition:
 | Reports | `filings` (requires trusted `FiscalCycle`) |
 | Private evidence | `private_history` (default unsupported adapter) |
 | Own orders | `orders` (own order history), `market_order` (structured buy/sell) |
-| Pure calculations | `monty_inputs`, `monty_calculate` (actual SDK 0.0.14; no strategy flag) |
 
-Registration does not bypass fiscal-cycle, private-adapter, authorization or budget requirements.
+CodeMode receives only `BUILTIN_TOOLS`: `account`, `portfolio`, `account_history`,
+`portfolio_history`, `prices`, `news`, `filings`, `private_history`, and `orders`. It cannot call
+`market_order`. Registration does not bypass fiscal-cycle, private-adapter, authorization or
+budget requirements.
+
+## Code Mode sandbox
+
+Code Mode replaces the custom calculation surface. Generated Python can call the scoped research
+reads and compute from their returned data in the same sandbox execution; there is no separate
+runner-owned calculation snapshot or calculator injection. The custom `monty.py`,
+`monty_worker.py`, and `monty-calculations.md` are removed, as are `monty_inputs`,
+`monty_calculate`, and `DecisionResult.calculations`.
+
+The SDK capability is configured with `max_retries=1`,
+`max_tool_calls=budget.tool_calls + 1`, and
+`resource_limits={"max_duration_secs": budget.timeout_seconds}`. It retains the SDK's default
+256 MiB memory limit. No OS access, filesystem mounts, environment access or clock grants are
+provided. No eager execution or speculation is enabled. Research access remains mediated by the
+same scoped wrappers; Code Mode adds computation, not new market authority.
+
+Research tools remain sequential. Inside `run_code`, their sandbox stubs are plain synchronous
+functions called without `await` (for example, `account()` and `portfolio()`). There is no parallel
+research within one run; call each read in order, then compute from the returned data.
+
+## Tool execution and decision budgets
 
 Tools reuse #21/shared DTO signatures and `ToolResult`/`ToolError`. PydanticAI flattens a single
 Pydantic argument into the tool's top-level JSON object: `market_order` accepts the exact
@@ -126,12 +154,13 @@ account settlement remain authoritative. See [research tools](agent-research-too
 [market agreement](market-agent-api.md) for the proposed, not live, HTTP endpoints.
 
 Each invocation creates fresh messages and research cursor state. There is no inherited model
-history, cache, automatic pagination or automatic data/order retry. Any scoped tool error ends
-that decision immediately, returning a readable fixed error, never silently advancing time or
-calling the model again with invalid evidence. Ordinary Monty syntax/runtime/serialization failures
-are the exception: complete private calculation records are tool feedback allowing code correction
-within the same overall budgets. Host denial and invalid worker responses remain fatal. Invalid tool arguments/unknown tools and invalid
-final outputs can use **one** SDK validation retry, within the model-request budget. The final
+history, cache, automatic pagination or automatic data/order retry. Ordinary research read errors
+return structured `ToolResult.error` feedback instead of ending the decision: the model can correct
+arguments or retry, including from Code Mode, within the same budgets. Error feedback is not valid
+research data and never silently advances time. Initial protected bootstrap errors, ambiguous order
+failures and budget exhaustion remain terminal. Invalid tool arguments/unknown tools and invalid
+final outputs can use **one** SDK validation retry, within the model-request budget. Code Mode's
+`max_retries=1` also bounds code correction; it does not grant extra decision budget. The final
 `Decision.action` is only `hold` or `ordered` and must agree with actual tool settlement evidence;
 model text cannot manufacture a fill. Market rejections are terminal evidence, not harness failures.
 A public SDK `WrapperModel` response guard rejects empty or duplicate tool-call IDs (including
@@ -154,9 +183,23 @@ reported total tokens and 30 seconds. Tool execution is sequential; SDK batch ch
 over-budget validated tool batch before executing it. Local failed tool executions count too.
 Schema-invalid/unknown calls do not execute tools; their retries consume model requests. Token
 limits are checked **after** responses using SDK-reported/fixture-estimated usage, not exact
-preflight cost or billing guarantees. Monty executions and corrections share these same budgets;
-there are no Monty-specific quotas or truncation. No nested models or delegation are added.
-Async timeouts cannot preempt
+preflight cost or billing guarantees.
+
+With Code Mode enabled, there are two independent tool-budget checks: a harness capability counts
+model-dispatched `run_code` executions and native `market_order` executions, while the shared wrapper
+counter counts nested research read executions and native order executions against `budget.tool_calls`.
+The SDK's aggregate tool-call limit is disabled in this mode because it counts both outer and nested
+calls; using it here would charge a research read twice. SDK model-request and token limits remain active.
+`DecisionResult.usage.tool_calls` reports that wrapper counter, not the number of outer `run_code`
+calls. Nested reads, including failed reads and model-requested retries, do not bypass or reset the
+wrapper budget. CodeMode's reservation cap allows one excess nested call to reach the terminal
+shared admission guard, rather than turning decision-budget exhaustion into retryable sandbox
+feedback. Rejected over-budget calls are not counted as executions. The outer harness guard blocks
+`run_code` when the decision budget is zero and counts it even if its code performs no reads. Code execution, corrections
+and research retries also share the decision-wide model-request, token and wall-time limits; the
+sandbox duration limit does not restart the overall deadline. Cancellation propagates, but SDK
+cleanup of an active sandbox feed may wait for its configured duration limit; it is not an
+instantaneous hard kill. No nested models or delegation are added. Async timeouts cannot preempt
 a malicious synchronous factory/function: injections are trusted test fixtures, not sandbox code.
 
 ## Monitoring and next interfaces
@@ -170,12 +213,9 @@ response capture false; do not add independently logging hooks. Payload-marker t
 monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata and actual
 AI Gateway/private SDK binding are **#23**, not implemented or gateway-ready here.
 
-The builtin [Monty tools](monty-calculations.md) calculate over a fresh harness-owned snapshot.
-Default financial inputs come from the initial protected API reads. A runner can inject additional
-validated historical price inputs through `CalculationSnapshot`; supplied financial snapshots must
-match those API reads exactly. This snapshot stays fixed: subsequent research tool results are not
-automatically ingested into Monty. Dynamic research-to-calculator binding is a remaining runner seam,
-not permission for model-supplied arrays or future observations. No real historical experiment was
-run; fixtures prove client behavior, not server authorization, source completeness, live grants or
-model quality. Provisioning, account-status and performance-statistics contracts remain deferred;
-no market service or Compose changes accompany this harness.
+Code Mode does not add tracing or AI Gateway integration: SDK/HTTP content instrumentation remains
+suppressed as above. Computation over returned research data does not authorize future observations
+or bypass point-in-time validation. No real historical experiment was run; fixtures prove client
+behavior, not server authorization, source completeness, live grants or model quality. Provisioning,
+account-status and performance-statistics contracts remain deferred; no market service or Compose
+changes accompany this harness.

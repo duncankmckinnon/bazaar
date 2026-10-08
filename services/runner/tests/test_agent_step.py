@@ -455,17 +455,19 @@ async def test_real_harness_test_model_holds():
     assert submits(fake) == 0
 
 
-async def test_real_harness_orders_then_order_then_orders_is_reconciled_once():
-    """Market auditor: the second orders() read sees changed history -> invalid_response."""
+async def test_real_harness_post_order_read_error_is_feedback_without_retrading():
+    """A changed-history read returns invalid_response feedback, not an ambiguous order."""
     pytest.importorskip("bazaar_agent.trading")
     from bazaar_runner.agent import make_agent_decider
     from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
     from pydantic_ai.models.function import FunctionModel
 
     window = {"start_at": "2026-02-01T00:00:00Z", "end_at": "2026-02-02T14:30:00Z"}
+    feedback = []
 
     def trader(messages, info):
-        returns = sum(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        returns = len(returned)
         if returns == 1:
             order = {
                 "client_order_id": _prompt_reserved_id(messages),
@@ -478,6 +480,7 @@ async def test_real_harness_orders_then_order_then_orders_is_reconciled_once():
             return ModelResponse(
                 parts=[ToolCallPart("orders", window, tool_call_id=f"read{returns}")]
             )
+        feedback.append(returned[-1].content)
         return ModelResponse(
             parts=[
                 ToolCallPart(info.output_tools[0].name, {"action": "ordered"}, tool_call_id="out")
@@ -497,12 +500,12 @@ async def test_real_harness_orders_then_order_then_orders_is_reconciled_once():
     result = await run_strategy(SPEC, fake, agent_step(fake, first_only))
 
     (outcome,) = outcomes
-    assert outcome.error is not None and outcome.error.startswith("invalid_response")
+    assert outcome.error is None
+    assert feedback[0].error.code == "invalid_response" and feedback[0].data is None
     assert result.state is RunState.COMPLETED
     (order,) = result.orders
     assert order.result.status == "filled" and order.result.client_order_id == reserved_for(0)
-    (error,) = result.decision_errors
-    assert error.reconciled == "found"
+    assert result.decision_errors == ()
     assert submits(fake) == 1
 
 
@@ -597,8 +600,12 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
     from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
     from pydantic_ai.models.function import FunctionModel
 
+    feedback = []
+
     def reader(messages, info):
-        if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        if returned:
+            feedback.append(returned[-1].content)
             final = ToolCallPart(info.output_tools[0].name, {"action": "hold"}, tool_call_id="out")
             return ModelResponse(parts=[final])
         window = {
@@ -628,9 +635,10 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
     assert result.state is RunState.COMPLETED
     if with_cycle:
         # Past the "Trusted fiscal cycle unavailable" check: the read reached the market.
-        assert result.decision_errors == ()
+        assert result.decision_errors == () and feedback[0].error is None
         assert ("filings", "AAPL") in fake.calls
     else:
-        (error,) = result.decision_errors
-        assert error.error == "unsupported: Trusted fiscal cycle unavailable"
+        assert result.decision_errors == ()
+        assert feedback[0].error.code == "unsupported" and feedback[0].data is None
+        assert feedback[0].error.message == "Trusted fiscal cycle unavailable"
         assert ("filings", "AAPL") not in fake.calls
