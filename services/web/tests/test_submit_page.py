@@ -67,6 +67,7 @@ def run_page_function(name, calls):
     sources = re.findall(
         r"^  function (?:toNumber|percent|rankLabel)\(.*?^  }$", page(), re.MULTILINE | re.DOTALL
     )
+    sources += re.findall(r"// safeLogfireUrl:start(.*?)// safeLogfireUrl:end", page(), re.DOTALL)
     script = (
         "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
     )
@@ -96,3 +97,114 @@ def test_rank_label_accepts_positive_whole_numbers_and_digit_strings():
     calls = ["2", '"2"', "0", "1.5", "null", '"x"']
 
     assert run_page_function("rankLabel", calls) == ["#2", "#2", None, None, None, None]
+
+
+def test_safe_logfire_url_allows_only_https_on_pydantic_dev():
+    good = "https://logfire-us.pydantic.dev/x/y?q=1"
+    calls = [
+        json.dumps(good),
+        "null",
+        '""',
+        '"javascript:alert(1)"',
+        '"http://example.com"',
+        '"/relative"',
+        '"data:text/html,x"',
+        "42",
+        '"not a url"',
+        '"HTTPS://logfire-us.pydantic.dev/x"',
+        '"https://logfire-eu.pydantic.dev/a"',
+        '"https://pydantic.dev/a"',
+        '"https://evil.example/a"',
+        '"https://pydantic.dev.evil.com/a"',
+        '"https://logfire-us.pydantic.info/a"',
+        '"https://notpydantic.dev/a"',
+    ]
+
+    assert run_page_function("safeLogfireUrl", calls) == [
+        good,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "HTTPS://logfire-us.pydantic.dev/x",
+        "https://logfire-eu.pydantic.dev/a",
+        "https://pydantic.dev/a",
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_logfire_link_is_labelled_and_opens_safely():
+    html = page()
+
+    assert "See your agent in Logfire" in html
+    assert '"noopener noreferrer"' in html
+    assert '"_blank"' in html
+    assert "// safeLogfireUrl:start" in html and "// safeLogfireUrl:end" in html
+
+
+PAGE_BACKGROUNDS = ("#36182D", "#6a1a65", "#6b1b66")  # base and the blended magenta peak
+FIELD_FILL = "#24101d"
+TEXT_TOKENS = ("sugar", "aqua", "dim", "soft", "faint", "error")
+PLACEHOLDER_TOKEN = "faint"
+
+
+def css_tokens():
+    root = re.search(r":root\s*\{(.*?)\}", page(), re.DOTALL).group(1)
+    return {
+        name: value.lower() for name, value in re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})", root)
+    }
+
+
+def contrast(a, b):
+    def luminance(color):
+        channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = sorted((luminance(a), luminance(b)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def test_text_tokens_meet_wcag_aa_on_the_page_and_the_input_fill():
+    tokens = css_tokens()
+
+    assert tokens["field"] == FIELD_FILL
+    for name in TEXT_TOKENS:
+        for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
+            assert contrast(tokens[name], background) >= 4.5, (name, background)
+
+
+def test_placeholder_uses_a_pinned_token_that_meets_wcag_aa_on_the_fill():
+    rule = re.search(r"::placeholder\s*\{([^}]*)\}", page()).group(1)
+
+    assert f"color: var(--{PLACEHOLDER_TOKEN})" in rule
+    assert "opacity: 1" in rule
+    assert contrast(css_tokens()[PLACEHOLDER_TOKEN], FIELD_FILL) >= 4.5
+
+
+def test_input_border_meets_non_text_contrast_against_page_and_field():
+    tokens = css_tokens()
+
+    for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
+        assert contrast(tokens["field-line"], background) >= 3, background
+    assert re.search(
+        r"input\[type=\"text\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)", page()
+    )
+
+
+def test_page_uses_the_board_background_and_no_low_contrast_text_colours():
+    html = page()
+
+    assert (
+        "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
+        "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, "
+        "rgba(255,101,80,0) 60%), #36182D;"
+    ) in html
+    assert not re.search(r"(?<![-\w])color:\s*var\(--(?:calcium|lithium)\)", html)
