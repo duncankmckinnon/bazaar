@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Response
 
 from bazaar_market import db
 from bazaar_market.db import MarketError
-from bazaar_market.ledger_api import runner_token_check
+from bazaar_market.ledger_api import ApprovalId, runner_token_check
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class SqliteGrants:
                     logger.warning(
                         "grant refused: approval_id=%s is bound to another experiment, "
                         "not experiment_id=%s",
-                        approval_id,
+                        ApprovalId(approval_id),
                         experiment_id,
                     )
                     raise MarketError(
@@ -74,7 +74,9 @@ class SqliteGrants:
                 "INSERT INTO acct_grants VALUES (?, ?, ?)",
                 (str(approval_id), str(experiment_id), db.format_time(datetime.now(UTC))),
             )
-        logger.info("grant created: approval_id=%s experiment_id=%s", approval_id, experiment_id)
+        logger.info(
+            "grant created: approval_id=%s experiment_id=%s", ApprovalId(approval_id), experiment_id
+        )
         return True
 
 
