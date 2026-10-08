@@ -50,10 +50,14 @@ the deploy with `set BAZAAR_DEPLOY_... to an existing local path`.
    functions with that interpreter. `--inexact` keeps the packages Modal's own runtime needs. Local `.venv`, `.env*`,
    `*.sqlite3*` and `data` folders are never added.
 2. On start (`@modal.enter`): it refuses to start without `BAZAAR_RUNNER_TOKEN`, without printing any value. It copies
-   the seed DB to `/data/market.sqlite3` and the seed runs to `/data/runs` only if they are absent, then starts the
+   the seed DB to `/data/market.sqlite3` and the seed runs to `/data/runs` only if they are absent, and logs which
+   database is in use: `freshly seeded from ...` or `already on the volume; seed not applied`. Then it starts the
    market and waits up to 30 s for its `/health`. If the market does not come up, the container fails to start.
+   If the market dies later, a watchdog logs `the market exited with status N; stopping the container` and exits the
+   container non-zero, so Modal starts a new one instead of every run failing against a dead market.
 3. The Volume `bazaar-live-data` at `/data` holds `market.sqlite3`, `runs/` and `web.sqlite3`. It is committed every
-   10 s, after each scored run, and once at shutdown. A failed commit is logged, never raised into a request.
+   10 s, after each scored run, and once at shutdown, after the market has exited. A failed commit is logged, never
+   raised into a request.
 4. The web app gets `BAZAAR_MARKET_URL=http://127.0.0.1:8000`, `BAZAAR_RUNS_DIR=/data/runs`,
    `BAZAAR_WEB_DB=/data/web.sqlite3` and `BAZAAR_MARKET_DB=/data/market.sqlite3`.
 
@@ -64,6 +68,39 @@ absent, so the web app should treat it as optional: `getattr(app.state, "on_scor
 
 Known limit: a commit can snapshot SQLite between two transactions. On restart SQLite recovers from the committed WAL
 file, so the worst case loses up to 10 s of writes.
+
+## Redeploys
+
+Read this before any second deploy. A Modal Volume keeps the last write of each file. During a redeploy the old
+container's final commit can land after the new container has started. That can drop the new container's writes, or
+pair the main market database with a `-wal` file from the other container, which corrupts it. So:
+
+1. **Do the `PUBLIC_URL` redeploy before the QR code goes up.** The first deploy prints the web URL. Add it to the
+   `bazaar-live` secret as `PUBLIC_URL`, redeploy, then show the QR code. Nobody has submitted yet, so nothing is lost.
+2. **Mid-event, redeploy only with an empty queue.** Check that no submission is queued or running:
+
+   ```sh
+   curl -s "$PUBLIC_URL/api/board" \
+     | python3 -c "import json,sys; print(sum(r['status'] in ('queued','running') for r in json.load(sys.stdin)['rows']))"
+   ```
+
+   Redeploy only when it prints `0`. If needed, close the form first and wait for the queue to drain.
+
+### Reseeding the market database
+
+A new `BAZAAR_DEPLOY_MARKET_DB` never replaces a database already on the volume: the startup log says
+`already on the volume; seed not applied`. To reseed deliberately, which loses every account and order in it:
+
+```sh
+uvx modal app stop bazaar-live
+uvx modal volume rm bazaar-live-data /market.sqlite3
+uvx modal volume rm bazaar-live-data /market.sqlite3-wal   # if listed by: uvx modal volume ls bazaar-live-data
+uvx modal volume rm bazaar-live-data /market.sqlite3-shm   # likewise
+BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZAAR_DEPLOY_FONT=... uvx modal deploy deploy/modal_app.py
+```
+
+The startup log then says `freshly seeded from /app/seed/market.sqlite3`. Seed runs work the same way: delete `/runs`
+(`uvx modal volume rm -r bazaar-live-data /runs`) to take a new set.
 
 ## Modal APIs used, checked against modal 1.6.1
 
@@ -81,6 +118,8 @@ Signatures printed from the installed package with `inspect.signature`:
 - `App.cls(*, image, env, secrets, volumes, min_containers, max_containers, timeout=300, ...)`
 - `modal.enter(*, snap=False)`, `modal.exit()`, `modal.asgi_app(*, label=None, ...)`, `modal.concurrent(*, max_inputs=None, target_inputs=None)`
 - `modal.is_local()`: False only inside a running Modal Function, so the deploy-time paths are read only locally.
+- CLI, from `uvx modal ... --help`: `modal app stop APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
+  `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`.
 
 `Image.uv_sync` is not used: modal 1.6.1 raises `uv workspaces are not supported` for a `pyproject.toml` with
 `[tool.uv.workspace]`, which ours has. The `run_commands` sync above does the same job.
