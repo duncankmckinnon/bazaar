@@ -263,7 +263,8 @@ def new_seed(tmp_path, *names: str) -> Path:
     folder = tmp_path / "seed-v2"
     for name in names:
         (folder / name).mkdir(parents=True)
-        (folder / name / "run.json").write_text(name)
+        (folder / name / "record.json").write_text(name)
+        (folder / name / "evaluation.json").write_text(name)
     return folder
 
 
@@ -342,7 +343,7 @@ def test_the_marker_is_written_only_after_a_successful_copy(tmp_path, monkeypatc
     volume = tmp_path / "data"
     board(volume, "baseline")
 
-    def broken_copy(source, destination):
+    def broken_copy(source, destination, **kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(rt.shutil, "copytree", broken_copy)
@@ -367,3 +368,59 @@ def test_a_failed_commit_after_a_reseed_is_logged_not_fatal(tmp_path, caplog):
 
     assert outcome == "reseeded"
     assert "volume commit failed" in caplog.text
+
+
+def test_a_seed_of_only_dotfiles_fails_closed(tmp_path):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = tmp_path / "seed-v2"
+    seed.mkdir()
+    (seed / ".DS_Store").write_text("finder")
+
+    with pytest.raises(FileNotFoundError, match="no seed runs.*nothing moved"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+    assert not (volume / "archive").exists()
+
+
+@pytest.mark.parametrize("missing", ["record.json", "evaluation.json"])
+def test_a_seed_run_missing_a_file_fails_closed_and_names_it(tmp_path, missing):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a", "v2-broken")
+    (seed / "v2-broken" / missing).unlink()
+
+    with pytest.raises(FileNotFoundError, match="v2-broken in .*nothing moved"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+    assert not (volume / "archive").exists()
+    assert not (volume / "runs.part").exists()
+
+
+def test_a_stray_file_in_the_seed_fails_closed(tmp_path):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    (seed / "notes.txt").write_text("not a run")
+
+    with pytest.raises(FileNotFoundError, match="notes.txt"):
+        rt.reseed_runs(volume, seed, "v2", T1)
+
+    assert listing(volume / "runs") == ["baseline"]
+
+
+def test_a_valid_seed_with_a_stray_dotfile_reseeds_without_it(tmp_path, caplog):
+    volume = tmp_path / "data"
+    board(volume, "baseline")
+    seed = new_seed(tmp_path, "v2-a")
+    (seed / ".DS_Store").write_text("finder")
+    (seed / "v2-a" / ".DS_Store").write_text("finder")
+
+    with caplog.at_level("INFO", logger="bazaar.live"):
+        assert rt.reseed_runs(volume, seed, "v2", T1) == "reseeded"
+
+    assert listing(volume / "runs") == ["v2-a"]
+    assert listing(volume / "runs" / "v2-a") == ["evaluation.json", "record.json"]
+    assert "copied 1 seed runs" in caplog.text

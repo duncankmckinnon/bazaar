@@ -106,8 +106,15 @@ one-shot reseed below, which archives instead of deleting.
 
 For the v2 switch: replace the board's runs with a new seed set, keeping the old ones in an archive.
 
-1. Stage the new seed runs in a local folder.
-2. Check that the queue is empty (see the Redeploys rules above), then deploy with a new reseed id:
+1. Stage the new seed runs in a local folder: one folder per run, each with `record.json` and `evaluation.json`.
+2. Check that the queue is empty (see the Redeploys rules above).
+3. Stop the app first, so the old container's last volume commit cannot write old run files onto the new board:
+
+   ```sh
+   uvx modal app stop -y bazaar-live
+   ```
+
+4. Deploy with a new reseed id:
 
    ```sh
    BAZAAR_RESEED_RUNS=v2-2026-10-08 \
@@ -116,19 +123,35 @@ For the v2 switch: replace the board's runs with a new seed set, keeping the old
      uvx modal deploy deploy/modal_app.py
    ```
 
-On start the container copies the new seed runs, moves `/data/runs` to `/data/archive/<utc time>/runs`, puts the new
-runs in place, writes the marker `/data/archive/reseeded-<id>`, and commits the volume. The log says what it did:
-`archived the previous runs to ...` and `copied N seed runs`, or `skipped: already done`.
+On start the container checks the seed, copies the new seed runs, moves `/data/runs` to
+`/data/archive/<utc time>/runs`, puts the new runs in place, writes the marker `/data/archive/reseeded-<id>`, and
+commits the volume. The log says what it did: `archived the previous runs to ...` and `copied N seed runs`, or
+`skipped: already done`.
 
 - **One-shot.** The id stays in the deploy's environment, and the container restarts if the market dies. The marker
   means a given id reseeds once: a restart logs `skipped` and leaves runs scored since then alone. To reseed again
   later, deploy with a new id. A later deploy without `BAZAAR_RESEED_RUNS` does nothing.
 - **Nothing is deleted.** Every earlier board stays under `/data/archive/`.
-- **Fail closed.** With the id set but the seed runs missing or empty, the container fails to start and nothing moves.
+- **Fail closed.** With the id set, the seed is checked before anything moves. Dotfiles such as `.DS_Store` are
+  ignored and not copied. If the seed is missing, holds no runs, or has any other entry that is not a folder with
+  both `record.json` and `evaluation.json`, the container fails to start, the log names the bad entries, and the
+  board is untouched.
 - **Not touched:** `web.sqlite3` and its submission rows. The PM reruns the attendee strategies through the admin route.
-- **Recovery:** copy the old runs back from the archive, for example
-  `uvx modal volume cp -r bazaar-live-data /archive/<utc time>/runs /runs-restored`, or move the folders by hand after
-  `uvx modal app stop bazaar-live`.
+
+**Recovery.** A bad seed makes the container fail on every start, so Modal keeps restarting it. To get the old board
+back up:
+
+1. Redeploy **without** `BAZAAR_RESEED_RUNS`, using the normal deploy command above. Nothing moved, so the board
+   comes back as it was. Fix the seed folder, then reseed with a new id.
+2. If a reseed did run and its runs are wrong, stop the app with `uvx modal app stop -y bazaar-live`. Then find the
+   archive with `uvx modal volume ls bazaar-live-data /archive` and copy the old runs back:
+
+   ```sh
+   uvx modal volume rm -r bazaar-live-data /runs
+   uvx modal volume cp -r bazaar-live-data /archive/<utc time>/runs /runs
+   ```
+
+   Then redeploy without `BAZAAR_RESEED_RUNS`. The `reseeded-<id>` marker stays, so that id never runs again.
 
 ## Modal APIs used, checked against modal 1.6.1
 
@@ -146,7 +169,7 @@ Signatures printed from the installed package with `inspect.signature`:
 - `App.cls(*, image, env, secrets, volumes, min_containers, max_containers, timeout=300, ...)`
 - `modal.enter(*, snap=False)`, `modal.exit()`, `modal.asgi_app(*, label=None, ...)`, `modal.concurrent(*, max_inputs=None, target_inputs=None)`
 - `modal.is_local()`: False only inside a running Modal Function, so the deploy-time paths are read only locally.
-- CLI, from `uvx modal ... --help`: `modal app stop APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
+- CLI, from `uvx modal ... --help`: `modal app stop [-y] APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
   `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`.
 
 `Image.uv_sync` is not used: modal 1.6.1 raises `uv workspaces are not supported` for a `pyproject.toml` with
