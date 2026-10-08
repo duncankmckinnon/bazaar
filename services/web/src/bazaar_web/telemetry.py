@@ -1,10 +1,9 @@
 """Logfire for the web process, which owns its telemetry as service "bazaar-web"."""
 
-import os
 from functools import cache
-from importlib.metadata import version
 
 import logfire
+from bazaar_protocol import telemetry as shared
 
 SERVICE_NAME = "bazaar-web"
 # Requests the board and form poll every few seconds; tracing them floods Logfire. Patterns are
@@ -21,24 +20,6 @@ EXCLUDED_URLS = (
 
 @cache
 def configure() -> None:
-    """Configure Logfire once per process (sends only when a token is present)."""
-    try:
-        from bazaar_protocol.telemetry import configure as shared  # T0, once it lands
-    except ImportError:
-        shared = None
-    if shared is not None:
-        shared(SERVICE_NAME)
-    else:
-        # Fallback with T0's parameters; delete it when bazaar_protocol.telemetry exists.
-        logfire.configure(
-            send_to_logfire="if-token-present",
-            service_name=SERVICE_NAME,
-            service_version=version("bazaar-web"),
-            environment=os.getenv("BAZAAR_ENVIRONMENT", "development"),
-            distributed_tracing=True,
-            console=False,
-            scrubbing=logfire.ScrubbingOptions(
-                extra_patterns=[r"runner[._ -]?token", r"admin[._ -]?token"]
-            ),
-        )
+    """Configure Logfire once per process as bazaar-web, with the shared scrubbing (T0)."""
+    shared.configure(SERVICE_NAME)
     logfire.instrument_system_metrics()

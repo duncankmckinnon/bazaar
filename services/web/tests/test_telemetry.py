@@ -1,14 +1,16 @@
 import dataclasses
 import json
 import sqlite3
-import sys
-import types
 
+import bazaar_protocol.telemetry
 import logfire
 from bazaar_web.app import create_app
 from bazaar_web.store import Store
 from bazaar_web.worker import created_ns
 from fastapi.testclient import TestClient
+from logfire._internal.config import GLOBAL_CONFIG
+from logfire.testing import TestExporter
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 VALID = {"name": "alice-bot", "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
 
@@ -191,33 +193,44 @@ def test_migration_adds_trace_context_to_older_databases(tmp_path):
         assert (row["name"], row["status"], row["trace_context"]) == ("old-bot", "queued", None)
 
 
-def test_configure_names_the_service_bazaar_web(real_configure, monkeypatch):
-    calls = {}
-    monkeypatch.setattr(logfire, "configure", lambda **kw: calls.update(configure=kw))
-    monkeypatch.setattr(logfire, "instrument_system_metrics", lambda: calls.update(metrics=True))
-    monkeypatch.setitem(sys.modules, "bazaar_protocol.telemetry", None)  # T0 not landed
-    monkeypatch.setenv("BAZAAR_ENVIRONMENT", "production")
-
-    real_configure()
-
-    kwargs = calls["configure"]
-    assert kwargs["service_name"] == "bazaar-web"
-    assert kwargs["send_to_logfire"] == "if-token-present"
-    assert kwargs["environment"] == "production"
-    assert kwargs["distributed_tracing"] is True
-    assert kwargs["console"] is False
-    assert kwargs["scrubbing"].extra_patterns == [r"runner[._ -]?token", r"admin[._ -]?token"]
-    assert calls["metrics"] is True
-
-
-def test_configure_uses_the_shared_helper_once_it_lands(real_configure, monkeypatch):
+def test_configure_delegates_to_the_shared_helper(real_configure, monkeypatch):
     calls = []
-    shared = types.ModuleType("bazaar_protocol.telemetry")
-    shared.configure = calls.append
-    monkeypatch.setitem(sys.modules, "bazaar_protocol.telemetry", shared)
-    monkeypatch.setattr(logfire, "configure", lambda **kw: calls.append(("fallback", kw)))
-    monkeypatch.setattr(logfire, "instrument_system_metrics", lambda: None)
+    monkeypatch.setattr(bazaar_protocol.telemetry, "configure", calls.append)
+    monkeypatch.setattr(logfire, "instrument_system_metrics", lambda: calls.append("metrics"))
 
     real_configure()
 
-    assert calls == ["bazaar-web"]
+    assert calls == ["bazaar-web", "metrics"]
+
+
+def test_web_startup_turns_on_the_shared_scrubbing(settings, helpers, real_configure, monkeypatch):
+    # Start from an unconfigured process, so T0's configure really runs (it steps aside when
+    # Logfire is already configured). The real logfire.configure gets T0's arguments unchanged,
+    # plus an in-memory processor so the test can read what would be exported.
+    exporter = TestExporter()
+    real = logfire.configure
+    seen = {}
+
+    def configure_with_exporter(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs, additional_span_processors=[SimpleSpanProcessor(exporter)])
+
+    monkeypatch.setattr(GLOBAL_CONFIG, "_initialized", False)
+    monkeypatch.setattr(logfire, "configure", configure_with_exporter)
+    monkeypatch.setattr(logfire, "instrument_system_metrics", lambda: None)
+    monkeypatch.setattr("bazaar_web.telemetry.configure", real_configure)
+    try:
+        with TestClient(create_app(settings, helpers.FakeRunner())):
+            logfire.info("probe", x_bazaar_runner_token="SENTINEL-RUNNER-TOKEN-1")
+            with logfire.span("probe span", admin_token="SENTINEL-ADMIN-TOKEN-2"):
+                pass
+    finally:
+        real(send_to_logfire=False, console=False)  # leave no exporter behind for later tests
+
+    assert seen["service_name"] == "bazaar-web"
+    assert seen["scrubbing"].extra_patterns == list(bazaar_protocol.telemetry.EXTRA_SCRUB_PATTERNS)
+    exported = exporter.exported_spans
+    assert {s.resource.attributes["service.name"] for s in exported} == {"bazaar-web"}
+    dumped = json.dumps(exporter.exported_spans_as_dict(), default=str)
+    assert "SENTINEL" not in dumped
+    assert "Scrubbed due to" in dumped
