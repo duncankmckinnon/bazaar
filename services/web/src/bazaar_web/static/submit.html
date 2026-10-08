@@ -16,7 +16,7 @@
   --lithium: #E520E9; --calcium: #FF6550; --aqua: #77FFD8;
   --sugar: #FBFFEA; --petroleum: #092224; --blackbean: #061314;
   --dim: #9fb6b4; --soft: #c9d6cf; --faint: #a3b5ae; --error: #FF8C76;
-  --line: rgba(251,255,234,.16); --field: #0b2629; --field-line: #8aa19f;
+  --line: rgba(251,255,234,.16); --field: #24101d; --field-line: #8aa19f;
   --display: "Dwight", "IBM Plex Sans", sans-serif;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -50,6 +50,7 @@ input[type="text"], textarea {
   background: var(--field); border: 1px solid var(--field-line); border-radius: 12px;
 }
 input[type="text"] { font-family: var(--mono); }
+::placeholder { color: var(--faint); opacity: 1; }
 textarea { min-height: 180px; resize: vertical; line-height: 1.45; }
 input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--error); }
 .hint { font-size: 14px; color: var(--dim); margin: 6px 0 0; }

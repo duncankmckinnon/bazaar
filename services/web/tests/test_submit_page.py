@@ -149,9 +149,10 @@ def test_logfire_link_is_labelled_and_opens_safely():
     assert "// safeLogfireUrl:start" in html and "// safeLogfireUrl:end" in html
 
 
-PAGE_BACKGROUNDS = ("#36182D", "#6a1a65")  # base and the blended magenta peak
-FIELD_FILL_TOKEN = "field"
+PAGE_BACKGROUNDS = ("#36182D", "#6a1a65", "#6b1b66")  # base and the blended magenta peak
+FIELD_FILL = "#24101d"
 TEXT_TOKENS = ("sugar", "aqua", "dim", "soft", "faint", "error")
+PLACEHOLDER_TOKEN = "faint"
 
 
 def css_tokens():
@@ -171,18 +172,27 @@ def contrast(a, b):
     return (light + 0.05) / (dark + 0.05)
 
 
-def test_text_tokens_meet_wcag_aa_on_the_page_background():
+def test_text_tokens_meet_wcag_aa_on_the_page_and_the_input_fill():
     tokens = css_tokens()
 
+    assert tokens["field"] == FIELD_FILL
     for name in TEXT_TOKENS:
-        for background in PAGE_BACKGROUNDS:
+        for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
             assert contrast(tokens[name], background) >= 4.5, (name, background)
+
+
+def test_placeholder_uses_a_pinned_token_that_meets_wcag_aa_on_the_fill():
+    rule = re.search(r"::placeholder\s*\{([^}]*)\}", page()).group(1)
+
+    assert f"color: var(--{PLACEHOLDER_TOKEN})" in rule
+    assert "opacity: 1" in rule
+    assert contrast(css_tokens()[PLACEHOLDER_TOKEN], FIELD_FILL) >= 4.5
 
 
 def test_input_border_meets_non_text_contrast_against_page_and_field():
     tokens = css_tokens()
 
-    for background in (*PAGE_BACKGROUNDS, tokens[FIELD_FILL_TOKEN]):
+    for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
         assert contrast(tokens["field-line"], background) >= 3, background
     assert re.search(
         r"input\[type=\"text\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)", page()
