@@ -208,3 +208,28 @@ def test_page_uses_the_board_background_and_no_low_contrast_text_colours():
         "rgba(255,101,80,0) 60%), #36182D;"
     ) in html
     assert not re.search(r"(?<![-\w])color:\s*var\(--(?:calcium|lithium)\)", html)
+
+
+UNIVERSE = ("AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM")
+
+
+def example_strings():
+    block = re.search(r"var EXAMPLES = \[(.*?)\n  \];", page(), re.DOTALL).group(1)
+    return re.findall(r'"([^"]*)"', block)
+
+
+def test_lede_lists_the_twelve_tickers_as_alphabetical_chips():
+    html = page()
+    chips = re.findall(r'<li class="ticker">([A-Z]+)</li>', html)
+
+    assert chips == sorted(UNIVERSE)
+    assert "12 large US stocks" in html
+    assert "AAPL, MSFT and KO" not in html
+
+
+def test_examples_name_only_tickers_in_the_universe():
+    words = re.findall(r"\b[A-Z]{1,5}\b", " ".join(example_strings()))
+
+    assert words, "the examples should name some tickers"
+    assert set(words) <= set(UNIVERSE), set(words) - set(UNIVERSE)
+    assert len([s for s in example_strings() if len(s) > 40]) >= 3
