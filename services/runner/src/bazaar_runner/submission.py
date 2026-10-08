@@ -4,11 +4,12 @@ run_submission is synchronous and self-contained so the web worker can call up t
 from threads: each call has its own event loop, HTTP clients and market experiment. The only
 shared state is the one-time Logfire configuration.
 
-Progress: after each of the 10 session closes the run calls on_progress(day) or, if the callback
-takes two positional arguments (or *args), on_progress(day, value), where value is the Decimal
+Progress: after each of the 10 session closes the run calls on_progress(day, value) if the
+callback accepts two positional arguments (signature.bind(day, value) succeeds, so (day, value),
+(day, value=None) and *args all count), and on_progress(day) otherwise. value is the Decimal
 portfolio value marked at that close (PortfolioSnapshot.portfolio_value, value-v1). The shape is
-decided once per run from the callback's signature, so existing one-argument callbacks keep
-working. A callback that raises is logged and never stops the run.
+decided once per run, so existing one-argument callbacks keep working. A callback that raises is
+logged and never stops the run.
 """
 
 import asyncio
@@ -80,18 +81,14 @@ ProgressReporter = Callable[[int, Decimal], None]
 
 
 def _progress_reporter(on_progress: Callable[..., None] | None) -> ProgressReporter | None:
-    """Decide once whether the callback takes (day) or (day, value)."""
+    """Decide once whether the callback takes (day, value) or only (day) (PM 15:40Z rule)."""
     if on_progress is None:
         return None
     try:
-        parameters = inspect.signature(on_progress).parameters.values()
-    except (TypeError, ValueError):  # no introspectable signature: the original (day) shape
+        inspect.signature(on_progress).bind(1, Decimal(0))
+    except (TypeError, ValueError):  # cannot take two positional arguments, or not introspectable
         return lambda day, value: on_progress(day)
-    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    takes_value = any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters) or (
-        sum(p.kind in positional for p in parameters) >= 2
-    )
-    return on_progress if takes_value else lambda day, value: on_progress(day)
+    return on_progress
 
 
 class _ProgressPort:

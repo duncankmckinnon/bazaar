@@ -346,3 +346,27 @@ def test_a_var_args_progress_callback_gets_both(markets, tmp_path):
     run_dir = run_with(tmp_path, lambda *args: seen.append(args))
     marks = record_in(run_dir).marks
     assert seen == [(i + 1, m.snapshot.portfolio_value) for i, m in enumerate(marks)]
+
+
+def test_a_progress_callback_with_an_optional_value_gets_it(markets, tmp_path):
+    markets["http://m1"] = GrantingMarket()
+    seen = []
+
+    def day_and_optional_value(day, value=None):
+        seen.append((day, value))
+
+    run_dir = run_with(tmp_path, day_and_optional_value)
+    marks = record_in(run_dir).marks
+    assert seen == [(i + 1, m.snapshot.portfolio_value) for i, m in enumerate(marks)]
+
+
+def test_keyword_only_value_is_not_passed_positionally():
+    from bazaar_runner.submission import _progress_reporter
+
+    seen = []
+
+    def keyword_value(day, *, value=None):
+        seen.append((day, value))
+
+    _progress_reporter(keyword_value)(3, 7)
+    assert seen == [(3, None)]
