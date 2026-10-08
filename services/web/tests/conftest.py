@@ -1,5 +1,6 @@
 """Offline fixtures: synthetic run directories shaped like RunRecord v1 / RunEvaluation."""
 
+import asyncio
 import json
 import os
 import threading
@@ -111,6 +112,9 @@ class FakeRunner:
 
     def __call__(self, *, submission_id, name, instructions, market_url, runner_token, runs_dir,
                  model=None, on_progress=None) -> Path:  # fmt: skip
+        # Like the real run_submission, which calls asyncio.run: this raises if the worker ever
+        # calls it on the event loop instead of in a thread.
+        asyncio.run(asyncio.sleep(0))
         self.calls.append(
             {"submission_id": submission_id, "name": name, "runner_token": runner_token}
         )
