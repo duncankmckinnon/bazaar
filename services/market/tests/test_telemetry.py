@@ -271,3 +271,25 @@ def test_the_fallback_configuration_keeps_the_trading_session_scrubbing(monkeypa
     assert seen["scrubbing"].callback is app_module.keep_trading_sessions
     assert (seen["service_name"], seen["distributed_tracing"]) == ("bazaar-market", True)
     assert seen["send_to_logfire"] == "if-token-present"
+
+
+def test_the_real_configuration_attaches_only_the_redacting_and_terminal_handlers(monkeypatch):
+    """The other tests stub configure_telemetry, so this one runs it for real, twice. A plain
+    LogfireLoggingHandler would send raw approval ids to Logfire; it must never come back."""
+    import logging
+
+    monkeypatch.delenv("LOGFIRE_TOKEN", raising=False)
+    market_logger = logging.getLogger("bazaar_market")
+    saved = market_logger.handlers[:]
+    market_logger.handlers = []
+    app_module.configure_telemetry.cache_clear()
+    app_module.attach_log_handlers.cache_clear()
+    try:
+        app_module.configure_telemetry()
+        app_module.configure_telemetry()
+        assert [type(h) for h in market_logger.handlers] == [
+            app_module.RedactingLogfireHandler,
+            logging.StreamHandler,
+        ]
+    finally:
+        market_logger.handlers = saved
