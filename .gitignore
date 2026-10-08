@@ -13,3 +13,6 @@ skills-lock.json
 
 # Frozen source snapshots written by bazaar_market.sources
 data/raw/
+
+# Market data staged by the PM for the deploy image. Never commit it.
+deploy/seed/
