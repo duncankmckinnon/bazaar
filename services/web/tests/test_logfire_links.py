@@ -104,6 +104,6 @@ def test_board_sets_the_link_through_dom_properties():
     assert 'a.rel = "noopener noreferrer";' in script
     assert 'a.target = "_blank";' in script
     assert "if (!url) { b.textContent = name; return; }" in script
-    assert 'setName(li.querySelector(".nm b"), r.name, safeUrl(r.logfire_url));' in script
+    assert 'setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));' in script
     assert "logfire_url}" not in script  # never interpolated into an HTML string
-    assert ".fl-row .nm b a { color: inherit; text-decoration: none;" in board
+    assert ".ar-row .nm a { color: inherit; text-decoration: none;" in board

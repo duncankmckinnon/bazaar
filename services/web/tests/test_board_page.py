@@ -108,20 +108,50 @@ def test_traversal_is_refused(settings, helpers, tmp_path, path):
 def test_board_formats_percent_without_scaling():
     # The API already sends percent units; the page must not multiply by 100 again.
     assert (
-        'const pct = (v) => (v > 0 ? "+" : v < 0 ? MINUS : "") + Math.abs(v).toFixed(2) + "%";'
+        'const pct = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2) + "%";'
         in BOARD
     )
     script = BOARD.split("<script>", 1)[1]
-    # The only "* 100" maps a sparkline point index to the SVG's 0-100 x axis.
-    assert re.findall(r".{12}\*\s*100\b|100\s*\*.{12}", script) == [" `${(i / n) * 100"]
+    assert not re.search(r"\*\s*100\b|100\s*\*", script)
+    # Score = starting cash x (1 + return_pct / 100), whole dollars, ASCII minus.
+    assert "countTo(sc, start * (1 + r.return_pct / 100), money);" in script
+    assert "Math.abs(Math.round(v))" in script
+    assert "\u2212" not in script.replace("replace(/\\u2212/g", "")
 
 
 def test_board_escapes_server_text():
-    assert "innerHTML = sparkSVG(" in BOARD  # numeric-only SVG
-    for unsafe in ("${r.name}", "${r.handle}", "${ev.text}"):
-        assert unsafe not in BOARD
-    assert "${esc(ev.text)}" in BOARD
-    assert "${esc(r.name)}" in BOARD
+    script = BOARD.split("<script>", 1)[1]
+    assert 'setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));' in script
+    assert "ticker.textContent = typed;" in script
+    assert "ticker.textContent = target;" in script
+    # Server strings never reach an HTML string.
+    for field in ("r.name", "r.handle", "r.status", "r.day", "latest.text", "r.logfire_url"):
+        assert f"${{{field}}}" not in script
+    assert 'innerHTML = \'<span class="rk">' in script  # static row skeleton only
+    assert "DAY ${Number(r.day) || 0}/${DAYS}" in script  # numeric coercion, via textContent
+
+
+def test_board_uses_the_arcade_design_on_the_podium_background():
+    assert "HIGH SCORES" in BOARD
+    assert "SCORE = PORTFOLIO VALUE AFTER 10 TRADING DAYS" in BOARD
+    assert (
+        "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
+        "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, "
+        "rgba(255,101,80,.16) 0%, rgba(255,101,80,0) 60%), #36182D;"
+    ) in BOARD
+    stylesheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', BOARD)
+    assert len(stylesheets) == 1
+    assert stylesheets[0].startswith("https://fonts.googleapis.com/css2?")
+    assert "family=Press+Start+2P" in stylesheets[0]
+    assert "const MAX_ROWS = 10;" in BOARD
+    assert 'all.filter(r => r.status !== "failed").slice(0, MAX_ROWS)' in BOARD
+
+
+def test_board_respects_reduced_motion():
+    script = BOARD.split("<script>", 1)[1]
+    assert "if (RM) { ticker.textContent = target; return; }" in script
+    assert "@media (prefers-reduced-motion: reduce)" in BOARD
+    assert "animation: none;" in BOARD.split("@media (prefers-reduced-motion: reduce)", 1)[1]
 
 
 def test_board_has_an_empty_state():
@@ -130,3 +160,14 @@ def test_board_has_an_empty_state():
 
 def test_static_files_exist():
     assert Path(STATIC / "vendor" / "qrcode.min.js").is_file()
+
+
+def test_board_defines_the_helpers_its_functions_call():
+    # A missing helper (esc, used by qrSVG) once stopped the whole script before any row
+    # rendered; keep every shared helper defined.
+    script = BOARD.split("<script>", 1)[1]
+    for helper in ("esc", "pct", "money", "ordinal", "safeUrl"):
+        assert f"const {helper} = " in script, helper
+    for function in ("setName", "reconcile", "countTo", "qrSVG", "render", "poll", "type"):
+        assert f"function {function}(" in script, function
+    assert "esc(url)" in script  # qrSVG's fallback and aria-label

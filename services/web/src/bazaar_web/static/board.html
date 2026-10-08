@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bazaar Trading Floor</title>
+<title>Bazaar High Scores</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&family=Press+Start+2P&display=swap">
 <script src="/static/vendor/qrcode.min.js"></script>
 <style>
 @font-face { font-family: "Dwight"; src: url("/fonts/DwightMedium.woff2") format("woff2"); font-weight: 500; font-display: swap; }
@@ -14,109 +14,84 @@
 /* Brand tokens (pydantic/brand). */
 :root {
   color-scheme: dark;
-  --lithium: #E520E9; --calcium: #FF6550; --purple: #9B77FF; --aqua: #77FFD8;
-  --sugar: #FBFFEA; --darkpurple: #36182D; --petroleum: #092224; --blackbean: #061314;
-  --display: "Dwight", "IBM Plex Sans", system-ui, sans-serif;
+  --sugar: #FBFFEA; --darkpurple: #36182D; --blackbean: #061314;
+  --pyai-magenta: #E320E7; --pyai-cyan: #00FFEB; --pyai-yellow: #D0FF71;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --ease: cubic-bezier(.2,.8,.2,1);
+  --pixel: "Press Start 2P", "IBM Plex Mono", ui-monospace, monospace;
   --u: min(1vw, 1.7778vh);
 }
 html, body { height: 100%; }
-body { margin: 0; background: var(--blackbean); font-family: var(--sans); }
+body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 *, *::before, *::after { box-sizing: border-box; }
 .num { font-variant-numeric: tabular-nums; }
-.spark { display: block; width: 100%; height: 100%; overflow: visible; }
-.spark polyline { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
-.spark .zero { stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 2 3; opacity: .35; }
 .qr svg { display: block; width: 100%; height: auto; }
-.qr .qr-fallback { font: 500 12px/1.4 var(--mono); word-break: break-all; padding: 8px; }
+.qr .qr-fallback { font: 500 12px/1.4 var(--mono); word-break: break-all; padding: 8px; color: var(--darkpurple); }
 .logo svg { display: block; width: 100%; height: auto; }
+@keyframes blink { 50% { opacity: 0; } }
 
-/* Trading floor: petroleum, mono numbers, market wire, tape */
-.p-floor { position: fixed; inset: 0; overflow: hidden; background: radial-gradient(120% 90% at 85% 0%, #0f3336 0%, var(--petroleum) 45%, var(--blackbean) 100%); color: var(--sugar);
-  display: grid; grid-template-columns: minmax(0, 1fr) calc(var(--u)*26); grid-template-rows: minmax(0,1fr) auto; gap: 0 calc(var(--u)*2.5); padding: calc(var(--u)*2.2) calc(var(--u)*2.6) 0; }
-.fl-main { min-height: 0; display: flex; flex-direction: column; }
-.fl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 2em; padding-bottom: calc(var(--u)*1.4); }
-.fl-head h1 { font: 500 calc(var(--u)*4.4)/1 var(--display); letter-spacing: -.02em; margin: 0; text-wrap: balance; }
-.fl-head .meta { display: flex; gap: calc(var(--u)*1.6); margin-top: calc(var(--u)*.9); font: 400 calc(var(--u)*1.05)/1 var(--mono); color: #9fb6b4; }
-.live { display: inline-flex; align-items: center; gap: .6em; font: 600 calc(var(--u)*1)/1 var(--mono); letter-spacing: .14em; color: var(--aqua); border: 1px solid rgba(119,255,216,.35); padding: .7em 1em; border-radius: 999px; white-space: nowrap; }
-.live i { width: .6em; height: .6em; border-radius: 50%; background: currentColor; animation: pulse 1.6s infinite; }
-.live.off { color: var(--calcium); border-color: rgba(255,101,80,.45); }
-.live.off i { animation: none; }
-@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(119,255,216,.6); } 100% { box-shadow: 0 0 0 .9em rgba(119,255,216,0); } }
-.fl-cols, .fl-row { display: grid; grid-template-columns: calc(var(--u)*3.5) minmax(0, 1fr) calc(var(--u)*9) calc(var(--u)*8.5) calc(var(--u)*8) calc(var(--u)*4); align-items: center; gap: calc(var(--u)*1.2); }
-.fl-cols { font: 500 calc(var(--u)*.8)/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: #6f8a88; padding: 0 calc(var(--u)*1.2) calc(var(--u)*.7); border-bottom: 1px solid rgba(251,255,234,.12); }
-.fl-cols span:nth-child(n+4) { text-align: right; }
-.fl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.fl-row { padding: calc(var(--u)*.85) calc(var(--u)*1.2); border-radius: calc(var(--u)*.6); }
-.fl-row + .fl-row { box-shadow: inset 0 1px 0 rgba(251,255,234,.06); }
-.fl-row .rk { font: 500 calc(var(--u)*2)/1 var(--display); color: #6f8a88; }
-.fl-row.lead .rk { color: var(--lithium); }
-.fl-row.lead { background: linear-gradient(90deg, rgba(229,32,233,.16), rgba(229,32,233,0) 70%); }
-.fl-row .nm { min-width: 0; }
-.fl-row .nm b { display: block; font: 600 calc(var(--u)*1.55)/1.15 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fl-row .nm b a { color: inherit; text-decoration: none; cursor: pointer; }
-.fl-row .nm small { display: block; font: 400 calc(var(--u)*.9)/1.3 var(--mono); color: #7e9896; margin-top: .25em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fl-row .sp { height: calc(var(--u)*2.6); }
-.fl-row .ret { font: 600 calc(var(--u)*1.9)/1 var(--mono); text-align: right; }
-.fl-row .xs, .fl-row .fills { font: 400 calc(var(--u)*1.15)/1 var(--mono); text-align: right; color: #a9bdbb; }
-.fl-row.st-queued, .fl-row.st-failed { opacity: .62; }
-.st { margin-right: .8em; }
-.st-running .st { color: var(--aqua); }
-.st-failed .st { color: var(--calcium); }
-.empty { font: 500 calc(var(--u)*2.2)/1.3 var(--display); color: #9fb6b4; padding: calc(var(--u)*4) calc(var(--u)*1.2); }
-.up { color: var(--aqua); } .down { color: var(--calcium); } .flat { color: #a9bdbb; }
-.fl-side { min-height: 0; display: flex; flex-direction: column; gap: calc(var(--u)*1.8); }
-.fl-side .logo { width: 100%; --logo-text: var(--sugar); --logo-mark: var(--lithium); padding-top: calc(var(--u)*.4); }
-.fl-qr { display: grid; grid-template-columns: calc(var(--u)*11) 1fr; gap: calc(var(--u)*1.4); align-items: center; background: var(--sugar); color: var(--darkpurple); border-radius: calc(var(--u)*1.2); padding: calc(var(--u)*1.2); }
-.fl-qr h2 { font: 500 calc(var(--u)*1.9)/1.05 var(--display); margin: 0 0 .35em; }
-.fl-qr p { font: 400 calc(var(--u)*1.0)/1.35 var(--sans); margin: 0; color: #5b4453; }
-.fl-qr .url { font: 500 calc(var(--u)*.78)/1.3 var(--mono); color: #8a6f80; margin-top: .7em; word-break: break-all; }
-.wire { min-height: 0; flex: 1; display: flex; flex-direction: column; }
-.wire h3 { font: 500 calc(var(--u)*.85)/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: #6f8a88; margin: 0 0 calc(var(--u)*.8); }
-.wire ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: calc(var(--u)*.55); overflow: hidden; }
-.wire li { font: 400 calc(var(--u)*1.05)/1.35 var(--sans); color: #c9d6cf; display: grid; grid-template-columns: calc(var(--u)*5.2) 1fr; gap: .6em; }
-.wire li time { font: 400 calc(var(--u)*.85)/1.6 var(--mono); color: #6f8a88; }
-.fl-tape { grid-column: 1 / -1; margin: calc(var(--u)*1.4) calc(var(--u)*-2.6) 0; border-top: 1px solid rgba(251,255,234,.1); background: rgba(6,19,20,.7); overflow: hidden; white-space: nowrap; min-height: calc(var(--u)*3); }
-.tape-track { display: inline-flex; gap: calc(var(--u)*3); padding: calc(var(--u)*.9) 0; animation: tape 40s linear infinite; font: 500 calc(var(--u)*1.1)/1 var(--mono); }
-.tape-track span b { color: var(--sugar); font-weight: 500; margin-right: .6em; }
-@keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-@media (prefers-reduced-motion: reduce) { .tape-track, .live i { animation: none; } }
+/* Arcade layout on the podium background. */
+.p-arcade { position: fixed; inset: 0; overflow: hidden; color: var(--sugar);
+  background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, rgba(255,101,80,0) 60%), #36182D;
+  display: grid; grid-template-columns: minmax(0,1fr) calc(var(--u)*28); gap: calc(var(--u)*4); padding: calc(var(--u)*2.6) calc(var(--u)*4); }
+.p-arcade::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 2px, rgba(0,0,0,0) 2px 4px); mix-blend-mode: multiply; z-index: 4; }
+.ar-main { min-height: 0; display: flex; flex-direction: column; }
+.ar-title { font: 400 calc(var(--u)*3.4)/1.2 var(--pixel); margin: 0; color: var(--pyai-yellow); text-shadow: calc(var(--u)*.3) calc(var(--u)*.3) 0 var(--pyai-magenta); letter-spacing: .04em; }
+.ar-sub { font: 400 calc(var(--u)*.9)/1.6 var(--pixel); color: var(--pyai-cyan); margin: calc(var(--u)*1.2) 0 calc(var(--u)*1.8); }
+.ar-cols, .ar-row { display: grid; grid-template-columns: calc(var(--u)*6.5) calc(var(--u)*15) minmax(0,1fr) calc(var(--u)*11); gap: calc(var(--u)*1.6); align-items: center; }
+.ar-cols { font: 400 calc(var(--u)*.85)/1 var(--pixel); color: #b48fa8; padding: 0 calc(var(--u)*.8) calc(var(--u)*1); }
+.ar-cols span:nth-child(4) { text-align: right; }
+.ar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.ar-row { padding: calc(var(--u)*.72) calc(var(--u)*.8); font: 400 calc(var(--u)*1.35)/1.2 var(--pixel); color: var(--c, var(--sugar)); }
+.ar-row .nm { font: 700 calc(var(--u)*1.5)/1.2 var(--mono); text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ar-row .nm a { color: inherit; text-decoration: none; cursor: pointer; }
+.ar-row .rt { text-align: right; font-size: calc(var(--u)*1.05); white-space: nowrap; }
+.ar-row.st-running, .ar-row.st-queued { --c: #d9c4d3; }
+.ar-row.st-running .rt { color: var(--pyai-cyan); animation: blink 1s steps(1) infinite; }
+.ar-row.st-queued .rt { color: #b48fa8; }
+.ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 calc(var(--u)*.8)/1 var(--pixel); color: var(--blackbean); background: var(--pyai-yellow); padding: .3em .5em; animation: blink .5s steps(1) 16; }
+.empty { font: 400 calc(var(--u)*1.4)/1.6 var(--pixel); color: var(--pyai-yellow); text-transform: uppercase; padding: calc(var(--u)*3) calc(var(--u)*.8); }
+.ar-side { min-height: 0; display: flex; flex-direction: column; gap: calc(var(--u)*1.8); align-items: stretch; }
+.ar-side .logo { --logo-text: var(--sugar); --logo-mark: var(--pyai-magenta); filter: drop-shadow(0 0 calc(var(--u)*1.2) rgba(227,32,231,.45)); }
+.ar-coin { font: 400 calc(var(--u)*1.25)/1.5 var(--pixel); color: var(--pyai-yellow); text-align: center; animation: blink 1.1s steps(1) infinite; }
+.ar-qr { background: var(--sugar); padding: calc(var(--u)*1.2); border: calc(var(--u)*.4) solid var(--pyai-cyan); box-shadow: 0 0 0 calc(var(--u)*.4) var(--darkpurple), 0 0 0 calc(var(--u)*.8) var(--pyai-magenta); }
+.ar-side p { font: 400 calc(var(--u)*.85)/1.8 var(--pixel); color: #e6cfe0; margin: 0; text-align: center; }
+.ar-side .url { font: 500 calc(var(--u)*.85)/1.3 var(--mono); color: #c9a9bf; word-break: break-all; }
+.ar-ticker { margin-top: auto; border-top: 2px solid rgba(251,255,234,.18); padding-top: calc(var(--u)*1.2); font: 400 calc(var(--u)*.9)/1.7 var(--pixel); color: var(--pyai-cyan); min-height: 3.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ar-ticker .cur { display: inline-block; width: .7em; height: 1em; background: currentColor; vertical-align: -.15em; animation: blink 1s steps(1) infinite; }
+.conn { position: fixed; top: calc(var(--u)*1); right: calc(var(--u)*1.2); z-index: 5; font: 400 calc(var(--u)*.7)/1 var(--pixel); color: #FF6550; }
+.conn[hidden] { display: none; }
 
 @media (max-width: 760px) {
   :root { --u: 5.2px; }
-  .p-floor { position: relative; min-height: 100%; display: flex; flex-direction: column; gap: 20px; padding: 20px 16px; }
-  .fl-cols { display: none; }
-  .fl-row { grid-template-columns: 26px minmax(0,1fr) 72px; }
-  .fl-row .sp, .fl-row .xs, .fl-row .fills { display: none; }
-  .fl-tape { margin: 0 -16px; }
+  .p-arcade { position: relative; min-height: 100%; display: flex; flex-direction: column; gap: 20px; padding: 20px 16px; }
+  .ar-cols, .ar-row { grid-template-columns: 34px 90px minmax(0,1fr); }
+  .ar-cols span:nth-child(4), .ar-row .rt { display: none; }
+  .ar-qr { max-width: 280px; align-self: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ar-coin, .ar-ticker .cur, .ar-row.new .nm::after, .ar-row.st-running .rt { animation: none; }
 }
 </style>
 </head>
 <body>
-<section class="p-floor">
-  <div class="fl-main">
-    <div class="fl-head">
-      <div>
-        <h1>Bazaar Agent Leaderboard</h1>
-        <div class="meta"><span id="period">Feb 2 to 13, 2026</span><span id="cash">$10,000 starting cash</span><span id="symbols">AAPL MSFT KO</span></div>
-      </div>
-      <span class="live" id="live"><i></i><span>LIVE</span></span>
-    </div>
-    <div class="fl-cols"><span>#</span><span>Strategy</span><span>Return path</span><span>Return</span><span>vs buy and hold</span><span>Fills</span></div>
-    <ol class="fl-list" id="list"></ol>
+<section class="p-arcade">
+  <div class="ar-main">
+    <h1 class="ar-title">HIGH SCORES</h1>
+    <div class="ar-sub">SCORE = PORTFOLIO VALUE AFTER 10 TRADING DAYS</div>
+    <div class="ar-cols"><span>RANK</span><span>SCORE</span><span>POLICY</span><span>RETURN</span></div>
+    <ol class="ar-list" id="list"></ol>
+    <div class="ar-ticker"><span class="tx" id="ticker"></span><span class="cur"></span></div>
   </div>
-  <aside class="fl-side">
+  <aside class="ar-side">
     <div class="logo" id="logo"></div>
-    <div class="fl-qr">
-      <div class="qr" id="qr"></div>
-      <div><h2>Submit a strategy</h2><p>Scan, write a trading strategy in plain English, and watch it take on the market.</p><div class="url" id="url"></div></div>
-    </div>
-    <div class="wire"><h3>Market wire</h3><ol id="wire"></ol></div>
+    <div class="ar-coin">INSERT POLICY</div>
+    <div class="ar-qr"><div class="qr" id="qr"></div></div>
+    <p>SCAN TO PLAY<br>START WITH $10,000</p>
+    <p class="url" id="url"></p>
   </aside>
-  <div class="fl-tape" aria-hidden="true"><div class="tape-track" id="tape"></div></div>
 </section>
+<div class="conn" id="conn" hidden>RECONNECTING</div>
 <script>
 (() => {
 "use strict";
@@ -124,8 +99,10 @@ const SUBMIT_URL = __SUBMIT_URL__;
 const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EASE = "cubic-bezier(.2,.8,.2,1)";
 const DAYS = 10;
-const MAX_ROWS = 12;
+const MAX_ROWS = 10;
+const NEW_MS = 8000;
 const POLL_MS = 2000;
+const COLORS = ["#D0FF71", "#00FFEB", "#E320E7", "#FBFFEA"];
 
 /* ---------- brand marks (pydantic/brand pydantic-name-dark.svg) ---------- */
 const TEXT_D = "M178.25 93.2v-76h32.665c7.04 0 12.485 2.065 16.33 6.2 3.85 4.14 5.775 9.695 5.775 16.665 0 6.97-1.925 12.52-5.775 16.66-3.85 4.135-9.29 6.205-16.33 6.205H190.55V93.2h-12.3Zm12.3-41.05h19.6c3.125 0 5.55-.8 7.3-2.395 1.74-1.67 2.61-4.03 2.61-7.08V37.45c0-3.05-.87-5.37-2.615-6.97-1.74-1.67-4.17-2.5-7.295-2.5h-19.6v24.17Zm89.835-15.575h11.43l-23.845 67.84c-.65 1.885-1.415 3.485-2.285 4.79a9.895 9.895 0 0 1-2.94 3.265 9.846 9.846 0 0 1-4.03 1.85c-1.6.44-3.485.655-5.66.655h-6.86v-9.69h9.58l3.265-9.58-20.58-59.13h11.87l11.325 33.32L264.92 82.2h.55l3.59-12.3 11.325-33.325Zm56.185 47.26h-.545a15.682 15.682 0 0 1-6.1 7.84c-2.755 1.885-6.02 2.83-9.8 2.83-7.185 0-12.735-2.575-16.655-7.73-3.92-5.225-5.88-12.52-5.88-21.885 0-9.365 1.96-16.625 5.88-21.78 3.92-5.225 9.47-7.84 16.655-7.84 3.775 0 7.045.945 9.8 2.83 2.835 1.815 4.865 4.43 6.1 7.84h.545V12.62h11.87V93.2h-11.87v-9.365Zm-12.85.435c3.63 0 6.68-.87 9.15-2.615 2.465-1.81 3.7-4.17 3.7-7.075V55.195c0-2.9-1.235-5.225-3.7-6.965-2.47-1.815-5.52-2.725-9.15-2.725-4.135 0-7.44 1.345-9.91 4.03-2.465 2.615-3.7 6.1-3.7 10.45v9.8c0 4.36 1.235 7.88 3.7 10.565 2.47 2.615 5.775 3.92 9.91 3.92Zm83.19 8.93c-3.12 0-5.515-.87-7.185-2.61-1.67-1.815-2.685-4.1-3.05-6.86h-.545c-1.09 3.555-3.085 6.24-5.99 8.055-2.9 1.815-6.425 2.725-10.56 2.725-5.88 0-10.415-1.525-13.61-4.575-3.12-3.05-4.685-7.15-4.685-12.3 0-5.665 2.035-9.915 6.1-12.745 4.135-2.83 10.16-4.25 18.075-4.25h10.235v-4.785c0-3.485-.945-6.17-2.83-8.06-1.89-1.885-4.83-2.83-8.82-2.83-3.34 0-6.06.725-8.165 2.175-2.11 1.45-3.885 3.305-5.34 5.555l-7.075-6.425a22.24 22.24 0 0 1 7.95-7.84c3.41-2.1 7.875-3.155 13.39-3.155 7.335 0 12.96 1.7 16.88 5.115 3.92 3.415 5.88 8.315 5.88 14.7v28.42h5.99v9.69h-6.645Zm-23.95-7.73c3.7 0 6.75-.8 9.14-2.395 2.4-1.67 3.6-3.885 3.6-6.64v-8.17h-10.025c-8.2 0-12.3 2.54-12.3 7.625v1.96c0 2.54.835 4.465 2.5 5.77 1.745 1.235 4.105 1.85 7.085 1.85Zm42.245 7.73V36.58h11.87v9.365h.545a18.87 18.87 0 0 1 5.55-7.625c2.54-2.03 5.99-3.05 10.35-3.05 5.8 0 10.3 1.925 13.5 5.775 3.265 3.775 4.9 9.185 4.9 16.225V93.2h-11.87V58.8c0-8.86-3.56-13.285-10.67-13.285-1.525 0-3.05.215-4.575.65-1.45.365-2.76.95-3.92 1.745a9.502 9.502 0 0 0-2.83 3.05c-.65 1.23-.98 2.685-.98 4.35v37.9H425.2l.005-.01Zm78.835 0c-4.14 0-7.26-1.05-9.365-3.155-2.105-2.18-3.16-5.225-3.16-9.15v-34.62H482.7V36.58h4.79c1.96 0 3.3-.435 4.025-1.305.8-.87 1.2-2.29 1.2-4.25V21.12h10.67v15.46h11.87v9.69h-11.87v37.24h11v9.69H504.04Zm30.055-66.75c-2.47 0-4.285-.58-5.445-1.74-1.09-1.16-1.635-2.65-1.635-4.465v-1.85c0-1.815.545-3.3 1.635-4.465 1.16-1.16 2.975-1.745 5.445-1.745 2.465 0 4.245.585 5.335 1.745 1.09 1.16 1.635 2.65 1.635 4.465v1.85c0 1.815-.545 3.3-1.635 4.465-1.09 1.16-2.87 1.74-5.335 1.74Zm-5.99 10.13h11.87V93.2h-11.87V36.58Zm50.74 57.93c-4.065 0-7.695-.69-10.885-2.07a21.88 21.88 0 0 1-8.06-5.88 27.68 27.68 0 0 1-5.01-9.365c-1.16-3.7-1.74-7.8-1.74-12.3 0-4.5.58-8.57 1.74-12.2 1.165-3.7 2.835-6.825 5.01-9.365a21.352 21.352 0 0 1 8.06-5.99c3.19-1.375 6.82-2.065 10.885-2.065 5.665 0 10.31 1.27 13.94 3.81a21.959 21.959 0 0 1 7.95 10.125l-9.8 4.575a11.846 11.846 0 0 0-4.25-6.205c-1.96-1.6-4.57-2.4-7.84-2.4-4.355 0-7.655 1.38-9.905 4.14-2.18 2.685-3.27 6.205-3.27 10.56v10.13c0 4.35 1.09 7.91 3.27 10.67 2.25 2.685 5.55 4.03 9.905 4.03 3.485 0 6.245-.835 8.28-2.505 2.105-1.745 3.77-4.03 5.005-6.86l9.04 4.79c-1.89 4.65-4.72 8.2-8.495 10.67-3.775 2.47-8.385 3.7-13.83 3.7v.005Z";
@@ -133,12 +110,11 @@ const MARK_D = "M137.385 90.65 73.515 2.075c-2.01-2.765-6.645-2.765-8.635 0L1.01
 const LOGO_SVG = `<svg viewBox="0 0 605 120" role="img" aria-label="Pydantic"><path fill="var(--logo-text)" d="${TEXT_D}"/><path fill="var(--logo-mark)" d="${MARK_D}"/></svg>`;
 
 /* ---------- formatting: the API sends percent units (0.6 means +0.60%) ---------- */
-const MINUS = "−";
-const DASH = "—";
-const pct = (v) => (v > 0 ? "+" : v < 0 ? MINUS : "") + Math.abs(v).toFixed(2) + "%";
-const dir = (v) => v == null ? "flat" : v > 0.004 ? "up" : v < -0.004 ? "down" : "flat";
+// ASCII "-": Press Start 2P has no U+2212.
+const pct = (v) => (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v).toFixed(2) + "%";
+const money = (v) => (v < 0 ? "-$" : "$") + Math.abs(Math.round(v)).toLocaleString("en-US");
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const STATUSES = new Set(["queued", "running", "scored", "failed"]);
+const ordinal = (n) => ["1ST", "2ND", "3RD"][n - 1] || n + "TH";
 const safeUrl = (u) => typeof u === "string" && /^https?:\/\//i.test(u) ? u : null;
 function setName(b, name, url) {
   // No link: plain text, exactly as before (this also drops a link the row used to have).
@@ -153,18 +129,6 @@ function setName(b, name, url) {
   }
   a.setAttribute("href", url);
   a.textContent = name;
-}
-const statusText = (r) => r.status === "running" ? `running · day ${Number(r.day) || 0} of ${DAYS}` : r.status;
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function sparkSVG(hist, color) {
-  if (!Array.isArray(hist) || hist.length < 2) return "";
-  const pts = hist.map(Number);
-  const n = Math.max(DAYS, pts.length - 1);
-  const lo = Math.min(-2, ...pts), hi = Math.max(2, ...pts);
-  const y = v => 28 - ((v - lo) / (hi - lo)) * 28;
-  const p = pts.map((v, i) => `${(i / n) * 100},${y(v).toFixed(1)}`).join(" ");
-  return `<svg class="spark" viewBox="0 0 100 28" preserveAspectRatio="none"><line class="zero" x1="0" x2="100" y1="${y(0)}" y2="${y(0)}" stroke="currentColor"/><polyline points="${p}" stroke="${color}"/></svg>`;
 }
 
 /* ---------- animation helpers ---------- */
@@ -218,75 +182,57 @@ function qrSVG(url, fg, mark) {
 
 /* ---------- render ---------- */
 const $ = (id) => document.getElementById(id);
-const list = $("list"), wire = $("wire"), tape = $("tape"), live = $("live");
+const list = $("list"), ticker = $("ticker"), conn = $("conn");
 $("logo").innerHTML = LOGO_SVG;
-$("qr").innerHTML = qrSVG(SUBMIT_URL, "#36182D", "#E520E9");
+$("qr").innerHTML = qrSVG(SUBMIT_URL, "#36182D", "#E320E7");
 $("url").textContent = SUBMIT_URL.replace(/^https?:\/\//, "");
-let tapeKey = null;
 
-function visibleRows(rows) {
-  // Rows arrive ranked. Keep in-flight runs on screen even when many runs are scored.
-  const scored = rows.filter(r => r.status === "scored");
-  const inflight = rows.filter(r => r.status === "running").concat(rows.filter(r => r.status === "queued").slice(0, 2));
-  const failed = rows.filter(r => r.status === "failed");
-  const shown = scored.slice(0, Math.max(0, MAX_ROWS - inflight.length)).concat(inflight);
-  return shown.concat(failed.slice(0, Math.max(0, MAX_ROWS - shown.length)));
-}
-
-function header(w) {
-  if (!w) return;
-  const s = new Date(w.start + "T00:00:00Z"), e = new Date(w.end + "T00:00:00Z");
-  if (!isNaN(s) && !isNaN(e)) {
-    const same = s.getUTCMonth() === e.getUTCMonth();
-    $("period").textContent = `${MONTHS[s.getUTCMonth()]} ${s.getUTCDate()} to ${same ? "" : MONTHS[e.getUTCMonth()] + " "}${e.getUTCDate()}, ${e.getUTCFullYear()}`;
-  }
-  if (typeof w.starting_cash === "number") $("cash").textContent = "$" + w.starting_cash.toLocaleString("en-US", { maximumFractionDigits: 0 }) + " starting cash";
-  if (Array.isArray(w.symbols)) $("symbols").textContent = w.symbols.join(" ");
+const lastStatus = new Map(), newUntil = new Map();
+let typed = "", target = "", typeTimer = 0;
+function type() {
+  clearTimeout(typeTimer);
+  if (RM) { ticker.textContent = target; return; }
+  if (typed.length < target.length) { typed = target.slice(0, typed.length + 1); ticker.textContent = typed; typeTimer = setTimeout(type, 28); }
 }
 
 function render(data) {
-  header(data.window);
-  const rows = visibleRows(Array.isArray(data.rows) ? data.rows : []);
+  const start = data.window && typeof data.window.starting_cash === "number" ? data.window.starting_cash : 10000;
+  const all = Array.isArray(data.rows) ? data.rows : [];
+  const now = Date.now();
+  for (const r of all) {
+    const id = String(r.id), before = lastStatus.get(id);
+    if (before !== undefined && before !== "scored" && r.status === "scored") newUntil.set(id, now + NEW_MS);
+    lastStatus.set(id, r.status);
+  }
+  // Rows arrive ranked (scored, running, queued, failed); failed runs are not on this board.
+  const rows = all.filter(r => r.status !== "failed").slice(0, MAX_ROWS);
   if (!rows.length) {
     list.innerHTML = '<li class="empty">Scan to submit the first strategy</li>';
   } else {
     if (list.querySelector(".empty")) list.innerHTML = "";
     reconcile(list, rows.map(r => ({ ...r, id: String(r.id) })), () => {
       const li = document.createElement("li");
-      li.innerHTML = `<span class="rk num"></span><span class="nm"><b></b><small><span class="st"></span><span class="hd"></span></small></span><span class="sp"></span><span class="ret num"></span><span class="xs num"></span><span class="fills num"></span>`;
+      li.innerHTML = '<span class="rk"></span><span class="sc num"></span><span class="nm"></span><span class="rt num"></span>';
       return li;
     }, (li, r) => {
-      const status = STATUSES.has(r.status) ? r.status : "failed";
-      li.className = `fl-row st-${status}` + (r.rank === 1 ? " lead" : "");
-      li.querySelector(".rk").textContent = r.rank ?? "";
-      setName(li.querySelector(".nm b"), r.name, safeUrl(r.logfire_url));
-      li.querySelector(".st").textContent = statusText({ ...r, status });
-      li.querySelector(".hd").textContent = r.handle || (r.kind === "baseline" ? "baseline" : "");
-      li.querySelector(".sp").innerHTML = sparkSVG(r.history, (r.return_pct ?? 0) >= 0 ? "#77FFD8" : "#FF6550");
-      const ret = li.querySelector(".ret");
-      ret.className = "ret num " + dir(r.return_pct);
-      if (typeof r.return_pct === "number") countTo(ret, r.return_pct, pct); else { ret._v = undefined; ret.textContent = DASH; }
-      const xs = li.querySelector(".xs");
-      xs.className = "xs num " + dir(r.excess_pct);
-      xs.textContent = typeof r.excess_pct === "number" ? pct(r.excess_pct) : DASH;
-      li.querySelector(".fills").textContent = typeof r.fills === "number" ? r.fills : DASH;
+      const scored = r.status === "scored";
+      const fresh = (newUntil.get(r.id) || 0) > now;
+      li.className = `ar-row st-${scored ? "scored" : r.status === "running" ? "running" : "queued"}` + (fresh ? " new" : "");
+      li.style.setProperty("--c", scored && r.rank ? COLORS[Math.min(r.rank - 1, 3)] : "");
+      li.querySelector(".rk").textContent = scored && r.rank ? ordinal(r.rank) : "";
+      const sc = li.querySelector(".sc");
+      if (scored && typeof r.return_pct === "number") countTo(sc, start * (1 + r.return_pct / 100), money);
+      else { sc._v = undefined; sc.textContent = ""; }
+      setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));
+      li.querySelector(".rt").textContent = scored
+        ? (typeof r.return_pct === "number" ? pct(r.return_pct) : "")
+        : r.status === "running" ? `DAY ${Number(r.day) || 0}/${DAYS}` : "READY";
     });
   }
 
-  const events = Array.isArray(data.events) ? data.events : [];
-  wire.innerHTML = events.slice(0, 10).map(ev => {
-    const d = new Date(ev.t);
-    const t = isNaN(d) ? "" : d.toTimeString().slice(0, 8);
-    return `<li><time>${esc(t)}</time><span>${esc(ev.text)}</span></li>`;
-  }).join("");
-
-  const scored = (data.rows || []).filter(r => r.status === "scored" && typeof r.return_pct === "number");
-  const key = scored.map(r => `${r.id}:${r.return_pct}`).join();
-  if (key !== tapeKey) {
-    tapeKey = key;
-    const one = scored.map(r => `<span><b>${esc(r.name)}</b><em class="${dir(r.return_pct)} num">${pct(r.return_pct)}</em></span>`).join("");
-    tape.innerHTML = one + one;
-  }
+  const latest = Array.isArray(data.events) && data.events[0];
+  const text = latest ? String(latest.text).replace(/\u2212/g, "-").toUpperCase() : "";
+  if (text !== target) { target = text; typed = ""; type(); }
 }
 
 async function poll() {
@@ -294,11 +240,9 @@ async function poll() {
     const res = await fetch("/api/board", { cache: "no-store" });
     if (!res.ok) throw new Error(res.status);
     render(await res.json());
-    live.classList.remove("off");
-    live.lastElementChild.textContent = "LIVE";
+    conn.hidden = true;
   } catch (_) {
-    live.classList.add("off");
-    live.lastElementChild.textContent = "RECONNECTING";
+    conn.hidden = false;
   } finally {
     setTimeout(poll, POLL_MS);
   }
