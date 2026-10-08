@@ -220,20 +220,19 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     run_dir, _ = submit(tmp_path, "http://m1")
 
     assert record_in(run_dir).status == "completed" and len(seen) == 10
-    assert {(b.model_requests, b.total_tokens, r.code_mode) for b, r in seen} == {
-        (8, 48_000, False)
+    assert {(b.model_requests, b.total_tokens, b.tool_calls, r.code_mode) for b, r in seen} == {
+        (8, 48_000, 30, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
     # Every decision is told the demo symbols' prices and affordable whole shares.
     assert quoted == [DEMO_SYMBOLS] * 10
     # ...and which trading day of the run it is.
     assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
-    # Only those two limits differ; the default every other launch uses is unchanged.
+    # Only those three limits differ; the default every other launch uses is unchanged.
     default = trading.DecisionBudget()
-    assert (default.model_requests, default.total_tokens) == (4, 16_000)
-    assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4, "total_tokens": 16_000}) == (
-        default
-    )
+    assert (default.model_requests, default.total_tokens, default.tool_calls) == (4, 16_000, 12)
+    defaults = {"model_requests": 4, "total_tokens": 16_000, "tool_calls": 12}
+    assert SUBMISSION_BUDGET.model_copy(update=defaults) == default
 
 
 @pytest.mark.parametrize("online_evaluation", [False, True])

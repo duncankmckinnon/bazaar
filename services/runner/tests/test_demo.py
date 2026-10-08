@@ -569,3 +569,17 @@ async def test_every_record_json_carries_the_marked_value_series(tmp_path):
 
 class MissingPriceForTest(Exception):
     """A market failure part way through a run."""
+
+
+def test_the_demo_agent_launch_keeps_the_default_decision_budget(monkeypatch):
+    """Only submissions get the larger budget; the CLI's agent launch passes none, so
+    run_decision uses DecisionBudget() (4 requests, 16k tokens, 12 tool calls)."""
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_runner import agent
+
+    made = []
+    monkeypatch.setattr(agent, "make_agent_decider", lambda *a, **kw: made.append(kw))
+    policies = cli.load_policies("http://market")
+    policies[AGENT_FIXTURE_REF](None)
+    (kwargs,) = made
+    assert kwargs.get("budget") is None
