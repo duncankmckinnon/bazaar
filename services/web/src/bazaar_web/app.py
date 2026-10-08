@@ -94,7 +94,7 @@ def create_app(
     app.state.on_scored = on_scored
 
     def board_payload(request: Request) -> dict[str, Any]:
-        return build_board(request.app.state.board, request.app.state.store)
+        return build_board(request.app.state.board, request.app.state.store, settings.logfire_url)
 
     @app.get("/", include_in_schema=False)
     def board_page(request: Request) -> Response:
@@ -158,6 +158,7 @@ def create_app(
             "position": store.position(submission_id),
             "return_pct": row["return_pct"] if scored else None,
             "rank": row["rank"] if scored else None,
+            "logfire_url": settings.logfire_url(submission["name"]),
         }
 
     @app.get("/api/board")
