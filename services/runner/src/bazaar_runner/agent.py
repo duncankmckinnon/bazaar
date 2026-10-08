@@ -41,10 +41,12 @@ def make_agent_decider(
     *,
     budget: Any = None,
     runtime: Any = None,
+    quote_symbols: Sequence[str] = (),
 ) -> DecideWithAgent:
     """Fiscal cycles arrive per decision from the market (AgentStep), never invented here.
     With no model_factory the model is the operator's default (env_model_factory), as in
-    run_decision; either way its errors are redacted (redacting_model_factory)."""
+    run_decision; either way its errors are redacted (redacting_model_factory).
+    quote_symbols get their latest close and affordable whole shares in the agent's context."""
     from bazaar_agent.registry_store import digest
     from bazaar_agent.research import FiscalCycle as ResearchFiscalCycle
     from bazaar_agent.research import ResearchContext
@@ -89,6 +91,7 @@ def make_agent_decider(
             budget=budget,
             runtime=runtime,
             model_factory=model_factory,
+            quote_symbols=quote_symbols,
         )
         error = f"{result.error.code}: {result.error.message}" if result.error else None
         usage = AgentUsage(

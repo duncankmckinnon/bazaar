@@ -1423,3 +1423,86 @@ async def test_code_mode_cancellation_propagates():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=2)
+
+
+QUOTED = ("AAPL", "MSFT", "KO")
+
+
+def exec_v1_context():
+    ctx = context()
+    experiment = ctx.experiment.model_copy(update={"execution_rule_version": "exec-v1"})
+    return ctx.model_copy(update={"experiment": experiment})
+
+
+def quote_handler(closes):
+    """Serve each symbol's closes oldest first; a symbol without closes is a 404."""
+
+    def handler(request):
+        symbol = request.url.path.rsplit("/", 1)[-1]
+        if symbol not in closes:
+            return httpx.Response(404, json={"error": {"code": "not_found", "message": "none"}})
+        observations = [
+            {"observed_at": at, "available_at": at, "price": price} for at, price in closes[symbol]
+        ]
+        return httpx.Response(200, json=prices(symbol=symbol, observations=observations))
+
+    return handler
+
+
+async def quoted_decision(closes, **overrides):
+    model, calls = script(lambda info: [output(info)])
+    result, requests = await invoke(
+        model,
+        handler=quote_handler(closes),
+        initial_account=account(cash="1000"),
+        initial_portfolio=portfolio(cash="1000", portfolio_value="1000"),
+        overrides={"context": exec_v1_context(), "quote_symbols": QUOTED, **overrides},
+    )
+    messages, info = calls[0]
+    quotes = [p for p in user_prompts(messages) if p.startswith("MARKET QUOTES")]
+    return result, requests, quotes, info
+
+
+async def test_quotes_give_the_latest_close_and_affordable_whole_shares():
+    closes = {
+        "AAPL": [("2020-03-31T20:00:00Z", "11.00"), (NOW, "12.34")],
+        "KO": [(NOW, "74.81")],
+    }
+    result, requests, quotes, _ = await quoted_decision(closes)
+    assert result.error is None and result.usage.tool_calls == 0
+    assert [r.url.path.rsplit("/", 1)[-1] for r in requests] == list(QUOTED)
+    assert all(r.method == "GET" and "/prices/" in r.url.path for r in requests)
+    (block,) = quotes
+    header, *lines = block.splitlines()
+    assert "WHOLE SHARES" in header and "exec-v1" in header and "no fee" in header
+    # floor(1000 / 12.34) = 81 and floor(1000 / 74.81) = 13; MSFT had no price and is skipped.
+    assert lines == [
+        "AAPL: close=12.34; available_at=2020-04-01T12:00:00+00:00; max_whole_shares=81",
+        "KO: close=74.81; available_at=2020-04-01T12:00:00+00:00; max_whole_shares=13",
+    ]
+
+
+async def test_no_readable_quote_means_no_quotes_block():
+    result, requests, quotes, _ = await quoted_decision({})
+    assert result.error is None and len(requests) == 3 and quotes == []
+
+
+async def test_callers_without_quote_symbols_are_unchanged():
+    result, requests, quotes, _ = await quoted_decision(
+        {"AAPL": [(NOW, "12.34")]}, quote_symbols=()
+    )
+    assert result.error is None and requests == [] and quotes == []
+
+
+async def test_quotes_are_only_given_under_exec_v1():
+    result, requests, quotes, _ = await quoted_decision(
+        {"AAPL": [(NOW, "12.34")]}, context=context()
+    )
+    assert result.error is None and requests == [] and quotes == []
+
+
+async def test_market_order_says_quantity_is_whole_shares():
+    _, _, _, info = await quoted_decision({})
+    (tool,) = [t for t in info.function_tools if t.name == "market_order"]
+    assert "WHOLE SHARES, not dollars" in tool.description
+    assert "floor(dollars / price)" in tool.description and "max_whole_shares" in tool.description

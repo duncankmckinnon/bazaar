@@ -202,6 +202,7 @@ async def _run(
                 _model_factory(model),
                 budget=SUBMISSION_BUDGET,
                 runtime=SUBMISSION_RUNTIME,
+                quote_symbols=DEMO_SYMBOLS,
             ),
             market_url=market_url,
             symbols=DEMO_SYMBOLS,

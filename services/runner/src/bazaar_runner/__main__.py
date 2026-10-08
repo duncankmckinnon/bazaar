@@ -195,6 +195,7 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
             AGENT_FIXTURE_INSTRUCTIONS,
             fixture_model_factory(),
             runtime=RuntimeConfig(instrument=True),
+            quote_symbols=DEMO_SYMBOLS,
         )
         return AgentStep(
             decider,
