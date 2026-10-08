@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid5
 
@@ -467,3 +468,15 @@ async def test_demo_agent_still_buys_once_when_the_news_archive_is_large(tmp_pat
     assert [c for c in agent_market.calls if c[0] == "news"] == [
         ("news", "AAPL", str(FIXTURE_NEWS_LIMIT))
     ]
+
+
+def test_the_trading_day_counts_the_demo_sessions():
+    from bazaar_runner.clock import trading_day
+
+    sessions = demo_script().sessions
+    first, last = sessions[0], sessions[-1]
+    assert trading_day(sessions, first.open_at) == (1, 10, date(2026, 2, 2))
+    assert trading_day(sessions, last.open_at) == (10, 10, date(2026, 2, 2))
+    assert last.date == date(2026, 2, 13)
+    assert trading_day(sessions, first.open_at - timedelta(minutes=1)) is None
+    assert trading_day(sessions, first.close_at + timedelta(minutes=1)) is None

@@ -202,6 +202,8 @@ async def _run(
                 _model_factory(model),
                 budget=SUBMISSION_BUDGET,
                 runtime=SUBMISSION_RUNTIME,
+                quote_symbols=DEMO_SYMBOLS,
+                sessions=spec.script.sessions,
             ),
             market_url=market_url,
             symbols=DEMO_SYMBOLS,
