@@ -8,10 +8,14 @@ import httpx
 import logfire
 import pytest
 from bazaar_agent.trading import (
+    AGENT_MODEL_ENV,
+    RESEARCH_PAGE_LIMIT,
     TRADING_ROLE,
     DecisionBudget,
     MarketIdentity,
+    ModelUnavailable,
     RuntimeConfig,
+    env_model_factory,
     run_decision,
 )
 from bazaar_protocol.registry import (
@@ -174,12 +178,25 @@ async def invoke(
     return result, requests
 
 
-async def test_testmodel_hold_and_missing_factory():
+GATEWAY_KEY_ENV = "PYDANTIC_AI_GATEWAY_API_KEY"
+
+
+@pytest.fixture
+def no_gateway(monkeypatch):
+    """Hermetic model settings: no real key or model choice leaks in from the shell."""
+    for name in (AGENT_MODEL_ENV, GATEWAY_KEY_ENV, "PYDANTIC_AI_GATEWAY_BASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+async def test_testmodel_hold_and_missing_factory(no_gateway):
     result, calls = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
     assert result.decision.action == "hold" and result.error is None
     assert result.usage.model_requests == 1 and not calls
+    # No factory: the default gateway model, which cannot be built without its key.
     result, calls = await invoke()
     assert result.error.code == "unsupported" and not calls
+    assert GATEWAY_KEY_ENV in result.error.message
 
 
 @pytest.mark.parametrize("harness", ["monty", "orchestrated", "research", "single_shot"])
@@ -566,9 +583,44 @@ async def test_cancelled_order_payload_not_in_monitored_spans(capfire):
     assert SECRET not in json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
 
 
-async def test_nonfixture_factory_result_rejected():
-    result, calls = await invoke(overrides={"model_factory": lambda ref: object()})
-    assert result.error.code == "unsupported" and not calls
+async def test_no_factory_builds_the_model_named_in_the_environment(no_gateway):
+    no_gateway.setenv(AGENT_MODEL_ENV, "test")  # infer_model("test") is TestModel
+    result, _ = await invoke()
+    # The model was built and called; it was not refused as unsupported.
+    assert result.usage.model_requests >= 1
+    assert result.error is None or result.error.code != "unsupported"
+
+
+def test_a_gateway_model_constructs_offline_with_a_dummy_key(no_gateway):
+    dummy = "dummy-gateway-key-not-real"
+    no_gateway.setenv(GATEWAY_KEY_ENV, dummy)
+    no_gateway.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", "http://gateway.invalid")
+    model = env_model_factory("gateway/anthropic:claude-haiku-4-5")("fixture")
+    assert type(model).__name__ == "AnthropicModel" and model.model_name == "claude-haiku-4-5"
+    assert dummy not in repr(model)
+
+
+def test_an_unbuildable_model_names_the_settings_never_their_values(no_gateway):
+    secret = "sk-secret-gateway-value"
+    no_gateway.setenv(GATEWAY_KEY_ENV, secret)
+    no_gateway.setenv(AGENT_MODEL_ENV, "no-such-provider:model")
+    with pytest.raises(ModelUnavailable) as error:
+        env_model_factory()("fixture")
+    assert AGENT_MODEL_ENV in str(error.value) and secret not in str(error.value)
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+
+
+@pytest.mark.parametrize(
+    ("method", "capability", "payload"),
+    [("news", "news", page([news()])), ("filings", "reports", page([filing()]))],
+)
+async def test_research_pages_are_clamped_to_five_items(method, capability, payload):
+    model, _ = script([ToolCallPart(method, query(limit=100))], lambda info: [output(info)])
+    result, requests = await invoke(model, payload=payload, tools=(capability,), harness="research")
+    assert result.error is None
+    (request,) = requests
+    assert request.url.params["limit"] == str(RESEARCH_PAGE_LIMIT) == "5"
+    assert f"at most {RESEARCH_PAGE_LIMIT} items" in TRADING_ROLE
 
 
 async def test_model_budget_after_order_retains_evidence():

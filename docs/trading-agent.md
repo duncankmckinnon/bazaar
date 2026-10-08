@@ -9,18 +9,24 @@ Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
 
-## Fixture usage
+## Models and fixture usage
 
-The only accepted models today are explicitly injected local `TestModel`/`FunctionModel`
-instances (from **pydantic-ai-slim 2.54.0**, no provider extras). Code Mode dependencies are pinned
-at **pydantic-ai-harness[codemode] 0.54.0** and **pydantic-monty 1.0.0**. Missing factories and non-fixture
-models return structured `unsupported` errors before model execution. `RuntimeConfig` accepts
+With no `model_factory`, the model comes from the operator's environment: `BAZAAR_AGENT_MODEL`,
+default `gateway/anthropic:claude-haiku-4-5`, built with Pydantic AI's `infer_model` (from
+**pydantic-ai-slim[anthropic] 2.54.0**). Gateway models read `PYDANTIC_AI_GATEWAY_API_KEY`
+themselves; this code never reads, logs or echoes it. A model that cannot be built (for example a
+missing key or an unknown model) is a structured `unsupported` error naming the setting, never its
+value. Tests inject local `TestModel`/`FunctionModel` factories, as in the example below. Every
+model is wrapped by the tool-call id check. The `news` and `filings` tools ask the market for at
+most 5 items per page, whatever the model requests, to keep real articles inside the token budget.
+Code Mode dependencies are pinned at **pydantic-ai-harness[codemode] 0.54.0** and
+**pydantic-monty 1.0.0**. `RuntimeConfig` accepts
 only `harness="builtin"`, with `model_ref="fixture"` by default. Its supported model settings
 are `temperature` (default 0, range 0–2), `max_tokens` (default 4,000, range 1–100,000), and
 optional integer `seed`. These are converted to SDK `ModelSettings` and passed to `Agent`,
 independently of strategy text. Unknown runtime/settings fields are rejected. Model references
 are passed to an explicitly trusted factory, never parsed as gateway routes, URLs or credentials.
-No API key is needed. The trusted `RuntimeConfig.code_mode` boolean defaults to `False`;
+Tests need no API key. The trusted `RuntimeConfig.code_mode` boolean defaults to `False`;
 set `RuntimeConfig(code_mode=True)` to enable the SDK's `CodeMode` capability. This is a runtime
 choice, not a strategy flag or a new harness value.
 
@@ -210,8 +216,8 @@ Exceptions are caught inside the safe span and only fixed messages leave it. No 
 instructions, research/private contents, order payloads, response bodies, cursors or credentials
 are logged. Production HTTPX configuration explicitly sets `capture_all=False`, header/request/
 response capture false; do not add independently logging hooks. Payload-marker tests configure
-monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata and actual
-AI Gateway/private SDK binding are **#23**, not implemented or gateway-ready here.
+monitored HTTPX and globally enabled PydanticAI instrumentation. Full GenAI metadata is **#23**;
+the model itself can already be a Gateway model chosen by the operator.
 
 Code Mode does not add tracing or AI Gateway integration: SDK/HTTP content instrumentation remains
 suppressed as above. Computation over returned research data does not authorize future observations
