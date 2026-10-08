@@ -85,7 +85,7 @@ def test_the_same_grant_twice_is_204_and_rebinding_is_409(client, db_path, caplo
     assert grant(client, approval, experiment).status_code == 204
     assert grant(client, approval, experiment).status_code == 204
     conflict = grant(client, approval, uuid4())
-    assert (conflict.status_code, conflict.json()["error"]["code"]) == (409, "idempotency_conflict")
+    assert (conflict.status_code, conflict.json()["error"]["code"]) == (409, "conflict")
     assert grants_rows(db_path) == 1
     assert f"grant created: approval_id={approval} experiment_id={experiment}" in caplog.text
     assert caplog.text.count("grant created") == 1

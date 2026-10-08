@@ -66,7 +66,7 @@ class SqliteGrants:
                     )
                     raise MarketError(
                         409,
-                        ErrorCode.IDEMPOTENCY_CONFLICT,
+                        ErrorCode.CONFLICT,
                         "This approval is already granted for another experiment",
                     )
                 return False
