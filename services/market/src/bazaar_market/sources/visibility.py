@@ -1,0 +1,53 @@
+"""What was readable at a simulated time. Callers pass the trusted clock, never an agent's value."""
+
+from __future__ import annotations
+
+from datetime import datetime, time, timedelta
+
+from .edgar import EASTERN
+from .models import Fact, Filing, NewsItem
+
+
+def _require_aware(as_of: datetime) -> None:
+    if as_of.tzinfo is None:
+        raise ValueError("as_of must carry a timezone")
+
+
+def visible_filings(filings: list[Filing], as_of: datetime) -> list[Filing]:
+    _require_aware(as_of)
+    return sorted((f for f in filings if f.accepted_at <= as_of), key=lambda f: f.accepted_at)
+
+
+def _available_at(fact: Fact, accepted: dict[str, datetime]) -> datetime:
+    if fact.accession in accepted:
+        return accepted[fact.accession]
+    return datetime.combine(fact.filed + timedelta(days=1), time.min, tzinfo=EASTERN)
+
+
+def fact_available_at(fact: Fact, filings: list[Filing]) -> datetime:
+    """A fact is readable once its filing was accepted.
+
+    When the filing is not in hand, only the filing day is known, so wait for midnight Eastern
+    after it. That is safe for forms under EDGAR's 17:30 Eastern cutoff, which XBRL forms are.
+    """
+    return _available_at(fact, {f.accession: f.accepted_at for f in filings})
+
+
+def visible_facts(facts: list[Fact], filings: list[Filing], as_of: datetime) -> list[Fact]:
+    _require_aware(as_of)
+    accepted = {f.accession: f.accepted_at for f in filings}
+    return [f for f in facts if _available_at(f, accepted) <= as_of]
+
+
+def _news_available_at(item: NewsItem) -> datetime:
+    return max(item.created_at, item.updated_at)
+
+
+def visible_news(items: list[NewsItem], as_of: datetime) -> list[NewsItem]:
+    """An article counts from its last revision, because only the revised text is on file.
+
+    A revision stamped before the article was created still waits for its creation.
+    """
+    _require_aware(as_of)
+    visible = (n for n in items if _news_available_at(n) <= as_of)
+    return sorted(visible, key=_news_available_at)

@@ -5,8 +5,11 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "bazaar-agent",
+    "bazaar-evaluation",
     "bazaar-market",
     "bazaar-protocol",
+    "bazaar-replay",
+    "bazaar-runner",
     "bazaar-workspace",
 ]
 
@@ -78,12 +81,32 @@ requires-dist = [
 ]
 
 [[package]]
+name = "bazaar-evaluation"
+version = "0.1.0"
+source = { editable = "packages/evaluation" }
+dependencies = [
+    { name = "bazaar-protocol" },
+    { name = "logfire" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "logfire", specifier = ">=5.1.1" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
+
+[[package]]
 name = "bazaar-market"
 version = "0.1.0"
 source = { editable = "services/market" }
 dependencies = [
     { name = "bazaar-protocol" },
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "logfire", extra = ["fastapi", "sqlite3"] },
+    { name = "pydantic" },
     { name = "uvicorn" },
 ]
 
@@ -91,6 +114,9 @@ dependencies = [
 requires-dist = [
     { name = "bazaar-protocol", editable = "packages/protocol" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "logfire", extras = ["fastapi", "sqlite3"], specifier = ">=5.1.1" },
+    { name = "pydantic", specifier = ">=2.8" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -104,6 +130,34 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10" }]
+
+[[package]]
+name = "bazaar-replay"
+version = "0.1.0"
+source = { editable = "packages/replay" }
+dependencies = [
+    { name = "bazaar-protocol" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "bazaar-protocol", editable = "packages/protocol" }]
+
+[[package]]
+name = "bazaar-runner"
+version = "0.1.0"
+source = { editable = "services/runner" }
+dependencies = [
+    { name = "bazaar-protocol" },
+    { name = "httpx" },
+    { name = "logfire" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bazaar-protocol", editable = "packages/protocol" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "logfire", specifier = ">=5.1.1" },
+]
 
 [[package]]
 name = "bazaar-workspace"

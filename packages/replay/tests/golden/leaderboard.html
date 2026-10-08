@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Agent Leaderboard</title><style>
+:root { color-scheme: light; }
+body { margin: 0; padding: 18px 32px; background: #fbfbf8; color: #111;
+  font: 20px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1 { margin: 0; font-size: 34px; }
+.meta { margin: 2px 0 12px; color: #333; }
+.tag { display: inline-block; padding: 1px 10px; border: 2px solid #8a5a00; border-radius: 6px;
+  color: #8a5a00; font-weight: 600; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 14px; text-transform: uppercase; letter-spacing: .03em;
+  color: #333; border-bottom: 3px solid #111; padding: 4px 8px; vertical-align: bottom; }
+td { padding: 6px 8px; border-bottom: 1px solid #ccc; vertical-align: top; }
+td.name { white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.reference td { background: #eef3fb; }
+.sub { display: block; font-size: 14px; color: #555; }
+.pos { color: #0a6b2d; font-weight: 600; }
+.neg { color: #b00020; font-weight: 600; }
+.bad { color: #b00020; font-weight: 700; }
+.warn { display: block; color: #8a5a00; font-weight: 700; font-size: 16px; }
+.label { font-size: 13px; color: #555; border: 1px solid #999; border-radius: 4px; padding: 0 4px;
+  margin-left: 4px; font-weight: 400; }
+code { font-size: 13px; user-select: all; -webkit-user-select: all; background: #eee;
+  padding: 2px 4px; border-radius: 4px; }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: 0 32px; }
+section { margin-top: 10px; font-size: 16px; }
+h2 { font-size: 16px; margin: 0 0 2px; }
+ul { margin: 0; padding-left: 22px; }
+footer { margin-top: 12px; font-size: 15px; color: #333; }
+</style></head><body><h1>Agent Leaderboard</h1><p class="meta">2026-02-02 → 2026-02-13 · starting cash $10,000.00 · data synthetic-v1 · schedule sched-v1:9f2c4e1a <span class="tag">synthetic prices</span></p><table><thead><tr><th>#</th><th>Strategy</th><th>Kind</th><th>Return</th><th>Excess vs<br>buy-and-hold</th><th>Trades<br>filled / rej.</th><th>Scores<br>scored / failed / unsup.</th><th>Trace</th></tr></thead><tbody><tr><td class="num">1</td><td class="name">scripted-momentum-v1<span class="sub">e1a1eb4c</span></td><td>agent</td><td class="num"><span class="pos">+5.20%</span></td><td class="num"><span class="pos">+2.10%</span><span class="label">computed</span></td><td class="num">3 / 1</td><td class="num">2 / 0 / 0<span class="sub">1 pending</span></td><td><code>0af7651916cd43dd8448eb211c80319c</code></td></tr><tr class="reference"><td class="num">2</td><td class="name">baseline-buy-and-hold<span class="sub">1d580a62 · buy-and-hold reference</span></td><td>baseline</td><td class="num"><span class="pos">+3.10%</span></td><td class="num">—</td><td class="num">1 / 0</td><td class="num">1 / 0 / 0</td><td>—</td></tr><tr><td class="num">3</td><td class="name">baseline-cash-only<span class="sub">3c548147</span></td><td>baseline</td><td class="num">+0.00%</td><td class="num"><span class="neg">-3.10%</span><span class="label">computed</span></td><td class="num">0 / 0</td><td class="num">0 / 0 / 0</td><td>—</td></tr><tr><td class="num">4</td><td class="name">scripted-momentum-v1<span class="sub">a9399bc9</span><span class="warn">⚠ decision errors: 2</span></td><td>agent</td><td class="num">+0.00%</td><td class="num"><span class="neg">-3.10%</span><span class="label">computed</span></td><td class="num">0 / 0</td><td class="num">0 / 0 / 0</td><td>—</td></tr><tr><td class="num">5</td><td class="name">scripted-momentum-v1<span class="sub">f6218f0d</span><span class="warn">⚠ not reconciled</span></td><td>agent</td><td class="num">—</td><td class="num">—</td><td class="num">1 / 0</td><td class="num">1 / 0 / 0</td><td>—</td></tr></tbody></table><div class="sides"><section><h2>Decision errors</h2><ul><li>#4 scripted-momentum-v1: 2 decision errors; first at 2026-02-03 14:30 UTC: order rejected: market_closed</li></ul></section><section><h2>Refused / failed</h2><ul><li>scripted-momentum-v1: decide timed out at event 7</li><li>scripted-momentum-v1: approval_denied: refused before any account was opened</li></ul></section><section><h2>Not comparable</h2><ul><li>scripted-momentum-v1: period_start</li></ul></section><section><h2>Invalid</h2><ul><li>no-eval: evaluation.json is missing</li></ul></section></div><footer>Scored after each run with full-timeline evidence. Agents never see these scores.</footer></body></html>
