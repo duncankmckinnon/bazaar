@@ -3,9 +3,16 @@
 run_submission is synchronous and self-contained so the web worker can call up to three at once
 from threads: each call has its own event loop, HTTP clients and market experiment. The only
 shared state is the one-time Logfire configuration.
+
+Progress: after each of the 10 session closes the run calls on_progress(day) or, if the callback
+takes two positional arguments (or *args), on_progress(day, value), where value is the Decimal
+portfolio value marked at that close (PortfolioSnapshot.portfolio_value, value-v1). The shape is
+decided once per run from the callback's signature, so existing one-argument callbacks keep
+working. A callback that raises is logged and never stops the run.
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import shutil
@@ -69,12 +76,30 @@ def _model_factory(model: str | None) -> Any:
     return env_model_factory(model)
 
 
+ProgressReporter = Callable[[int, Decimal], None]
+
+
+def _progress_reporter(on_progress: Callable[..., None] | None) -> ProgressReporter | None:
+    """Decide once whether the callback takes (day) or (day, value)."""
+    if on_progress is None:
+        return None
+    try:
+        parameters = inspect.signature(on_progress).parameters.values()
+    except (TypeError, ValueError):  # no introspectable signature: the original (day) shape
+        return lambda day, value: on_progress(day)
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    takes_value = any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters) or (
+        sum(p.kind in positional for p in parameters) >= 2
+    )
+    return on_progress if takes_value else lambda day, value: on_progress(day)
+
+
 class _ProgressPort:
     """The market port, reporting each session close: portfolio() is read only at MARK events."""
 
-    def __init__(self, port: HttpMarketPort, on_progress: Callable[[int], None] | None) -> None:
+    def __init__(self, port: HttpMarketPort, report: ProgressReporter | None) -> None:
         self._port = port
-        self._on_progress = on_progress
+        self._report = report
         self._day = 0
 
     def __getattr__(self, name: str) -> Any:
@@ -83,9 +108,9 @@ class _ProgressPort:
     async def portfolio(self, ctx):
         snapshot = await self._port.portfolio(ctx)
         self._day += 1
-        if self._on_progress is not None:
+        if self._report is not None:
             try:
-                self._on_progress(self._day)
+                self._report(self._day, snapshot.portfolio_value)
             except Exception:
                 logger.exception("on_progress(%d) failed; the run continues", self._day)
         return snapshot
@@ -100,7 +125,7 @@ def run_submission(
     runner_token: str,
     runs_dir: Path,
     model: str | None = None,
-    on_progress: Callable[[int], None] | None = None,
+    on_progress: Callable[..., None] | None = None,
     handle: str | None = None,
 ) -> Path:
     """Run one agent over the demo fortnight and return its scored run directory.
@@ -148,7 +173,7 @@ async def _run(
     staging: Path,
     runs_dir: Path,
     model: str | None,
-    on_progress: Callable[[int], None] | None,
+    on_progress: Callable[..., None] | None,
     handle: str | None,
 ) -> Path:
     # Imported here: bazaar_agent and bazaar_evaluation are optional for the runner package.
@@ -189,7 +214,7 @@ async def _run(
         )
         record, evaluation = await record_run(
             spec,
-            _ProgressPort(port, on_progress),
+            _ProgressPort(port, _progress_reporter(on_progress)),
             step,
             policy_ref=launch.policy_ref,
             runs_dir=staging,
