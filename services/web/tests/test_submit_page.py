@@ -147,3 +147,54 @@ def test_logfire_link_is_labelled_and_opens_safely():
     assert '"noopener noreferrer"' in html
     assert '"_blank"' in html
     assert "// safeLogfireUrl:start" in html and "// safeLogfireUrl:end" in html
+
+
+PAGE_BACKGROUNDS = ("#36182D", "#6a1a65")  # base and the blended magenta peak
+FIELD_FILL_TOKEN = "field"
+TEXT_TOKENS = ("sugar", "aqua", "dim", "soft", "faint", "error")
+
+
+def css_tokens():
+    root = re.search(r":root\s*\{(.*?)\}", page(), re.DOTALL).group(1)
+    return {
+        name: value.lower() for name, value in re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})", root)
+    }
+
+
+def contrast(a, b):
+    def luminance(color):
+        channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    light, dark = sorted((luminance(a), luminance(b)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def test_text_tokens_meet_wcag_aa_on_the_page_background():
+    tokens = css_tokens()
+
+    for name in TEXT_TOKENS:
+        for background in PAGE_BACKGROUNDS:
+            assert contrast(tokens[name], background) >= 4.5, (name, background)
+
+
+def test_input_border_meets_non_text_contrast_against_page_and_field():
+    tokens = css_tokens()
+
+    for background in (*PAGE_BACKGROUNDS, tokens[FIELD_FILL_TOKEN]):
+        assert contrast(tokens["field-line"], background) >= 3, background
+    assert re.search(
+        r"input\[type=\"text\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)", page()
+    )
+
+
+def test_page_uses_the_board_background_and_no_low_contrast_text_colours():
+    html = page()
+
+    assert (
+        "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
+        "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, "
+        "rgba(255,101,80,0) 60%), #36182D;"
+    ) in html
+    assert not re.search(r"(?<![-\w])color:\s*var\(--(?:calcium|lithium)\)", html)
