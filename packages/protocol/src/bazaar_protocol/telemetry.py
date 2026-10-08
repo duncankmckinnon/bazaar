@@ -64,10 +64,11 @@ SECRET_ENV = (
 REDACTED = "[REDACTED]"
 # Shorter values are not credentials and would redact ordinary text.
 MIN_SECRET_LENGTH = 8
-# "api_key=…", "Authorization: Bearer …", "runner_token: …": keep the name, drop the value.
+# "api_key=…", "Authorization: Bearer …", 'runner_token="…"', '"api_key": "…"': keep the name and
+# any opening quote, drop the value.
 _NAMED_VALUE = re.compile(
     rf"(?<![a-z])(?P<name>(?:{_OTHER_SECRET_PATTERNS.pattern})[\w.-]*)(?P<sep>[\"']?\s*[:=]\s*)"
-    r"(?P<value>(?:bearer\s+)?[^\s,;&'\"]+)",
+    r"(?P<quote>[\"']?)(?P<value>(?:bearer\s+)?[^\s,;&'\"]+)",
     re.IGNORECASE,
 )
 
@@ -90,7 +91,7 @@ def redact(text: str, *extra_secrets: str | None) -> str:
     secrets = {s for s in (*(_secrets or ()), *extra_secrets) if s and len(s) >= MIN_SECRET_LENGTH}
     for secret in sorted(secrets, key=len, reverse=True):
         text = text.replace(secret, REDACTED)
-    return _NAMED_VALUE.sub(lambda m: f"{m['name']}{m['sep']}{REDACTED}", text)
+    return _NAMED_VALUE.sub(lambda m: f"{m['name']}{m['sep']}{m['quote']}{REDACTED}", text)
 
 
 class RedactedError(Exception):
@@ -121,7 +122,15 @@ def redacted_exceptions(*extra_secrets: str | None) -> Iterator[None]:
         if all(redact(str(e), *extra_secrets) == str(e) for e in _chain(exc)):
             raise
         message = redact(f"{type(exc).__name__}: {exc}", *extra_secrets)
-        raise RedactedError(message) from None
+    else:
+        return
+    # Raised outside the except block, and its context cleared as it leaves: the secret-bearing
+    # exception is not even referenced from the error a span records.
+    error = RedactedError(message)
+    try:
+        raise error from None
+    finally:
+        error.__context__ = None
 
 
 _configure_lock = threading.Lock()

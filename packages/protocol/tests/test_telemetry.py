@@ -125,6 +125,10 @@ def test_redact_removes_values_named_like_secrets(secrets):
     assert redact("api_key=abc123 x") == f"api_key={REDACTED} x"
     assert redact("Authorization: Bearer abc123") == f"Authorization: {REDACTED}"
     assert redact("runner_token: abc123") == f"runner_token: {REDACTED}"
+    # Quoted values (reviewer N1): the opening quote stays, the value goes.
+    assert redact('{"api_key": "abc123secretvalue"}') == f'{{"api_key": "{REDACTED}"}}'
+    assert redact('runner_token="zzzzzzzzzzzz"') == f'runner_token="{REDACTED}"'
+    assert redact("password='hunter22' next") == f"password='{REDACTED}' next"
 
 
 def test_redact_keeps_ordinary_text(secrets):
@@ -218,3 +222,18 @@ def test_configure_sets_the_shared_scrubbing(unconfigured):
     assert GLOBAL_CONFIG.scrubbing.callback is keep_trading_sessions
     assert GLOBAL_CONFIG.scrubbing.extra_patterns == list(EXTRA_SCRUB_PATTERNS)
     assert GLOBAL_CONFIG.service_version == "0.1.0"
+
+
+def test_the_redacted_error_references_no_original_exception(secrets):
+    # Reviewer N3: not even a suppressed __context__ points at the secret-bearing error.
+    with pytest.raises(RedactedError) as caught, redacted_exceptions():
+        raise ConnectionError(f"refused {GATEWAY_KEY}")
+    error = caught.value
+    assert error.__cause__ is None and error.__context__ is None and error.__suppress_context__
+    assert GATEWAY_KEY not in str(error)
+
+
+def test_a_clean_block_leaves_nothing_behind(secrets):
+    with redacted_exceptions():
+        value = 1
+    assert value == 1
