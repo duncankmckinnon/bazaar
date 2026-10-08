@@ -2,6 +2,7 @@ import dataclasses
 import sys
 from datetime import timedelta
 
+import bazaar_web.app
 import pytest
 from bazaar_web.app import create_app
 from bazaar_web.store import Store
@@ -407,12 +408,17 @@ def test_unknown_submission_is_404(settings, helpers):
         assert client.get("/api/submissions/nope").status_code == 404
 
 
-def test_submit_page_falls_back_to_a_placeholder(settings, helpers):
+def test_pages_fall_back_to_placeholders(settings, helpers, tmp_path, monkeypatch):
+    # An empty static dir: the real board.html and submit.html (evals team) must not leak in.
+    static = tmp_path / "static"
+    static.mkdir()
+    monkeypatch.setattr(bazaar_web.app, "STATIC", static)
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        form = client.get("/submit")
+        board, form = client.get("/"), client.get("/submit")
 
-    assert form.status_code == 200
-    assert "coming soon" in form.text
+    assert board.status_code == form.status_code == 200
+    assert "The live board is coming soon." in board.text
+    assert "The submission form is coming soon." in form.text
 
 
 def test_empty_runs_dir_gives_default_window(settings, helpers):
