@@ -262,15 +262,40 @@ def test_failure_paths_leak_no_credential_into_spans(tmp_path, monkeypatch, capf
             assert secret not in text, (secret, span["name"], text[:400])
 
 
-def test_the_fallback_configuration_keeps_the_trading_session_scrubbing(monkeypatch):
-    """Until bazaar_protocol.telemetry lands, the market configures Logfire itself, with the
-    same scrubbing callback as the runner (#57)."""
-    seen = {}
-    monkeypatch.setattr(app_module.logfire, "configure", lambda **kwargs: seen.update(kwargs))
-    app_module._configure_logfire("bazaar-market")
-    assert seen["scrubbing"].callback is app_module.keep_trading_sessions
-    assert (seen["service_name"], seen["distributed_tracing"]) == ("bazaar-market", True)
-    assert seen["send_to_logfire"] == "if-token-present"
+def test_logfire_is_configured_only_through_the_shared_helper(monkeypatch):
+    """bazaar_protocol.telemetry.configure carries the shared scrubbing; a direct
+    logfire.configure in the market would drop it."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(app_module))
+    direct = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "configure"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "logfire"
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "logfire"
+            and any(alias.name == "configure" for alias in node.names)
+        )
+    ]
+    assert direct == []
+
+    calls = []
+    monkeypatch.setattr(app_module.telemetry, "configure", lambda name, *a, **k: calls.append(name))
+    monkeypatch.setattr(app_module.logfire, "instrument_system_metrics", lambda **kwargs: None)
+    monkeypatch.setattr(app_module, "attach_log_handlers", lambda: None)
+    app_module.configure_telemetry.cache_clear()
+    try:
+        app_module.configure_telemetry()
+    finally:
+        app_module.configure_telemetry.cache_clear()
+    assert calls == ["bazaar-market"]
 
 
 def test_the_real_configuration_attaches_only_the_redacting_and_terminal_handlers(monkeypatch):
