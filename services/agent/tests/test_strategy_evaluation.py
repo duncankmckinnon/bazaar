@@ -267,3 +267,22 @@ async def test_cancelled_decision_does_not_leave_session_waiting(judge, capfire)
             async with strategy_evaluation.strategy_evaluation_session():
                 await invoke(FunctionModel(cancelled))
     assert judge == [] and evaluations(capfire) == []
+
+
+async def test_the_judge_sees_the_quotes_and_trading_day_the_agent_saw(judge, capfire):
+    from datetime import date
+
+    from .test_research import NOW
+    from .test_trading import quoted_decision
+
+    result, requests, quotes, _ = await quoted_decision(
+        {"AAPL": [(NOW, "12.34")]}, trading_day=(1, 10, date(2026, 2, 2))
+    )
+    await wait_for_evaluations()
+    assert result.error is None and len(requests) == 3 and quotes
+    [prompt] = judge
+    # The judge reads the agent's own messages, so it sees the same quotes and trading day.
+    assert "MARKET QUOTES" in prompt and "max_whole_shares=" in prompt
+    assert "trading day 1 of 10 (first day 2026-02-02)" in prompt
+    # The runner-side quote reads are context, not research the agent chose to do.
+    assert '"research_observations":[]' in prompt
