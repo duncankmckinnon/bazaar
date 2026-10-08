@@ -260,3 +260,14 @@ def test_failure_paths_leak_no_credential_into_spans(tmp_path, monkeypatch, capf
         text = repr(span)
         for secret in (TOKEN, str(APPROVAL), malformed, unknown):
             assert secret not in text, (secret, span["name"], text[:400])
+
+
+def test_the_fallback_configuration_keeps_the_trading_session_scrubbing(monkeypatch):
+    """Until bazaar_protocol.telemetry lands, the market configures Logfire itself, with the
+    same scrubbing callback as the runner (#57)."""
+    seen = {}
+    monkeypatch.setattr(app_module.logfire, "configure", lambda **kwargs: seen.update(kwargs))
+    app_module._configure_logfire("bazaar-market")
+    assert seen["scrubbing"].callback is app_module.keep_trading_sessions
+    assert (seen["service_name"], seen["distributed_tracing"]) == ("bazaar-market", True)
+    assert seen["send_to_logfire"] == "if-token-present"
