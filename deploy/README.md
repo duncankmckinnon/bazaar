@@ -144,9 +144,13 @@ back up:
 1. Redeploy **without** `BAZAAR_RESEED_RUNS`, using the normal deploy command above. Nothing moved, so the board
    comes back as it was. Fix the seed folder, then reseed with a new id.
 2. If a reseed did run and its runs are wrong, stop the app with `uvx modal app stop -y bazaar-live`. Then find the
-   archive with `uvx modal volume ls bazaar-live-data /archive` and copy the old runs back:
+   archive with `uvx modal volume ls bazaar-live-data /archive`. modal 1.6.1 has no `volume mv`, so archive the
+   current runs by copying them first, since they may include attendee runs scored after the reseed. Check that the
+   copy is listed, and only then delete and copy the old runs back:
 
    ```sh
+   uvx modal volume cp -r bazaar-live-data /runs /archive/<now utc time>-replaced/runs
+   uvx modal volume ls bazaar-live-data /archive/<now utc time>-replaced/runs   # must list the same runs as /runs
    uvx modal volume rm -r bazaar-live-data /runs
    uvx modal volume cp -r bazaar-live-data /archive/<utc time>/runs /runs
    ```
