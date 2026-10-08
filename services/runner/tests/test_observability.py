@@ -343,11 +343,11 @@ def exception_messages(spans) -> list[str]:
 
 
 def assert_nowhere(spans, *texts: str) -> None:
+    # A bare `assert secret not in <huge string>` makes pytest diff the whole export for minutes.
     exported = json.dumps(spans, default=str)
-    for secret in EXCEPTION_SECRETS:
-        assert secret not in exported
-        for text in texts:
-            assert secret not in text
+    leaked = [s for s in EXCEPTION_SECRETS if any(s in t for t in (exported, *texts))]
+    if leaked:
+        pytest.fail(f"secret sentinels leaked: {leaked}")
 
 
 def test_a_model_and_market_client_raising_secrets_leave_no_secret(
@@ -491,5 +491,99 @@ def test_a_judge_failure_holding_secrets_leaves_no_secret(secret_env, monkeypatc
     spans = secret_env.exporter.exported_spans_as_dict()
     events = evaluation_logs(secret_env)
     assert any("[REDACTED]" in json.dumps(event, default=str) for event in events)
+    # The error was raised by the judge's model, inside its traced chat span: that span recorded
+    # it (message and stacktrace) already redacted.
+    judge_chats = [
+        s for s in spans if s["attributes"].get("gen_ai.request.model") == "function:grade:"
+    ]
+    assert judge_chats
+    for chat in judge_chats:
+        (error,) = [e for e in chat.get("events", []) if e["name"] == "exception"]
+        assert error["attributes"]["exception.type"].endswith("RedactedError")
+        assert "[REDACTED]" in error["attributes"]["exception.message"]
+        assert "exception.stacktrace" in error["attributes"]
     files = [p.read_text() for p in run_dir.rglob("*") if p.is_file()]
     assert_nowhere(spans, json.dumps(events, default=str), *files)
+
+
+JUDGE_REASON = "Bought ten AAPL at the first open and held, as instructed."
+
+
+def grade(messages, info):
+    verdict = {"pass": True, "score": 0.75, "reason": JUDGE_REASON}
+    return ModelResponse([ToolCallPart(info.output_tools[0].name, verdict)])
+
+
+@pytest.fixture
+def judged_run(monkeypatch, capfire, tmp_path):
+    """A submission with the online strategy judge on, graded by a local function model, under
+    sentinel secrets. run_submission wraps the run in strategy_evaluation_session."""
+    from bazaar_agent import strategy_evaluation
+
+    for name, value in SENTINELS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
+    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    market = GrantingMarket()
+    transport = market.transport()
+    monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    run_submission(
+        submission_id="judged-1",
+        name="judged",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+    # run_submission returns only after the session drained every judge.
+    return capfire.exporter.exported_spans_as_dict(), capfire.log_exporter.exported_logs_as_dicts()
+
+
+def test_adherence_results_reach_logfire_as_evaluation_events(judged_run):
+    """The runner session's completion signal runs beside the SDK's OTel events, not instead."""
+    _, logs = judged_run
+    events = [log["attributes"] for log in logs if "gen_ai.evaluation.name" in log["attributes"]]
+    scores = [e for e in events if e["gen_ai.evaluation.name"] == "strategy_adherence"]
+    passes = [e for e in events if e["gen_ai.evaluation.name"] == "strategy_adherence_pass"]
+    assert len(scores) == len(passes) == 10
+    for event in scores:
+        assert event["gen_ai.evaluation.score.value"] == 0.75
+        assert event["gen_ai.evaluation.explanation"] == JUDGE_REASON
+    for event in passes:
+        assert event["gen_ai.evaluation.score.label"] == "pass"
+        assert event["gen_ai.evaluation.explanation"] == JUDGE_REASON
+    for event in events:
+        assert event["gen_ai.evaluation.target"] == "trading.decision"
+        assert event["bazaar.submission_id"] == "judged-1"
+        assert event["bazaar.strategy_name"] == "judged"
+
+
+def ancestors(span, by_id):
+    while span.get("parent"):
+        span = by_id.get(span["parent"]["span_id"])
+        if span is None:
+            return
+        yield span
+
+
+def test_the_judge_model_requests_are_traced_under_the_evaluator(judged_run):
+    spans, logs = judged_run
+    by_id = {s["context"]["span_id"]: s for s in spans}
+    judge_chats = [
+        s for s in spans if s["attributes"].get("gen_ai.request.model") == "function:grade:"
+    ]
+    assert len(judge_chats) == 10
+    for chat in judge_chats:
+        assert chat["name"].startswith("chat ")
+        assert any(a["name"].startswith("evaluator") for a in ancestors(chat, by_id))
+        assert "gen_ai.usage.input_tokens" in chat["attributes"]
+        # Content is on, as for the trader: the judge's prompt and verdict are visible.
+        assert "gen_ai.input.messages" in chat["attributes"]
+        assert JUDGE_REASON in str(chat["attributes"].get("gen_ai.output.messages"))
+        assert chat["attributes"]["bazaar.submission_id"] == "judged-1"
+    # The judge's prompt holds the decision evidence, never a credential.
+    exported = json.dumps([spans, logs], default=str)
+    for secret in (*SENTINELS.values(), TOKEN):
+        assert secret not in exported
