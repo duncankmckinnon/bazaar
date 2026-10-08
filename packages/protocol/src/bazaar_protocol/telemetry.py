@@ -15,8 +15,9 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, NoReturn
 
+import httpx
 import logfire
 from logfire._internal.config import GLOBAL_CONFIG
 from logfire._internal.scrubbing import DEFAULT_PATTERNS
@@ -132,6 +133,74 @@ def redacted_exceptions(*extra_secrets: str | None) -> Iterator[None]:
         raise error from None
     finally:
         error.__context__ = None
+
+
+def _transport_error(exc: Exception, request: httpx.Request) -> Exception | None:
+    """A redacted copy of a transport error that holds a secret (None when it holds none).
+    httpx errors keep their type, so callers that catch httpx.TransportError still do."""
+    if all(redact(str(e)) == str(e) for e in _chain(exc)):
+        return None
+    if isinstance(exc, httpx.RequestError):
+        return type(exc)(redact(str(exc)), request=request)
+    return RedactedError(redact(f"{type(exc).__name__}: {exc}"))
+
+
+def _raise_clean(error: Exception) -> NoReturn:
+    try:
+        raise error from None
+    finally:
+        error.__context__ = None
+
+
+class _RedactingTransport(httpx.AsyncBaseTransport, httpx.BaseTransport):
+    """Inside the client's HTTP span: an error the span records is already redacted."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport | httpx.BaseTransport) -> None:
+        self.inner = inner
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return self.inner.handle_request(request)  # type: ignore[union-attr]
+        except Exception as exc:
+            error = _transport_error(exc, request)
+            if error is None:
+                raise
+        _raise_clean(error)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return await self.inner.handle_async_request(request)  # type: ignore[union-attr]
+        except Exception as exc:
+            error = _transport_error(exc, request)
+            if error is None:
+                raise
+        _raise_clean(error)
+
+    def close(self) -> None:
+        self.inner.close()  # type: ignore[union-attr]
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()  # type: ignore[union-attr]
+
+
+def instrument_market_client[C: httpx.AsyncClient | httpx.Client](client: C) -> C:
+    """Trace this client's market requests and send traceparent, so the market's request spans
+    join the caller's trace. Never headers or bodies (the runner token travels in a header).
+
+    Per client, never process-wide: the Gateway's own client already propagates. The client's
+    transport is first wrapped in its own redacting transport, so (1) the HTTP span records a
+    transport error only after redaction and (2) a transport shared by several clients (tests
+    pass one MockTransport around) is never instrumented more than once.
+    """
+    client._transport = _RedactingTransport(client._transport)
+    logfire.instrument_httpx(
+        client,
+        capture_all=False,
+        capture_headers=False,
+        capture_request_body=False,
+        capture_response_body=False,
+    )
+    return client
 
 
 _configure_lock = threading.Lock()
