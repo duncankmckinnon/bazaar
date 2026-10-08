@@ -13,6 +13,7 @@ from bazaar_web.store import Store
 
 SYMBOLS = ["AAPL", "MSFT", "KO"]
 DAYS = 10
+DEFAULT_STARTING_CASH = Decimal(10000)
 DEFAULT_WINDOW = {"start": "2026-02-02", "end": "2026-02-13", "starting_cash": 10000.0}
 STATUS_ORDER = {"scored": 0, "running": 1, "queued": 2, "failed": 3}
 
@@ -83,10 +84,23 @@ def entry_row(
         "fills": entry.orders_filled if scored else None,
         "history": hist if scored else None,
         "trace_id": entry.trace_id,
+        "provisional": False,
     }
 
 
-def submission_row(submission: dict[str, Any]) -> dict[str, Any]:
+def provisional_return(submission: dict[str, Any], starting_cash: Decimal) -> float | None:
+    """A running run's return so far, from the last marked value it reported."""
+    value = submission.get("latest_value")
+    if submission["status"] != "running" or value is None or starting_cash <= 0:
+        return None
+    try:
+        return percent(Decimal(value) / starting_cash - 1)
+    except InvalidOperation:
+        return None
+
+
+def submission_row(submission: dict[str, Any], starting_cash: Decimal) -> dict[str, Any]:
+    live = provisional_return(submission, starting_cash)
     return {
         "id": submission["id"],
         "name": submission["name"],
@@ -94,11 +108,12 @@ def submission_row(submission: dict[str, Any]) -> dict[str, Any]:
         "kind": "agent",
         "status": submission["status"],
         "day": submission["day"],
-        "return_pct": None,
+        "return_pct": live,
         "excess_pct": None,
         "fills": None,
         "history": None,
         "trace_id": None,
+        "provisional": live is not None,
     }
 
 
@@ -114,10 +129,11 @@ def build_board(
             if submission and submission["hidden"]:
                 continue
             rows.append(entry_row(entry, status, submission, histories.get(entry.run_id)))
-    rows += [submission_row(s) for s in store.in_flight()]
+    starting_cash = board.header.starting_cash if board.header else DEFAULT_STARTING_CASH
+    rows += [submission_row(s, starting_cash) for s in store.in_flight()]
 
     # Stable sorts: scored by return (null last), then running, queued (FIFO) and failed.
-    rows.sort(key=lambda r: -r["return_pct"] if r["return_pct"] is not None else 0)
+    rows.sort(key=lambda r: -r["return_pct"] if r["status"] == "scored" and r["return_pct"] else 0)
     rows.sort(key=lambda r: r["status"] == "scored" and r["return_pct"] is None)
     rows.sort(key=lambda r: STATUS_ORDER[r["status"]])
     scored = 0

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
@@ -31,7 +32,7 @@ class RunSubmission(Protocol):
         runner_token: str,
         runs_dir: Path,
         model: str | None = None,
-        on_progress: Callable[[int], None] | None = None,
+        on_progress: Callable[..., None] | None = None,
     ) -> Path: ...
 
 
@@ -126,8 +127,9 @@ class Worker:
         self.store.mark_running(submission_id)
         self.store.add_event(f"{name} started trading", submission_id)
 
-        def on_progress(day: int) -> None:
-            if self.store.set_day(submission_id, day):
+        # Runners before C2's value change call on_progress(day); newer ones pass the marked value.
+        def on_progress(day: int, value: Decimal | None = None) -> None:
+            if self.store.set_day(submission_id, day, value):
                 self.store.add_event(f"{name} is on day {day} of 10", submission_id)
 
         try:

@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     created_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
-    hidden INTEGER NOT NULL DEFAULT 0
+    hidden INTEGER NOT NULL DEFAULT 0,
+    latest_value TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -55,6 +57,18 @@ class Store:
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring a database created by an older release up to date. Safe to run every start.
+
+        CREATE TABLE IF NOT EXISTS never adds columns to an existing table, so each later
+        column is added here when missing. Existing rows are kept (new columns start NULL).
+        """
+        with self._tx() as conn:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(submissions)")}
+            if "latest_value" not in columns:
+                conn.execute("ALTER TABLE submissions ADD COLUMN latest_value TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -154,12 +168,13 @@ class Store:
                 (self._stamp(), submission_id),
             )
 
-    def set_day(self, submission_id: str, day: int) -> bool:
-        """Record progress; True only when the day changed."""
+    def set_day(self, submission_id: str, day: int, value: Decimal | None = None) -> bool:
+        """Record progress and, when given, the marked portfolio value; True if the day changed."""
         with self._tx() as conn:
             changed = conn.execute(
-                "UPDATE submissions SET day = ? WHERE id = ? AND day IS NOT ?",
-                (day, submission_id, day),
+                "UPDATE submissions SET day = ?, latest_value = COALESCE(?, latest_value) "
+                "WHERE id = ? AND day IS NOT ?",
+                (day, None if value is None else str(value), submission_id, day),
             ).rowcount
         return bool(changed)
 
@@ -190,7 +205,8 @@ class Store:
     def requeue(self, submission_id: str) -> None:
         with self._tx() as conn:
             conn.execute(
-                "UPDATE submissions SET status = 'queued', day = NULL, started_at = NULL "
+                "UPDATE submissions SET status = 'queued', day = NULL, started_at = NULL, "
+                "latest_value = NULL "
                 "WHERE id = ? AND status = 'running'",
                 (submission_id,),
             )

@@ -149,6 +149,7 @@ def create_app(
             raise HTTPException(404, "no such submission")
         row = next((r for r in board_payload(request)["rows"] if r["id"] == submission_id), None)
         scored = row is not None and row["status"] == "scored"
+        provisional = row is not None and row["status"] == "running" and row["provisional"]
         return {
             "id": submission_id,
             "name": submission["name"],
@@ -156,8 +157,9 @@ def create_app(
             "day": submission["day"],
             "error": submission["error"],
             "position": store.position(submission_id),
-            "return_pct": row["return_pct"] if scored else None,
+            "return_pct": row["return_pct"] if scored or provisional else None,
             "rank": row["rank"] if scored else None,
+            "provisional": provisional,
             "logfire_url": settings.logfire_url(submission["name"]),
         }
 

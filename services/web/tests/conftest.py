@@ -103,9 +103,16 @@ def seed_runs(runs_dir: Path) -> None:
 class FakeRunner:
     """Stands in for bazaar_runner.submission.run_submission (C2)."""
 
-    def __init__(self, returns: dict[str, str] | None = None, fail: set[str] = frozenset()):
+    def __init__(
+        self,
+        returns: dict[str, str] | None = None,
+        fail: set[str] = frozenset(),
+        values: dict[str, str] | None = None,
+    ):
         self.returns = returns or {}
         self.fail = fail
+        # name -> marked value reported with each day, like the newer runner; else day only.
+        self.values = values or {}
         self.gate = threading.Event()
         self.gate.set()
         self.calls: list[dict] = []
@@ -119,7 +126,9 @@ class FakeRunner:
             {"submission_id": submission_id, "name": name, "runner_token": runner_token}
         )
         for day in range(1, 11):
-            if on_progress:
+            if on_progress and name in self.values:
+                on_progress(day, Decimal(self.values[name]))
+            elif on_progress:
                 on_progress(day)
         if not self.gate.wait(timeout=10):
             raise TimeoutError("test gate never opened")
