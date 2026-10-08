@@ -269,3 +269,14 @@ def test_failed_run_with_decision_errors_stays_failed(tmp_path, write_run):
 
     assert ids(board.failed) == ["crashed"]
     assert board.ranked == ()
+
+
+def test_dot_prefixed_staging_dirs_are_skipped(tmp_path, write_run):
+    write_run(tmp_path, "bh", policy_ref="baseline-buy-and-hold", period_return="0.01")
+    (tmp_path / ".tmp-1234").mkdir()
+    (tmp_path / ".tmp-1234" / "record.json").write_text("{half written")
+
+    board = load_board(tmp_path)
+
+    assert ids(board.ranked) == ["bh"]
+    assert board.invalid == ()
