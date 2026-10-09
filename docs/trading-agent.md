@@ -112,7 +112,8 @@ Logfire receives `gen_ai.evaluation.result` events under target `trading.decisio
 
 - `strategy_adherence`: `1.0` for adherence or `0.0` for a violation.
 - `strategy_adherence_pass`: the same verdict as a pass/fail assertion.
-- `strategy_adherence_confidence`: Jev's confidence in that verdict, when reported.
+- `strategy_adherence_probability`: Jev's raw probability that the decision adheres to the
+  strategy, before the binary verdict is thresholded.
 - `strategy_adherence_status=not_evaluated`: no decision or attempted order was produced.
 
 An attempted order is still evaluated when the final model output fails. Judge errors and

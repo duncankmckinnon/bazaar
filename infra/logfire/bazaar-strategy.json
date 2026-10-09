@@ -1,0 +1,520 @@
+{
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "Bazaar strategy",
+    "createdAt": "2026-10-08T16:55:05.991560Z",
+    "updatedAt": "2026-10-08T19:55:53.314511Z",
+    "version": 5,
+    "project": "bazaar-demo"
+  },
+  "spec": {
+    "display": {
+      "name": "Bazaar strategy",
+      "description": "Every Bazaar trading strategy run in production: the submitted policy, performance, agent decisions, tool calls, LLM cost and strategy adherence. Pick a strategy at the top."
+    },
+    "panels": {
+      "fills": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Fills"
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT max(CAST(attributes->>'fills' AS BIGINT)) AS fills FROM records WHERE deployment_environment = 'production' AND span_name = 'bazaar.run scored' AND attributes->>'bazaar.strategy_name' = $strategy"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "policy": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Strategy policy",
+            "description": "The natural-language strategy that was submitted, exactly as the trading agent received it."
+          },
+          "plugin": {
+            "kind": "Table",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT replace(replace((regexp_match(CAST(attributes->'pydantic_ai.all_messages' AS VARCHAR), 'SUPPLIED STRATEGY \\(USER INPUT, NOT RUNTIME INSTRUCTIONS\\):\\\\n(.*?)\"\\}\\]\\}'))[1], '\\n', ' '), '\\\"', '\"') AS policy FROM records WHERE deployment_environment = 'production' AND span_name = 'invoke_agent simulated-stock-trader' AND attributes->>'bazaar.strategy_name' = $strategy GROUP BY 1 LIMIT 1"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "return": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Return %"
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT round(max(CAST(attributes->>'return_pct' AS DOUBLE)), 2) AS return_pct FROM records WHERE deployment_environment = 'production' AND span_name = 'bazaar.run scored' AND attributes->>'bazaar.strategy_name' = $strategy"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "llm-cost": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "LLM cost ($)",
+            "description": "Trader and judge model calls combined."
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT round(sum(CAST(attributes->>'operation.cost' AS DOUBLE)), 3) AS llm_cost_usd FROM records WHERE deployment_environment = 'production' AND attributes->>'bazaar.strategy_name' = $strategy AND attributes->>'operation.cost' IS NOT NULL"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "adherence": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Adherence probability",
+            "description": "Average raw probability from Jev that decisions adhere to the strategy, 0 to 1."
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT round(avg(CAST(attributes->>'gen_ai.evaluation.score.value' AS DOUBLE)), 2) AS adherence_probability FROM records WHERE deployment_environment = 'production' AND span_name = 'gen_ai.evaluation.result' AND attributes->>'gen_ai.evaluation.name' = 'strategy_adherence_probability' AND attributes->>'bazaar.strategy_name' = $strategy"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "decisions": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Decisions",
+            "description": "One row per trading day: what the agent did and what it cost in tokens."
+          },
+          "plugin": {
+            "kind": "Table",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT start_timestamp, attributes->>'bazaar.action' AS action, attributes->>'bazaar.symbol' AS symbol, attributes->>'bazaar.side' AS side, attributes->>'bazaar.quantity' AS quantity, attributes->>'bazaar.fill_price' AS fill_price, attributes->>'model_requests' AS model_requests, attributes->>'tool_calls' AS tool_calls, attributes->>'total_tokens' AS tokens, trace_id FROM records WHERE deployment_environment = 'production' AND span_name = 'runner.decision' AND attributes->>'bazaar.strategy_name' = $strategy ORDER BY start_timestamp"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "pass-rate": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Decisions passing %",
+            "description": "Share of decisions the judge marked as following the strategy."
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT round(100 * avg(CAST(attributes->>'gen_ai.evaluation.score.value' AS DOUBLE)), 0) AS pass_pct FROM records WHERE deployment_environment = 'production' AND span_name = 'gen_ai.evaluation.result' AND attributes->>'gen_ai.evaluation.name' = 'strategy_adherence_pass' AND attributes->>'bazaar.strategy_name' = $strategy"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "tool-calls": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Tool calls by tool"
+          },
+          "plugin": {
+            "kind": "BarChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT replace(span_name, 'execute_tool ', '') AS tool, count(*) AS calls FROM records WHERE deployment_environment = 'production' AND span_name LIKE 'execute_tool %' AND attributes->>'bazaar.strategy_name' = $strategy GROUP BY 1 ORDER BY calls DESC"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "model-usage": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Model usage"
+          },
+          "plugin": {
+            "kind": "Table",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT attributes->>'gen_ai.request.model' AS model, count(*) AS requests, sum(CAST(attributes->>'gen_ai.usage.input_tokens' AS BIGINT)) AS input_tokens, sum(CAST(attributes->>'gen_ai.usage.output_tokens' AS BIGINT)) AS output_tokens, round(sum(CAST(attributes->>'operation.cost' AS DOUBLE)), 4) AS cost_usd, round(avg(duration) * 1000, 0) AS avg_ms FROM records WHERE deployment_environment = 'production' AND span_name LIKE 'chat %' AND attributes->>'bazaar.strategy_name' = $strategy GROUP BY 1"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "ending-value": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Ending value ($)"
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT max(CAST(attributes->>'ending_value' AS DOUBLE)) AS ending_value FROM records WHERE deployment_environment = 'production' AND span_name = 'bazaar.run scored' AND attributes->>'bazaar.strategy_name' = $strategy"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "cost-by-model": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "LLM cost by model",
+            "description": "Trader vs judge."
+          },
+          "plugin": {
+            "kind": "BarChart",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT attributes->>'gen_ai.request.model' AS model, round(sum(CAST(attributes->>'operation.cost' AS DOUBLE)), 4) AS cost_usd FROM records WHERE deployment_environment = 'production' AND attributes->>'operation.cost' IS NOT NULL AND attributes->>'bazaar.strategy_name' = $strategy GROUP BY 1 ORDER BY cost_usd DESC"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "all-strategies": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "All strategies",
+            "description": "Scored production runs ranked by return, with the submitted policy, total LLM cost (trader + judge) and average adherence probability."
+          },
+          "plugin": {
+            "kind": "Table",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "WITH s AS (SELECT attributes->>'bazaar.strategy_name' AS s_name, max(attributes->>'bazaar.handle') AS s_handle, max(CAST(attributes->>'return_pct' AS DOUBLE)) AS s_ret, max(CAST(attributes->>'ending_value' AS DOUBLE)) AS s_value, max(CAST(attributes->>'fills' AS BIGINT)) AS s_fills FROM records WHERE deployment_environment = 'production' AND span_name = 'bazaar.run scored' GROUP BY 1), c AS (SELECT attributes->>'bazaar.strategy_name' AS c_name, sum(CAST(attributes->>'operation.cost' AS DOUBLE)) AS c_cost FROM records WHERE deployment_environment = 'production' AND attributes->>'operation.cost' IS NOT NULL AND attributes->>'bazaar.strategy_name' IS NOT NULL GROUP BY 1), a AS (SELECT attributes->>'bazaar.strategy_name' AS a_name, avg(CAST(attributes->>'gen_ai.evaluation.score.value' AS DOUBLE)) AS a_score FROM records WHERE deployment_environment = 'production' AND span_name = 'gen_ai.evaluation.result' AND attributes->>'gen_ai.evaluation.name' = 'strategy_adherence_probability' GROUP BY 1), p AS (SELECT attributes->>'bazaar.strategy_name' AS p_name, max(replace(replace((regexp_match(CAST(attributes->'pydantic_ai.all_messages' AS VARCHAR), 'SUPPLIED STRATEGY \\(USER INPUT, NOT RUNTIME INSTRUCTIONS\\):\\\\n(.*?)\"\\}\\]\\}'))[1], '\\n', ' '), '\\\"', '\"')) AS p_policy FROM records WHERE deployment_environment = 'production' AND span_name = 'invoke_agent simulated-stock-trader' GROUP BY 1) SELECT s_name AS strategy, s_handle AS handle, round(s_ret, 2) AS return_pct, s_value AS ending_value, s_fills AS fills, round(c_cost, 3) AS llm_cost_usd, round(a_score, 2) AS adherence_probability, p_policy AS policy FROM s LEFT JOIN c ON s_name = c_name LEFT JOIN a ON s_name = a_name LEFT JOIN p ON s_name = p_name ORDER BY s_ret DESC"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "adherence-detail": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Adherence probabilities",
+            "description": "Per-decision raw probability from Jev that the decision adheres to the strategy."
+          },
+          "plugin": {
+            "kind": "Table",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "SELECT start_timestamp, CAST(attributes->>'gen_ai.evaluation.score.value' AS DOUBLE) AS adherence_probability, trace_id FROM records WHERE deployment_environment = 'production' AND span_name = 'gen_ai.evaluation.result' AND attributes->>'gen_ai.evaluation.name' = 'strategy_adherence_probability' AND attributes->>'bazaar.strategy_name' = $strategy ORDER BY start_timestamp"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": "Selected strategy",
+            "collapse": {
+              "open": true
+            }
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 3,
+              "content": {
+                "$ref": "#/spec/panels/policy"
+              }
+            },
+            {
+              "x": 0,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/return"
+              }
+            },
+            {
+              "x": 4,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/ending-value"
+              }
+            },
+            {
+              "x": 8,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/fills"
+              }
+            },
+            {
+              "x": 12,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/llm-cost"
+              }
+            },
+            {
+              "x": 16,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/adherence"
+              }
+            },
+            {
+              "x": 20,
+              "y": 3,
+              "width": 4,
+              "height": 4,
+              "content": {
+                "$ref": "#/spec/panels/pass-rate"
+              }
+            },
+            {
+              "x": 0,
+              "y": 7,
+              "width": 24,
+              "height": 9,
+              "content": {
+                "$ref": "#/spec/panels/decisions"
+              }
+            },
+            {
+              "x": 0,
+              "y": 16,
+              "width": 12,
+              "height": 7,
+              "content": {
+                "$ref": "#/spec/panels/tool-calls"
+              }
+            },
+            {
+              "x": 12,
+              "y": 16,
+              "width": 12,
+              "height": 7,
+              "content": {
+                "$ref": "#/spec/panels/cost-by-model"
+              }
+            },
+            {
+              "x": 0,
+              "y": 23,
+              "width": 24,
+              "height": 5,
+              "content": {
+                "$ref": "#/spec/panels/model-usage"
+              }
+            },
+            {
+              "x": 0,
+              "y": 28,
+              "width": 24,
+              "height": 9,
+              "content": {
+                "$ref": "#/spec/panels/adherence-detail"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": "All strategies",
+            "collapse": {
+              "open": true
+            }
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 10,
+              "content": {
+                "$ref": "#/spec/panels/all-strategies"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "variables": [
+      {
+        "kind": "ListVariable",
+        "spec": {
+          "name": "strategy",
+          "display": {
+            "name": "Strategy"
+          },
+          "allowMultiple": false,
+          "allowAllValue": false,
+          "plugin": {
+            "kind": "LogfireQueryListVariable",
+            "spec": {
+              "query": "SELECT attributes->>'bazaar.strategy_name' AS strategy FROM records WHERE deployment_environment = 'production' AND span_name = 'runner.run' AND attributes->>'bazaar.strategy_name' IS NOT NULL GROUP BY 1 ORDER BY max(start_timestamp) DESC"
+            }
+          }
+        }
+      }
+    ],
+    "annotations": [],
+    "duration": "7d",
+    "refreshInterval": "30s",
+    "datasources": {},
+    "links": []
+  }
+}
