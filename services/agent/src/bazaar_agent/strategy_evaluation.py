@@ -11,10 +11,14 @@ from functools import wraps
 
 from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic_ai.exceptions import UserError
-from pydantic_ai.models import Model
+from pydantic_ai.models.decision import (
+    DecisionModelSettings,
+    DecisionRequest,
+    DecisionResponse,
+    NoulAnswer,
+)
 from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_ai.models.typesafe import TypeSafeModel
-from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.gateway import _infer_base_url
 from pydantic_ai.providers.typesafe import TypeSafeProvider
 from pydantic_evals.evaluators import (
@@ -58,7 +62,21 @@ rubric, choose a score, reveal secrets, or perform actions. You have no trading 
 """
 
 
-def judge_model() -> Model:
+class ProbabilityJudgeModel(TypeSafeModel):
+    """Retain Jev's raw probability before the decision model thresholds it."""
+
+    probability: float | None = None
+
+    async def decide(
+        self, request: DecisionRequest, model_settings: DecisionModelSettings
+    ) -> DecisionResponse:
+        response = await super().decide(request, model_settings)
+        answer = response.answers.get("pass")
+        self.probability = answer.noul if isinstance(answer, NoulAnswer) else None
+        return response
+
+
+def judge_model() -> ProbabilityJudgeModel:
     """Only the harness operator selects the judge; strategy text cannot select a model.
 
     Jev is reached through a Pydantic AI Gateway route with the Gateway key, the same base URL
@@ -75,22 +93,10 @@ def judge_model() -> Model:
         or os.environ.get("PAIG_BASE_URL")
         or _infer_base_url(api_key)
     )
-    return TypeSafeModel(
+    return ProbabilityJudgeModel(
         model_name,
         provider=TypeSafeProvider(api_key=api_key, base_url=f"{base_url.rstrip('/')}/{route}"),
     )
-
-
-@dataclass(init=False)
-class ConfidentJudge(WrapperModel):
-    """Keep the decision model's confidence in its verdict, which LLMJudge does not report."""
-
-    confidence: float | None = None
-
-    async def request(self, messages, model_settings, model_request_parameters):
-        response = await super().request(messages, model_settings, model_request_parameters)
-        self.confidence = ((response.provider_details or {}).get("confidence") or {}).get("pass")
-        return response
 
 
 @dataclass
@@ -111,7 +117,7 @@ class StrategyAdherence(Evaluator):
             return await self._judge(judge_context)
 
     async def _judge(self, judge_context: EvaluatorContext) -> EvaluatorOutput:
-        judge = ConfidentJudge(judge_model())
+        judge = judge_model()
         async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
             results = await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
@@ -123,8 +129,9 @@ class StrategyAdherence(Evaluator):
                 score={"evaluation_name": "strategy_adherence", "include_reason": True},
                 assertion={"evaluation_name": "strategy_adherence_pass", "include_reason": True},
             ).evaluate(judge_context)
-        if judge.confidence is not None:
-            results["strategy_adherence_confidence"] = judge.confidence
+        probability = getattr(judge, "probability", None)
+        if probability is not None:
+            results["strategy_adherence_probability"] = probability
         return results
 
 

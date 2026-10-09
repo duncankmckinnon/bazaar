@@ -108,8 +108,9 @@ async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfir
     assert (
         by_name["strategy_adherence_pass"]["attributes"]["gen_ai.evaluation.score.label"] == "pass"
     )
-    confidence = by_name["strategy_adherence_confidence"]["attributes"]
-    assert confidence["gen_ai.evaluation.score.value"] == pytest.approx(0.8)
+    probability = by_name["strategy_adherence_probability"]["attributes"]
+    assert probability["gen_ai.evaluation.score.value"] == pytest.approx(0.9)
+    assert "strategy_adherence_confidence" not in by_name
     wrapper = next(
         span
         for span in capfire.exporter.exported_spans_as_dict()
@@ -158,7 +159,7 @@ async def test_missing_gateway_key_is_an_evaluation_error(monkeypatch, capfire):
     assert event["attributes"]["error.type"] == "UserError"
 
 
-async def test_violation_fails_with_jev_confidence(monkeypatch, capfire):
+async def test_violation_reports_jev_adherence_probability(monkeypatch, capfire):
     route_judge(monkeypatch, lambda request: httpx2.Response(200, json=verdict(0.2)))
     await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
     await wait_for_evaluations()
@@ -167,9 +168,10 @@ async def test_violation_fails_with_jev_confidence(monkeypatch, capfire):
     assert (
         by_name["strategy_adherence_pass"]["attributes"]["gen_ai.evaluation.score.label"] == "fail"
     )
-    assert by_name["strategy_adherence_confidence"]["attributes"][
+    assert by_name["strategy_adherence_probability"]["attributes"][
         "gen_ai.evaluation.score.value"
-    ] == pytest.approx(0.6)
+    ] == pytest.approx(0.2)
+    assert "strategy_adherence_confidence" not in by_name
 
 
 async def test_each_concurrent_decision_is_evaluated(judge, capfire):
