@@ -156,7 +156,7 @@ class RuntimeConfig(WireModel):
 
 class DecisionBudget(WireModel):
     model_requests: Annotated[int, Field(strict=True, ge=1, le=20)] = 4
-    tool_calls: Annotated[int, Field(strict=True, ge=0, le=100)] = 12
+    tool_calls: Annotated[int, Field(strict=True, ge=0, le=100)] = 20
     total_tokens: Annotated[int, Field(strict=True, ge=1, le=100_000)] = 16_000
     timeout_seconds: Annotated[float, Field(gt=0, le=120, allow_inf_nan=False)] = 30
 
@@ -190,7 +190,7 @@ class _StopDecision(BaseException):
 class _CodeModeBudget(AbstractCapability[None]):
     """Count outer tool executions independently of SDK nested-call accounting."""
 
-    limit: int = 12
+    limit: int = 20
     calls: int = 0
 
     async def before_tool_execute(

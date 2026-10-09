@@ -223,18 +223,19 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
 
     assert record_in(run_dir).status == "completed" and len(seen) == 10
     assert {(b.model_requests, b.total_tokens, b.tool_calls, r.code_mode) for b, r in seen} == {
-        (8, 48_000, 30, False)
+        (8, 48_000, 20, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
     # Every decision is told the demo symbols' prices and affordable whole shares.
     assert quoted == [DEMO_SYMBOLS] * 10
     # ...and which trading day of the run it is.
     assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
-    # Only those three limits differ; the default every other launch uses is unchanged.
+    # Only those two limits differ; the default every other launch uses is unchanged.
     default = trading.DecisionBudget()
-    assert (default.model_requests, default.total_tokens, default.tool_calls) == (4, 16_000, 12)
-    defaults = {"model_requests": 4, "total_tokens": 16_000, "tool_calls": 12}
-    assert SUBMISSION_BUDGET.model_copy(update=defaults) == default
+    assert (default.model_requests, default.total_tokens, default.tool_calls) == (4, 16_000, 20)
+    assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4, "total_tokens": 16_000}) == (
+        default
+    )
 
 
 def test_a_submission_refreshes_and_resolves_one_role_for_all_decisions(
@@ -275,28 +276,33 @@ def test_three_concurrent_submissions_do_not_cross(
     markets, tmp_path, monkeypatch, capfire, online_evaluation
 ):
     if online_evaluation:
+        import httpx2
         from bazaar_agent import strategy_evaluation
-        from pydantic_ai.messages import ModelResponse, ToolCallPart
-        from pydantic_ai.models.function import FunctionModel
 
-        async def grade(messages, info):
+        async def grade(request):
             # Keep the last evaluation pending when the trading loop finishes.
             await asyncio.sleep(0.01)
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        info.output_tools[0].name,
-                        {
-                            "pass": True,
-                            "score": 1.0,
-                            "reason": "The fixture followed its strategy.",
-                        },
-                    )
-                ]
+            return httpx2.Response(
+                200,
+                json={
+                    "model": "jev-1.13.0",
+                    "answers": {"pass": {"type": "noul", "noul": 0.9}},
+                    "usage": {"input_tokens": 120, "output_tokens": 1},
+                },
             )
 
+        provider = strategy_evaluation.TypeSafeProvider
         monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-        monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+        monkeypatch.delenv("BAZAAR_JUDGE_MODEL", raising=False)
+        monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
+        monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", "https://gateway.test/proxy")
+        monkeypatch.setattr(
+            strategy_evaluation,
+            "TypeSafeProvider",
+            lambda **kwargs: provider(
+                **kwargs, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(grade))
+            ),
+        )
     ids = ["alpha", "bravo", "charlie"]
     for sid in ids:
         markets[f"http://{sid}"] = GrantingMarket()
