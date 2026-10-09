@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import httpx
+import pytest
 
 SCRIPTS = Path(__file__).parents[1]
 UNIVERSE = {"AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM"}
@@ -58,8 +59,14 @@ def batch_server(responses):
     return httpx.Client(transport=httpx.MockTransport(handler)), posts
 
 
-def test_house_batch_skips_a_taken_name_without_a_retry_wait(capsys):
-    taken = httpx.Response(409, json={"detail": "That name is taken."})
+@pytest.mark.parametrize(
+    "taken",
+    [
+        httpx.Response(409, json={"detail": "That name is taken."}),
+        httpx.Response(422, json={"detail": "that name is taken"}),  # what the web app sends
+    ],
+)
+def test_house_batch_skips_a_taken_name_without_a_retry_wait(capsys, taken):
     ok = httpx.Response(201, json={"id": "s2", "status": "queued", "position": 1})
     client, posts = batch_server([taken, ok])
     sleeps = Sleeps()
@@ -144,8 +151,8 @@ def test_feeder_skips_a_taken_name_instantly():
     assert board.sleeps == [3.0]  # no sleep at all for the skip, only pacing after the success
 
 
-def test_feeder_skips_a_name_is_taken_message_even_without_409():
-    board = Board(statuses=[httpx.Response(422, json={"detail": "That name is taken"})])
+def test_feeder_skips_the_web_apps_422_that_name_is_taken_instantly():
+    board = Board(statuses=[httpx.Response(422, json={"detail": "that name is taken"})])
 
     assert board.run(depth=100, limit=1) == 1
     assert board.sleeps == [3.0]

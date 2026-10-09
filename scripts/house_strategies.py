@@ -3,8 +3,9 @@
     uv run python scripts/house_strategies.py BASE_URL [--handle house] [--only N]
 
 BASE_URL can also come from the BASE_URL environment variable. Each strategy is submitted once
-under the house handle: a taken name (409) is skipped, 429 or 503 waits 60 seconds and retries,
-and any other error is printed as FAIL and skipped. Submissions are 2 seconds apart.
+under the house handle: a taken name (409, or the web app's 422 "that name is taken") is skipped,
+429 or 503 waits 60 seconds and retries, and any other error is printed as FAIL and skipped.
+Submissions are 2 seconds apart.
 """
 
 import argparse
@@ -75,7 +76,7 @@ def submit_all(
                 print(f"queued {name} {r.json().get('id')}", flush=True)
                 queued += 1
                 break
-            if r.status_code == 409:
+            if r.status_code == 409 or "name is taken" in r.text:  # the web app answers 422
                 print(f"skip {name}: name taken", flush=True)
                 break
             if r.status_code in (429, 503):
