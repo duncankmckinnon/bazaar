@@ -20,10 +20,11 @@ The three local paths, read by `modal_app.py` at deploy time and never committed
 Make the DB copy with `sqlite3 data/market.sqlite3 ".backup /path/to/market-seed.sqlite3"`, which is safe while a
 server has the database open.
 
-The Modal secret `bazaar-live`, which Anthony creates. Nobody prints its values. The deploy requires the first two keys:
+The Modal secret `bazaar-live`, which Anthony creates. Nobody prints its values. The deploy requires the first three keys:
 
 - `BAZAAR_RUNNER_TOKEN`
 - `PYDANTIC_AI_GATEWAY_API_KEY`
+- `LOGFIRE_API_KEY`, scoped to `project:read_variables` for `logfire/bazaar-demo`
 - `BAZAAR_ADMIN_TOKEN`
 - `LOGFIRE_TOKEN`
 - `PUBLIC_URL`, the Modal web endpoint URL. Add it after the first deploy prints the URL, then redeploy.

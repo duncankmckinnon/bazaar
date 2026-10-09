@@ -1,7 +1,9 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
@@ -234,6 +236,39 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
     assert SUBMISSION_BUDGET.model_copy(update={"model_requests": 4, "total_tokens": 16_000}) == (
         default
     )
+
+
+def test_a_submission_refreshes_and_resolves_one_role_for_all_decisions(
+    markets, tmp_path, monkeypatch
+):
+    variable = getattr(submission, "TRADING_ROLE_VARIABLE", None)
+    assert variable is not None
+    markets["http://m1"] = GrantingMarket()
+    refreshes, targets, roles = [], [], []
+    real = trading.run_decision
+
+    class Roles:
+        async def refresh(self, force=False):
+            refreshes.append(force)
+
+        @contextmanager
+        def get(self, targeting_key=None):
+            targets.append(targeting_key)
+            yield SimpleNamespace(value="Managed role version 7.")
+
+    async def spy(**kwargs):
+        roles.append(kwargs.get("trading_role"))
+        return await real(**kwargs)
+
+    monkeypatch.setattr(submission, "TRADING_ROLE_VARIABLE", Roles())
+    monkeypatch.setattr(trading, "run_decision", spy)
+
+    run_dir, _ = submit(tmp_path, "http://m1")
+
+    assert record_in(run_dir).status == "completed"
+    assert refreshes == [True]
+    assert targets == ["sub-1"]
+    assert roles == ["Managed role version 7."] * 10
 
 
 @pytest.mark.parametrize("online_evaluation", [False, True])

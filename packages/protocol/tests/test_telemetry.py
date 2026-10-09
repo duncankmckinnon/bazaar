@@ -17,6 +17,7 @@ from logfire._internal.scrubbing import Scrubber
 
 SENTINEL = "sentinel-runner-token-9a8b"
 GATEWAY_KEY = "sentinel-gateway-key-0f1e"
+VARIABLES_KEY = "sentinel-variables-key-6d2c"
 
 
 def scrub(value, key: str = "message"):
@@ -154,6 +155,12 @@ def test_secrets_are_read_from_the_environment_once(monkeypatch):
     assert redact("changed-later-value") == "changed-later-value"
 
 
+def test_managed_variable_api_key_is_redacted(monkeypatch):
+    monkeypatch.setattr(telemetry, "_secrets", None)
+    monkeypatch.setenv("LOGFIRE_API_KEY", VARIABLES_KEY)
+    assert redact(f"request failed with {VARIABLES_KEY}") == f"request failed with {REDACTED}"
+
+
 def test_a_context_hidden_by_from_none_is_not_recorded_so_the_type_is_kept(secrets):
     # A traceback never prints a suppressed context, so a cleaned error (like the market port's
     # redacted MarketError) keeps its type and message.
@@ -222,6 +229,26 @@ def test_configure_sets_the_shared_scrubbing(unconfigured):
     assert GLOBAL_CONFIG.scrubbing.callback is keep_trading_sessions
     assert GLOBAL_CONFIG.scrubbing.extra_patterns == list(EXTRA_SCRUB_PATTERNS)
     assert GLOBAL_CONFIG.service_version == "0.1.0"
+
+
+def test_managed_variables_use_a_short_bounded_timeout(unconfigured, monkeypatch):
+    monkeypatch.setenv("LOGFIRE_API_KEY", VARIABLES_KEY)
+    seen = {}
+    monkeypatch.setattr(logfire, "configure", lambda **kwargs: seen.update(kwargs))
+
+    assert telemetry.configure("bazaar-runner", managed_variables=True) is True
+
+    assert seen["variables"].timeout == (2, 2)
+
+
+def test_managed_variables_are_not_started_without_an_api_key(unconfigured, monkeypatch):
+    monkeypatch.delenv("LOGFIRE_API_KEY", raising=False)
+    seen = {}
+    monkeypatch.setattr(logfire, "configure", lambda **kwargs: seen.update(kwargs))
+
+    assert telemetry.configure("bazaar-runner", managed_variables=True) is True
+
+    assert "variables" not in seen
 
 
 def test_the_redacted_error_references_no_original_exception(secrets):

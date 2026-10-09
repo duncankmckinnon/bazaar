@@ -9,4 +9,4 @@ from bazaar_protocol import telemetry
 
 def configure_telemetry() -> None:
     # A no-op when the process is already configured, e.g. by the web app that runs submissions.
-    telemetry.configure("bazaar-runner")
+    telemetry.configure("bazaar-runner", managed_variables=True)

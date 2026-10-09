@@ -54,11 +54,15 @@ scrubbing) and never replaces a configuration that is already in place, whether 
 helper or from a direct `logfire.configure` call. So a submission run inside the web app keeps the
 web app's service name. Library code (`run_submission`, `record_run`, `run_demo`) never takes over
 a configured process: `run_submission` configures only a process nobody has configured.
+The web and standalone runner enable managed-variable reads only when `LOGFIRE_API_KEY` is present,
+using a two-second connect and read timeout. `LOGFIRE_TOKEN` remains responsible only for exporting
+telemetry.
 
 ## What is never sent
 
-The runner token, the Gateway key, the admin token and the Logfire token never enter the agent's
-messages or any span. Tests check this with sentinel values (`test_observability.py`).
+The runner token, the Gateway key, the admin token, the Logfire read API key and the Logfire write
+token never enter the agent's messages or any span. Tests check this with sentinel values
+(`test_observability.py`).
 
 Scrubbing (`bazaar_protocol.telemetry.scrubbing_options()`) keeps Logfire's default patterns and
 adds `runner[._ -]?token`, `admin[._ -]?token` and `x[._ -]?bazaar[._ -]?approval`, so the
@@ -70,9 +74,9 @@ session") is kept (`keep_trading_sessions`).
 Logfire's patterns match secret names, not secret values, and Logfire never scrubs
 `exception.message` or `exception.stacktrace`. So exception text is redacted before a span records
 it. `redact` replaces the values of `PYDANTIC_AI_GATEWAY_API_KEY`, `BAZAAR_RUNNER_TOKEN`,
-`BAZAAR_ADMIN_TOKEN` and `LOGFIRE_TOKEN` (read once, kept in memory), the runner token it was
-given, and any value written as `name=value` or `name: value` under a secret-like name, with
-`[REDACTED]`. In the runner:
+`BAZAAR_ADMIN_TOKEN`, `LOGFIRE_API_KEY` and `LOGFIRE_TOKEN` (read once, kept in memory), the runner
+token it was given, and any value written as `name=value` or `name: value` under a secret-like
+name, with `[REDACTED]`. In the runner:
 
 - every runner span (`runner.run`, `runner.decision`, `runner.mark`, `runner.order`,
   `runner.evaluate`) wraps its body in `redacted_exceptions()`: an error whose text, or printed

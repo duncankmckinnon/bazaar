@@ -22,5 +22,5 @@ EXCLUDED_URLS = (
 @cache
 def configure() -> None:
     """Configure Logfire once per process as bazaar-web, with the shared scrubbing (T0)."""
-    shared.configure(SERVICE_NAME)
+    shared.configure(SERVICE_NAME, managed_variables=True)
     logfire.instrument_system_metrics()
