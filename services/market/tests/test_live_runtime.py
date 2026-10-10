@@ -1,5 +1,6 @@
 """deploy/live_runtime.py, offline: seed data, the market subprocess, and volume commits."""
 
+import dataclasses
 import importlib.util
 import socket
 import sqlite3
@@ -424,3 +425,87 @@ def test_a_valid_seed_with_a_stray_dotfile_reseeds_without_it(tmp_path, caplog):
     assert listing(volume / "runs") == ["v2-a"]
     assert listing(volume / "runs" / "v2-a") == ["evaluation.json", "record.json"]
     assert "copied 1 seed runs" in caplog.text
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "live"])
+def test_the_default_target_is_live(value):
+    env = {} if value is None else {"BAZAAR_MODAL_TARGET": value}
+    target = rt.resolve_target(env)
+
+    assert (target.app, target.volume, target.secret) == (
+        "bazaar-live",
+        "bazaar-live-data",
+        "bazaar-live",
+    )
+    assert target.environment == "production"
+    assert dict(target.extra_env) == {}  # live keeps its caps from its secret or the defaults
+
+
+def test_the_staging_target_has_its_own_app_volume_and_secret():
+    target = rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+    assert (target.app, target.volume, target.secret) == (
+        "bazaar-staging",
+        "bazaar-staging-data",
+        "bazaar-staging",
+    )
+    assert target.environment == "staging"
+    assert dict(target.extra_env) == {
+        "BAZAAR_MAX_QUEUE": "1000",
+        "BAZAAR_MAX_SUBMISSIONS_PER_DAY": "1000",
+        "BAZAAR_MAX_PER_IP_PER_HOUR": "100",
+    }
+
+
+@pytest.mark.parametrize("value", ["prod", "Live", "STAGING", "bazaar-live", "staging2"])
+def test_an_unknown_target_is_refused(value):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_TARGET must be one of live, staging"):
+        rt.resolve_target({"BAZAAR_MODAL_TARGET": value})
+
+
+@pytest.mark.parametrize("field", ["app", "volume", "secret"])
+def test_staging_can_never_resolve_to_a_live_resource(monkeypatch, field):
+    staging = rt.TARGETS["staging"]
+    wrong = {"app": "bazaar-live", "volume": "bazaar-live-data", "secret": "bazaar-live"}[field]
+    monkeypatch.setitem(rt.TARGETS, "staging", dataclasses.replace(staging, **{field: wrong}))
+
+    with pytest.raises(ValueError, match="must not use a bazaar-live"):
+        rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+
+def test_modal_app_takes_every_live_name_from_the_target():
+    source = (Path(rt.__file__).parent / "modal_app.py").read_text()
+
+    assert '"bazaar-live' not in source
+    for name in (
+        "TARGET.app",
+        "TARGET.volume",
+        "TARGET.secret",
+        '"BAZAAR_ENVIRONMENT": TARGET.environment',
+        '"BAZAAR_MODAL_TARGET": TARGET.name',
+        "**TARGET.extra_env",
+    ):
+        assert name in source
+
+
+def test_resources_default_to_two_cores_and_4096_mib():
+    assert rt.resolve_resources({}) == (2.0, 4096)
+    assert rt.resolve_resources({"BAZAAR_MODAL_CPU": " ", "BAZAAR_MODAL_MEMORY": ""}) == (2.0, 4096)
+
+
+def test_resources_come_from_the_environment():
+    env = {"BAZAAR_MODAL_CPU": "3.5", "BAZAAR_MODAL_MEMORY": "8192"}
+
+    assert rt.resolve_resources(env) == (3.5, 8192)
+
+
+@pytest.mark.parametrize("cpu", ["two", "0", "-1", "nan", "inf"])
+def test_a_bad_cpu_value_is_refused(cpu):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_CPU"):
+        rt.resolve_resources({"BAZAAR_MODAL_CPU": cpu})
+
+
+@pytest.mark.parametrize("memory", ["4GiB", "4096.0", "0", "-1", "1e4"])
+def test_a_bad_memory_value_is_refused(memory):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_MEMORY"):
+        rt.resolve_resources({"BAZAAR_MODAL_MEMORY": memory})

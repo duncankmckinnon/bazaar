@@ -1,7 +1,8 @@
-# Live deploy on Modal
+# Live and staging deploys on Modal
 
-`deploy/modal_app.py` defines the Modal app `bazaar-live`. One container, with min and max 1, runs the market on
-`127.0.0.1:8000` as a subprocess and serves the web app (`bazaar_web.app:app`) on the public Modal URL.
+`deploy/modal_app.py` defines the Modal app `bazaar-live`, or `bazaar-staging` for load tests (see Staging). One
+container, with min and max 1, runs the market on `127.0.0.1:8000` as a subprocess and serves the web app
+(`bazaar_web.app:app`) on the public Modal URL.
 `deploy/live_runtime.py` holds the container logic and has no Modal import, so its tests run offline
 (`services/market/tests/test_live_runtime.py`).
 
@@ -158,6 +159,93 @@ back up:
 
    Then redeploy without `BAZAAR_RESEED_RUNS`. The `reseeded-<id>` marker stays, so that id never runs again.
 
+## Staging (load tests)
+
+`BAZAAR_MODAL_TARGET` picks what a deploy writes to. It is read by `modal_app.py` at deploy time and passed into the
+container, which resolves the same target again:
+
+| `BAZAAR_MODAL_TARGET` | App | Volume | Secret | `BAZAAR_ENVIRONMENT` |
+| --- | --- | --- | --- | --- |
+| unset or `live` | `bazaar-live` | `bazaar-live-data` | `bazaar-live` | `production` |
+| `staging` | `bazaar-staging` | `bazaar-staging-data` | `bazaar-staging` | `staging` |
+
+Any other value stops the deploy. The staging target can never resolve to a `bazaar-live` app, volume or secret
+(`live_runtime.resolve_target`). Staging also sets raised caps for load tests: `BAZAAR_MAX_QUEUE=1000`,
+`BAZAAR_MAX_SUBMISSIONS_PER_DAY=1000`, `BAZAAR_MAX_PER_IP_PER_HOUR=100`. Live sets no caps here and keeps the
+ones from its secret, or the web defaults.
+
+**Never point a load test at `bazaar-live`.**
+
+Both targets take the same deploy-time knobs:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BAZAAR_MODAL_CPU` | `2.0` | CPU cores requested for the container (Modal `cpu=`) |
+| `BAZAAR_MODAL_MEMORY` | `4096` | memory requested in MiB (Modal `memory=`) |
+| `BAZAAR_MAX_CONCURRENT` | unset | runs the web worker executes at once; unset, the web app keeps its default of 3 |
+
+A value that is not a positive number stops the deploy.
+
+### The `bazaar-staging` secret (Anthony)
+
+Only Anthony runs this; no seat does. It holds the same key names as `bazaar-live`:
+
+- `BAZAAR_RUNNER_TOKEN` and `BAZAAR_ADMIN_TOKEN`: fresh tokens, never the live ones
+- `PYDANTIC_AI_GATEWAY_API_KEY`, `LOGFIRE_API_KEY` and `LOGFIRE_TOKEN`: the same keys as live
+- `PUBLIC_URL`: the staging URL, added after the first staging deploy prints it
+
+The admin token goes to the load-test team only as a file with mode 600. These commands print no values:
+
+```sh
+mkdir -p ~/.config/bazaar
+env_file=~/.config/bazaar/staging-secret.env
+install -m 600 /dev/null "$env_file"
+install -m 600 /dev/null ~/.config/bazaar/staging-admin-token
+grep -E '^(export )?(PYDANTIC_AI_GATEWAY_API_KEY|LOGFIRE_API_KEY|LOGFIRE_TOKEN)=' \
+  ~/Work/pydantic/bazaar/.env > "$env_file"
+grep -cE '=' "$env_file"   # must print 3
+printf 'BAZAAR_RUNNER_TOKEN=%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$env_file"
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/bazaar/staging-admin-token
+printf 'BAZAAR_ADMIN_TOKEN=%s\n' "$(cat ~/.config/bazaar/staging-admin-token)" >> "$env_file"
+uvx --with python-dotenv modal secret create bazaar-staging --from-dotenv "$env_file"
+```
+
+`modal secret create` prints only the key names. `--from-dotenv` needs `python-dotenv`, which plain `uvx modal`
+does not have, hence `--with`. Share `~/.config/bazaar/staging-admin-token` with the load-test team as a mode-600
+file, never in chat. After the first staging deploy prints its URL, add it and recreate the secret:
+
+```sh
+printf 'PUBLIC_URL=%s\n' "https://...modal.run" >> ~/.config/bazaar/staging-secret.env
+uvx --with python-dotenv modal secret create --force bazaar-staging --from-dotenv ~/.config/bazaar/staging-secret.env
+```
+
+Then redeploy staging.
+
+### Deploy staging (PM only)
+
+Use staging's own seed copies, made the same way as live's. The staging volume starts empty and is seeded on first
+start exactly as live was (see What the container does):
+
+```sh
+BAZAAR_MODAL_TARGET=staging \
+BAZAAR_MAX_CONCURRENT=6 \
+BAZAAR_DEPLOY_MARKET_DB=/path/to/staging-market-seed.sqlite3 \
+BAZAAR_DEPLOY_RUNS=/path/to/staging-seed-runs \
+BAZAAR_DEPLOY_FONT=~/Work/pydantic/brand/fonts/DwightMedium.woff2 \
+  uvx modal deploy deploy/modal_app.py
+```
+
+Before each run, check that the printed URL and app name say `bazaar-staging`. To change `BAZAAR_MAX_CONCURRENT`
+between load-test levels, redeploy with the new value while staging's queue is empty.
+
+### Tear down
+
+```sh
+uvx modal app stop -y bazaar-staging
+uvx modal volume delete -y bazaar-staging-data   # optional: drops the staging runs and databases
+uvx modal secret delete -y bazaar-staging        # optional
+```
+
 ## Modal APIs used, checked against modal 1.6.1
 
 Signatures printed from the installed package with `inspect.signature`:
@@ -171,11 +259,16 @@ Signatures printed from the installed package with `inspect.signature`:
 - `Volume.from_name(name, *, environment_name=None, create_if_missing=False, ...)` and `Volume.commit()`
 - `Secret.from_name(name, *, environment_name=None, required_keys=[], ...)`
 - `App(name=None, *, tags=None, image=None, secrets=[], volumes={}, include_source=True)`
-- `App.cls(*, image, env, secrets, volumes, min_containers, max_containers, timeout=300, ...)`
+- `App.cls(*, image, env, secrets, volumes, cpu, memory, min_containers, max_containers, timeout=300, ...)`.
+  `cpu: float | tuple[float, float] | None` is fractional cores, and `memory: int | tuple[int, int] | None` is MiB.
+  The tuple form is (request, limit) with a hard limit; we pass the plain request. `env` is added as a secret, so
+  it is in the container's environment when `modal_app.py` is imported there.
 - `modal.enter(*, snap=False)`, `modal.exit()`, `modal.asgi_app(*, label=None, ...)`, `modal.concurrent(*, max_inputs=None, target_inputs=None)`
 - `modal.is_local()`: False only inside a running Modal Function, so the deploy-time paths are read only locally.
 - CLI, from `uvx modal ... --help`: `modal app stop [-y] APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
-  `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`.
+  `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`,
+  `modal volume delete [-y] NAME`, `modal secret create [--from-dotenv PATH] [--force] SECRET_NAME [KEYVALUES]...`,
+  `modal secret delete [-y] NAME`.
 
 `Image.uv_sync` is not used: modal 1.6.1 raises `uv workspaces are not supported` for a `pyproject.toml` with
 `[tool.uv.workspace]`, which ours has. The `run_commands` sync above does the same job.
