@@ -46,9 +46,10 @@ class ModalTarget:
 
 # Load tests submit far more than the conference caps allow.
 STAGING_CAPS = {
-    "BAZAAR_MAX_QUEUE": "1000",
+    "BAZAAR_MAX_QUEUE": "100",
     "BAZAAR_MAX_SUBMISSIONS_PER_DAY": "1000",
-    "BAZAAR_MAX_PER_IP_PER_HOUR": "100",
+    # One load-test IP submits everything, so a low per-IP cap would read as a throughput limit.
+    "BAZAAR_MAX_PER_IP_PER_HOUR": "1000",
 }
 TARGETS = {
     "live": ModalTarget("live", "bazaar-live", "bazaar-live-data", "bazaar-live", "production"),

@@ -170,8 +170,9 @@ container, which resolves the same target again:
 | `staging` | `bazaar-staging` | `bazaar-staging-data` | `bazaar-staging` | `staging` |
 
 Any other value stops the deploy. The staging target can never resolve to a `bazaar-live` app, volume or secret
-(`live_runtime.resolve_target`). Staging also sets raised caps for load tests: `BAZAAR_MAX_QUEUE=1000`,
-`BAZAAR_MAX_SUBMISSIONS_PER_DAY=1000`, `BAZAAR_MAX_PER_IP_PER_HOUR=100`. Live sets no caps here and keeps the
+(`live_runtime.resolve_target`). Staging also sets raised caps for load tests: `BAZAAR_MAX_QUEUE=100`,
+`BAZAAR_MAX_SUBMISSIONS_PER_DAY=1000`, `BAZAAR_MAX_PER_IP_PER_HOUR=1000`. A load test submits from one IP, so the
+per-IP cap must not be what limits it. Live sets no caps here and keeps the
 ones from its secret, or the web defaults.
 
 **Never point a load test at `bazaar-live`.**

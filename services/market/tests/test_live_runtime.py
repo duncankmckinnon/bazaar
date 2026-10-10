@@ -450,11 +450,6 @@ def test_the_staging_target_has_its_own_app_volume_and_secret():
         "bazaar-staging",
     )
     assert target.environment == "staging"
-    assert dict(target.extra_env) == {
-        "BAZAAR_MAX_QUEUE": "1000",
-        "BAZAAR_MAX_SUBMISSIONS_PER_DAY": "1000",
-        "BAZAAR_MAX_PER_IP_PER_HOUR": "100",
-    }
 
 
 @pytest.mark.parametrize("value", ["prod", "Live", "STAGING", "bazaar-live", "staging2"])
@@ -509,3 +504,19 @@ def test_a_bad_cpu_value_is_refused(cpu):
 def test_a_bad_memory_value_is_refused(memory):
     with pytest.raises(ValueError, match="BAZAAR_MODAL_MEMORY"):
         rt.resolve_resources({"BAZAAR_MODAL_MEMORY": memory})
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("BAZAAR_MAX_PER_IP_PER_HOUR", "1000"),
+        ("BAZAAR_MAX_SUBMISSIONS_PER_DAY", "1000"),
+        ("BAZAAR_MAX_QUEUE", "100"),
+    ],
+)
+def test_each_staging_cap_has_the_value_replay_specified(name, value):
+    staging = rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+    assert staging.extra_env[name] == value
+    assert len(staging.extra_env) == 3
+    assert name not in rt.resolve_target({}).extra_env
