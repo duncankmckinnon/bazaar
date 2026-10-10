@@ -69,7 +69,10 @@ def connect(database_path: Path, *, read_only: bool = False) -> sqlite3.Connecti
     """
     if read_only:
         connection = sqlite3.connect(
-            f"file:{database_path}?mode=ro", uri=True, timeout=30, check_same_thread=False
+            f"{Path(database_path).resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=30,
+            check_same_thread=False,
         )
     else:
         connection = sqlite3.connect(
