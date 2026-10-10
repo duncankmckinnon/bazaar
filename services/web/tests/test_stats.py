@@ -64,6 +64,22 @@ def test_six_runs_at_once_and_the_seventh_waits(settings, helpers):
     assert len(runner.calls) == 7
 
 
+def test_runs_beyond_the_default_executor_size_all_execute(settings, helpers, monkeypatch):
+    # With one CPU the loop's default executor has 5 threads; 8 runs must still all start.
+    monkeypatch.setattr("os.process_cpu_count", lambda: 1)
+    monkeypatch.setattr("os.cpu_count", lambda: 1)
+    runner = helpers.FakeRunner()
+    runner.gate.clear()
+    eight = dataclasses.replace(settings, max_concurrent=8, max_per_ip_hour=10)
+    with TestClient(create_app(eight, runner)) as client:
+        ids = [
+            client.post("/api/submissions", json=body(f"bot-{i}")).json()["id"] for i in range(8)
+        ]
+        helpers.wait_for(lambda: len(runner.calls) == 8)
+        runner.gate.set()
+        helpers.wait_for(lambda: all(status(client, i)["status"] == "scored" for i in ids))
+
+
 # ---------- /api/admin/stats ----------
 
 

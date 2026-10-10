@@ -40,6 +40,7 @@ def summarize(
     """The /api/admin/stats payload. rows come from Store.timings (no instructions or ip hash).
 
     in_flight counts every running submission, inside the window or not; the rest is windowed.
+    sqlite_lock_retries is the spec's name: it counts lock errors; the store never retries.
     Percentiles and runs per hour use the window's scored rows only.
     """
     window = [row for row in rows if in_window(row, since)]
