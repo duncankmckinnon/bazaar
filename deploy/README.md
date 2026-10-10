@@ -36,6 +36,7 @@ Without them the web app uses its defaults.
 ## Deploy (PM only)
 
 ```sh
+BAZAAR_MODAL_TARGET=live \
 BAZAAR_DEPLOY_MARKET_DB=/path/to/market-seed.sqlite3 \
 BAZAAR_DEPLOY_RUNS=/path/to/seed-runs \
 BAZAAR_DEPLOY_FONT=~/Work/pydantic/brand/fonts/DwightMedium.woff2 \
@@ -98,7 +99,8 @@ uvx modal app stop bazaar-live
 uvx modal volume rm bazaar-live-data /market.sqlite3
 uvx modal volume rm bazaar-live-data /market.sqlite3-wal   # if listed by: uvx modal volume ls bazaar-live-data
 uvx modal volume rm bazaar-live-data /market.sqlite3-shm   # likewise
-BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZAAR_DEPLOY_FONT=... uvx modal deploy deploy/modal_app.py
+BAZAAR_MODAL_TARGET=live BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZAAR_DEPLOY_FONT=... \
+  uvx modal deploy deploy/modal_app.py
 ```
 
 The startup log then says `freshly seeded from /app/seed/market.sqlite3`. For a new set of seed runs, use the
@@ -119,6 +121,7 @@ For the v2 switch: replace the board's runs with a new seed set, keeping the old
 4. Deploy with a new reseed id:
 
    ```sh
+   BAZAAR_MODAL_TARGET=live \
    BAZAAR_RESEED_RUNS=v2-2026-10-08 \
    BAZAAR_DEPLOY_RUNS=/path/to/new-seed-runs \
    BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_FONT=... \
@@ -166,10 +169,12 @@ container, which resolves the same target again:
 
 | `BAZAAR_MODAL_TARGET` | App | Volume | Secret | `BAZAAR_ENVIRONMENT` |
 | --- | --- | --- | --- | --- |
-| unset or `live` | `bazaar-live` | `bazaar-live-data` | `bazaar-live` | `production` |
+| `live` | `bazaar-live` | `bazaar-live-data` | `bazaar-live` | `production` |
 | `staging` | `bazaar-staging` | `bazaar-staging-data` | `bazaar-staging` | `staging` |
 
-Any other value stops the deploy. The staging target can never resolve to a `bazaar-live` app, volume or secret
+There is no default: unset, blank or any other value stops the deploy with
+`set BAZAAR_MODAL_TARGET=live or staging`, so every deploy command names its target. The deploy prints
+`deploying target=... app=... volume=... secret=...` before Modal starts; check it says what you meant. The staging target can never resolve to a `bazaar-live` app, volume or secret
 (`live_runtime.resolve_target`). Staging also sets raised caps for load tests: `BAZAAR_MAX_QUEUE=100`,
 `BAZAAR_MAX_SUBMISSIONS_PER_DAY=1000`, `BAZAAR_MAX_PER_IP_PER_HOUR=1000`. A load test submits from one IP, so the
 per-IP cap must not be what limits it. Live sets no caps here and keeps the
@@ -205,9 +210,15 @@ install -m 600 /dev/null ~/.config/bazaar/staging-admin-token
 grep -E '^(export )?(PYDANTIC_AI_GATEWAY_API_KEY|LOGFIRE_API_KEY|LOGFIRE_TOKEN)=' \
   ~/Work/pydantic/bazaar/.env > "$env_file"
 grep -cE '=' "$env_file"   # must print 3
-printf 'BAZAAR_RUNNER_TOKEN=%s\n' "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> "$env_file"
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/bazaar/staging-admin-token
-printf 'BAZAAR_ADMIN_TOKEN=%s\n' "$(cat ~/.config/bazaar/staging-admin-token)" >> "$env_file"
+python3 - "$env_file" ~/.config/bazaar/staging-admin-token <<'PY'
+import secrets, sys
+env_file, admin_file = sys.argv[1:]
+admin = secrets.token_urlsafe(32)
+with open(env_file, "a") as f:
+    f.write(f"BAZAAR_RUNNER_TOKEN={secrets.token_urlsafe(32)}\nBAZAAR_ADMIN_TOKEN={admin}\n")
+with open(admin_file, "w") as f:
+    f.write(admin + "\n")
+PY
 uvx --with python-dotenv modal secret create bazaar-staging --from-dotenv "$env_file"
 ```
 

@@ -427,10 +427,16 @@ def test_a_valid_seed_with_a_stray_dotfile_reseeds_without_it(tmp_path, caplog):
     assert "copied 1 seed runs" in caplog.text
 
 
-@pytest.mark.parametrize("value", [None, "", "  ", "live"])
-def test_the_default_target_is_live(value):
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_an_unset_or_blank_target_is_refused(value):
     env = {} if value is None else {"BAZAAR_MODAL_TARGET": value}
-    target = rt.resolve_target(env)
+
+    with pytest.raises(ValueError, match="set BAZAAR_MODAL_TARGET=live or staging"):
+        rt.resolve_target(env)
+
+
+def test_the_live_target_is_the_conference_app():
+    target = rt.resolve_target({"BAZAAR_MODAL_TARGET": "live"})
 
     assert (target.app, target.volume, target.secret) == (
         "bazaar-live",
@@ -519,4 +525,4 @@ def test_each_staging_cap_has_the_value_replay_specified(name, value):
 
     assert staging.extra_env[name] == value
     assert len(staging.extra_env) == 3
-    assert name not in rt.resolve_target({}).extra_env
+    assert name not in rt.resolve_target({"BAZAAR_MODAL_TARGET": "live"}).extra_env

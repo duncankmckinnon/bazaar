@@ -65,12 +65,15 @@ TARGETS = {
 
 
 def resolve_target(env: Mapping[str, str] = os.environ) -> ModalTarget:
-    """The deploy target from BAZAAR_MODAL_TARGET: "live" (the default) or "staging".
+    """The deploy target from BAZAAR_MODAL_TARGET: "live" or "staging", with no default.
 
-    Any other value raises. Only the live target may touch a bazaar-live app, volume or secret,
+    Unset, blank or any other value raises, so a staging deploy that loses the variable cannot
+    land on the conference app. Only the live target may touch a bazaar-live app, volume or secret,
     so a load test on staging can never write to the conference board or use its secret.
     """
-    name = env.get("BAZAAR_MODAL_TARGET", "").strip() or "live"
+    name = env.get("BAZAAR_MODAL_TARGET", "").strip()
+    if not name:
+        raise ValueError(f"set BAZAAR_MODAL_TARGET={' or '.join(TARGETS)}; there is no default")
     target = TARGETS.get(name)
     if target is None:
         raise ValueError(f"BAZAAR_MODAL_TARGET must be one of {', '.join(TARGETS)}, not {name!r}")
