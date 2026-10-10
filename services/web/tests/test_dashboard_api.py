@@ -135,12 +135,37 @@ def test_the_market_db_is_opened_read_only(tmp_path, monkeypatch):
     TickerSource(db, "demo-bundle-v1").payload()
 
     [(args, kwargs)] = opened
-    assert args[0].endswith("?mode=ro") and kwargs == {"uri": True}
+    assert args[0].endswith("?mode=ro") and kwargs == {"uri": True, "timeout": 30}
     with (
         real_connect(*args, **kwargs) as conn,
         pytest.raises(sqlite3.OperationalError, match="readonly"),
     ):
         conn.execute("DELETE FROM data_bars")
+
+
+@pytest.mark.parametrize("case", ["garbage", "empty"])
+def test_a_failing_read_still_closes_its_connection(tmp_path, monkeypatch, case):
+    path = tmp_path / "m.sqlite3"
+    if case == "garbage":
+        path.write_bytes(b"not a database at all")
+    else:
+        sqlite3.connect(path).close()  # no tables: the query fails
+    opened = []
+    real_connect = sqlite3.connect
+
+    def spy(*args, **kwargs):
+        opened.append(conn := real_connect(*args, **kwargs))
+        return conn
+
+    monkeypatch.setattr(bazaar_web.tickers.sqlite3, "connect", spy)
+    source = TickerSource(path, "demo-bundle-v1")
+    for _ in range(3):  # each failed poll opens one connection and closes it
+        assert source.payload()["days"] == []
+
+    assert len(opened) == 3
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
 
 
 def test_tickers_endpoint_and_no_spans(settings, helpers, tmp_path, capfire):

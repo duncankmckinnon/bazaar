@@ -6,6 +6,7 @@ fixed window, not live quotes, and they never change, so the first good read is 
 """
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -46,7 +47,8 @@ def pct_change(close: Decimal, previous: Decimal | None) -> float | None:
 
 def read_days(path: Path, data_version: str) -> list[dict[str, Any]]:
     uri = f"{path.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    # closing(): a bare "with connect()" commits but never closes, even on success.
+    with closing(sqlite3.connect(uri, uri=True, timeout=30)) as conn:
         version = bars_version(conn, data_version)
         marks = ", ".join("?" * len(SYMBOLS))
         before = datetime.combine(WINDOW_END + timedelta(days=1), datetime.min.time(), UTC)
@@ -55,7 +57,6 @@ def read_days(path: Path, data_version: str) -> list[dict[str, Any]]:
             f"AND symbol IN ({marks}) AND observed_at < ? ORDER BY symbol, observed_at",
             (version, *SYMBOLS, before.isoformat()),
         ).fetchall()
-    conn.close()
 
     by_day: dict[date, dict[str, dict[str, Any]]] = {}
     previous: dict[str, Decimal] = {}

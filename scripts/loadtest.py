@@ -37,7 +37,7 @@ SLUG = re.compile(r"^[a-z0-9-]{3,40}$")
 TERMINAL = ("scored", "failed")
 COLUMNS = [
     "level", "runs", "scored", "failed", "runs/hour", "run_s p50", "run_s p95",
-    "queue_wait p50", "queue_wait p95", "failures_by_class", "sqlite_lock_retries",
+    "queue_wait p50", "queue_wait p95", "failures_by_class", "sqlite_locked_errors",
     "decision latency (from Logfire)", "Gateway 429s (from Logfire)", "CPU/mem (from Modal)",
 ]  # fmt: skip
 
@@ -110,7 +110,7 @@ def table(level: int, runs: int, finals: dict[str, str], stats: dict[str, Any] |
     row = [
         level, runs, statuses.count("scored"), statuses.count("failed"), agg.get("runs_per_hour"),
         run_s.get("p50"), run_s.get("p95"), wait.get("p50"), wait.get("p95"),
-        agg.get("failures_by_class"), agg.get("sqlite_lock_retries"), None, None, None,
+        agg.get("failures_by_class"), agg.get("sqlite_locked_errors"), None, None, None,
     ]  # fmt: skip
     return "\n".join(
         [

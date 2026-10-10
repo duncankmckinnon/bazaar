@@ -25,7 +25,7 @@ STATS = {
         "failures_by_class": {"TimeoutError": 1},
         "in_flight": 0,
         "max_concurrent": 3,
-        "sqlite_lock_retries": 2,
+        "sqlite_locked_errors": 2,
     },
 }
 

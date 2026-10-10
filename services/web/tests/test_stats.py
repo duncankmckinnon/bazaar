@@ -158,7 +158,7 @@ def test_stats_math_on_known_timestamps(tmp_path):
     assert agg["failures_by_class"] == {"TimeoutError": 1}
     assert agg["count_by_status"] == {"scored": 4, "failed": 1, "queued": 1, "running": 1}
     assert agg["in_flight"] == 1
-    assert agg["sqlite_lock_retries"] == 4
+    assert agg["sqlite_locked_errors"] == 4
     assert agg["max_concurrent"] == 3
 
 
