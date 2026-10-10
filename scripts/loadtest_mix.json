@@ -1,0 +1,26 @@
+[
+  {
+    "label": "smoke-1",
+    "instructions": "PLACEHOLDER: the PM supplies the exact smoke-1 strategy text for the X1 load test."
+  },
+  {
+    "label": "smoke-2",
+    "instructions": "PLACEHOLDER: the PM supplies the exact smoke-2 strategy text for the X1 load test."
+  },
+  {
+    "label": "smoke-3",
+    "instructions": "PLACEHOLDER: the PM supplies the exact smoke-3 strategy text for the X1 load test."
+  },
+  {
+    "label": "ko-hype",
+    "instructions": "PLACEHOLDER: the PM supplies the exact ko-hype strategy text for the X1 load test."
+  },
+  {
+    "label": "momentum-hype",
+    "instructions": "PLACEHOLDER: the PM supplies the exact momentum-hype strategy text for the X1 load test."
+  },
+  {
+    "label": "trump-trading",
+    "instructions": "PLACEHOLDER: the PM supplies the exact trump-trading strategy text for the X1 load test."
+  }
+]
