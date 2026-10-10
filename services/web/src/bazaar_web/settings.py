@@ -10,6 +10,19 @@ SECRET_ENV_VARS = (
     "BAZAAR_ADMIN_TOKEN",
     "LOGFIRE_TOKEN",
 )
+MAX_CONCURRENT_RANGE = range(1, 33)
+
+
+def parse_max_concurrent(raw: str | None) -> int:
+    """BAZAAR_MAX_CONCURRENT: an int in 1..32, or 3 when unset."""
+    if raw is None:
+        return Settings.max_concurrent
+    try:
+        return int(raw.strip())
+    except ValueError:
+        raise ValueError(
+            f"BAZAAR_MAX_CONCURRENT must be an integer from 1 to 32, got {raw!r}"
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,15 @@ class Settings:
     max_concurrent: int = 3
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_concurrent, bool)
+            or not isinstance(self.max_concurrent, int)
+            or self.max_concurrent not in MAX_CONCURRENT_RANGE
+        ):
+            raise ValueError(
+                "BAZAAR_MAX_CONCURRENT must be an integer from 1 to 32, "
+                f"got {self.max_concurrent!r}"
+            )
         template = self.logfire_dashboard_url
         if template is None:
             return
@@ -66,4 +88,5 @@ class Settings:
             logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
             market_db=Path(env["BAZAAR_MARKET_DB"]) if env.get("BAZAAR_MARKET_DB") else None,
             ticker_data_version=env.get("BAZAAR_TICKER_DATA_VERSION") or "demo-bundle-v1",
+            max_concurrent=parse_max_concurrent(env.get("BAZAAR_MAX_CONCURRENT")),
         )

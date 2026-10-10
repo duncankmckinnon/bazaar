@@ -216,7 +216,9 @@ class Worker:
 
     def _fail(self, submission: dict[str, Any], error: str, exc: Exception) -> None:
         log.warning("submission %s failed: %s", submission["id"], self._redact(exc))
-        self.store.finish(submission["id"], run_dir=None, error=error)
+        self.store.finish(
+            submission["id"], run_dir=None, error=error, error_class=type(exc).__name__
+        )
         self.store.add_event(f"{submission['name']}'s run failed", submission["id"])
 
     async def _notify(self, submission_id: str, run_dir: Path) -> None:
