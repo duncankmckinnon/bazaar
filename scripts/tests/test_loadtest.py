@@ -1,7 +1,9 @@
 import importlib.util
 import io
 import json
-from datetime import UTC, datetime
+import os
+import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -82,18 +84,18 @@ def real_mix(tmp_path):
     return path
 
 
-def go(tmp_path, server, *extra, env=None, url=STAGING):
+def go(tmp_path, server, *extra, env=None, url=STAGING, mix=None):
     out, clock = io.StringIO(), Clock()
     client = httpx.Client(base_url=url, transport=httpx.MockTransport(server))
+    mix = ["--mix", str(real_mix(tmp_path))] if mix is None else mix
     code = loadtest.main(
-        ["--url", url, "--level", "3", "--mix", str(real_mix(tmp_path)),
-         "--out", str(tmp_path / "results"), *extra],
+        ["--url", url, "--level", "3", *mix, "--out", str(tmp_path / "results"), *extra],
         client=client,
         env={"BAZAAR_ADMIN_TOKEN": TOKEN} if env is None else env,
         out=out,
         sleep=clock.sleep,
         clock=clock.now,
-        utcnow=lambda: datetime(2026, 10, 10, 15, 0, tzinfo=UTC),
+        utcnow=lambda: datetime(2026, 10, 10, 15, 0, tzinfo=UTC) + timedelta(seconds=clock.t),
     )  # fmt: skip
     return code, out.getvalue(), clock
 
@@ -174,7 +176,7 @@ def test_go_needs_the_token_from_the_env_and_no_cli_flag_takes_it(tmp_path):
     server = Staging()
     code, out, _ = go(tmp_path, server, "--go", env={})
 
-    assert code == 2 and "BAZAAR_ADMIN_TOKEN is not set" in out
+    assert code == 2 and "no admin token" in out
     assert server.requests == []
     with pytest.raises(SystemExit):
         loadtest.parser().parse_args(["--url", STAGING, "--level", "3", "--token", "x"])
@@ -228,15 +230,22 @@ def test_the_results_table_and_json_from_a_canned_stats_response(tmp_path):
     assert code == 1  # one run failed
     md = (tmp_path / "results" / "3-20261010T150000Z.md").read_text()
     header, _, row = md.strip().splitlines()
-    assert header.startswith("| level | runs | scored | failed | runs/hour |")
+    assert header.startswith(
+        "| level | started_at | finished_at | runs | scored | failed | runs/hour |"
+    )
     assert "decision latency (from Logfire)" in header and "CPU/mem (from Modal)" in header
     assert row == (
-        "| 3 | 6 | 5 | 1 | 12.3 | 240.0 | 410.5 | 3.0 | 95.2 | TimeoutError 1 | 2 "
+        "| 3 | 2026-10-10T15:00:00+00:00 | 2026-10-10T15:00:05+00:00 "
+        "| 6 | 5 | 1 | 12.3 | 240.0 | 410.5 | 3.0 | 95.2 | TimeoutError 1 | 2 "
         "| n/a | n/a | n/a |"
     )
     assert row in out
     result = json.loads((tmp_path / "results" / "3-20261010T150000Z.json").read_text())
     assert result["stats"] == STATS
+    assert (result["started_at"], result["finished_at"]) == (
+        "2026-10-10T15:00:00+00:00",
+        "2026-10-10T15:00:05+00:00",  # one 5 s poll round
+    )
     assert [r["status"] for r in result["runs"]].count("failed") == 1
 
 
@@ -283,3 +292,143 @@ def test_the_real_client_stays_on_the_staging_host():
     with loadtest.staging_client(loadtest.staging_base(STAGING + "/x?y=1")) as client:
         assert client.follow_redirects is False
         assert str(client.base_url).rstrip("/") == STAGING  # path and query dropped
+
+
+# ---------- P2b: house feeder mix, token file, window ----------
+
+FEEDER = """
+import httpx  # like the real feeder; nothing here may be called but strategies()
+
+CALLED = []
+
+
+def strategies():
+    for i in range(1000):
+        yield f"house-{i}", f"House strategy number {i}: buy KO on day 1 and hold."
+
+
+def feed(*args, **kwargs):
+    raise AssertionError("feed() must never be called")
+
+
+def busy_count(*args, **kwargs):
+    raise AssertionError("busy_count() must never be called")
+"""
+
+
+def feeder(tmp_path, text=FEEDER):
+    path = tmp_path / "house_feeder.py"
+    path.write_text(text)
+    return path
+
+
+def test_the_house_feeder_mix_uses_instructions_only_with_our_names(tmp_path):
+    server = Staging()
+    path = feeder(tmp_path)
+    code, out, _ = go(tmp_path, server, "--go", mix=["--mix-from-house-feeder", str(path)])
+
+    assert code == 0
+    assert f"mix source: house feeder {path} (strategies(), instructions only)" in out
+    assert [p["instructions"] for p in server.posts] == [
+        f"House strategy number {i}: buy KO on day 1 and hold." for i in range(6)
+    ]
+    assert all(p["name"].startswith(f"lt-3-{i}-") for i, p in enumerate(server.posts))
+    # Only the web service was called: the feeder never posted anywhere itself.
+    assert {r.url.host for r in server.requests} == {httpx.URL(STAGING).host}
+
+
+def test_the_dry_run_names_the_mix_source(tmp_path):
+    _, out, _ = go(tmp_path, Staging(), mix=["--mix-from-house-feeder", str(feeder(tmp_path))])
+    assert "mix source: house feeder" in out and "house:house-5" in out
+    _, out, _ = go(tmp_path, Staging())
+    assert f"mix source: JSON {tmp_path / 'mix.json'}" in out
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        (None, "no such house feeder file"),
+        ("x = 1\n", "strategies() failed (AttributeError"),
+        ("def strategies():\n    return iter([])\n", "yielded nothing"),
+        ("def strategies():\n    yield 'only-a-name'\n", "string pairs"),
+        ("raise RuntimeError('boom')\n", "strategies() failed (RuntimeError: boom)"),
+    ],
+)
+def test_a_bad_house_feeder_is_refused(tmp_path, text, reason):
+    server = Staging()
+    path = tmp_path / "missing.py" if text is None else feeder(tmp_path, text)
+    code, out, _ = go(tmp_path, server, "--go", mix=["--mix-from-house-feeder", str(path)])
+
+    assert code == 2 and reason in out
+    assert server.requests == []
+
+
+def test_mix_and_house_feeder_are_mutually_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        loadtest.parser().parse_args(
+            ["--url", STAGING, "--level", "1", "--mix", "a.json", "--mix-from-house-feeder", "b.py"]
+        )
+
+
+def token_file(tmp_path, mode, text=f"  {TOKEN}\n"):
+    path = tmp_path / "admin-token"
+    path.write_text(text)
+    os.chmod(path, mode)
+    return path
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o660])
+def test_a_token_file_others_can_read_is_refused(tmp_path, mode):
+    server = Staging()
+    path = token_file(tmp_path, mode)
+    code, out, _ = go(tmp_path, server, "--go", "--admin-token-file", str(path), env={})
+
+    assert code == 2 and "readable by group or others" in out and "chmod 600" in out
+    assert TOKEN not in out
+    assert server.requests == []
+
+
+def test_a_0600_token_file_works_and_wins_over_the_env(tmp_path):
+    server = Staging()
+    path = token_file(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    env = {"BAZAAR_ADMIN_TOKEN": "env-token-should-lose"}
+    code, out, _ = go(tmp_path, server, "--go", "--admin-token-file", str(path), env=env)
+
+    assert code == 0  # Staging's stats handler asserts the header is TOKEN (stripped)
+    assert server.requests[-1].headers["X-Bazaar-Admin-Token"] == TOKEN
+    assert TOKEN not in out
+
+
+@pytest.mark.parametrize("case", ["missing", "empty", "directory"])
+def test_a_missing_or_empty_token_file_is_refused(tmp_path, case):
+    server = Staging()
+    path = {
+        "missing": tmp_path / "nope",
+        "empty": token_file(tmp_path, 0o600, text="  \n"),
+        "directory": tmp_path,
+    }[case]
+    if case == "directory":
+        os.chmod(path, 0o700)
+    code, out, _ = go(tmp_path, server, "--go", "--admin-token-file", str(path))
+
+    assert code == 2 and "admin token file" in out
+    assert server.requests == []
+
+
+def test_the_token_never_reaches_stdout_or_stderr(tmp_path, capsys):
+    good = token_file(tmp_path, 0o600)
+    loose = tmp_path / "loose"
+    loose.write_text(TOKEN)
+    os.chmod(loose, 0o644)
+    for path in (good, loose):
+        server = Staging(fail={"0"})
+        loadtest.main(
+            ["--url", STAGING, "--level", "1", "--mix", str(real_mix(tmp_path)), "--go",
+             "--admin-token-file", str(path), "--out", str(tmp_path / "r")],
+            client=httpx.Client(base_url=STAGING, transport=httpx.MockTransport(server)),
+            env={}, sleep=lambda s: None, clock=lambda: 0.0,
+        )  # fmt: skip
+
+    captured = capsys.readouterr()
+    assert "REFUSED" in captured.out and "posted" in captured.out  # both paths ran
+    assert TOKEN not in captured.out and TOKEN not in captured.err
