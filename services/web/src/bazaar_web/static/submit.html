@@ -39,13 +39,8 @@ a { color: var(--sugar); text-underline-offset: 3px; }
 .board-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; font: 500 14px/1 var(--mono); }
 h1 { font: 500 clamp(32px, 9vw, 44px)/1.02 var(--display); letter-spacing: -.02em; margin: 0 0 12px; }
 h2 { font: 500 24px/1.1 var(--display); margin: 0 0 8px; }
-.lede { color: var(--soft); margin: 0 0 12px; }
+.lede { color: var(--soft); margin: 0 0 24px; }
 .lede b { color: var(--sugar); font-weight: 600; }
-.tickers { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 24px; padding: 0; }
-.ticker {
-  font: 500 13px/1 var(--mono); color: var(--sugar); padding: 6px 9px; border-radius: 999px;
-  border: 1px solid var(--line); background: rgba(251,255,234,.06);
-}
 
 .field { margin-bottom: 22px; }
 label { display: block; font-weight: 600; margin-bottom: 6px; }
@@ -110,12 +105,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 
   <section id="form-view" aria-labelledby="form-title">
     <h1 id="form-title">Enter your trading agent</h1>
-    <p class="lede">Your agent sees prices, news and filings for <b>12 large US stocks</b> over <span id="window">10 recent trading days</span>, starting with <b>$10,000</b>.</p>
-    <ul class="tickers" aria-label="The 12 stocks">
-      <li class="ticker">AAPL</li><li class="ticker">AMZN</li><li class="ticker">EA</li><li class="ticker">FISV</li>
-      <li class="ticker">JNJ</li><li class="ticker">JPM</li><li class="ticker">KO</li><li class="ticker">META</li>
-      <li class="ticker">MSFT</li><li class="ticker">NVDA</li><li class="ticker">WMT</li><li class="ticker">XOM</li>
-    </ul>
+    <p class="lede">Your agent can trade any <b>S&amp;P 500 stock</b>, using prices, news and filings, over <span id="window">10 recent trading days</span>, starting with <b>$10,000</b>.</p>
 
     <form id="submit-form" method="post" novalidate>
       <p id="form-error" class="form-error" role="alert" hidden></p>
@@ -199,20 +189,19 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   var STORAGE_KEY = "bazaar.submission";
   var EXAMPLES = [
     {
-      title: "Momentum",
-      text: "Each morning, rank the 12 stocks by their return over the last five days. " +
-        "Hold the top three in equal amounts, and sell any holding that drops out of the top three."
+      title: "Sector momentum",
+      text: "Each morning, screen the Information Technology sector for the three biggest 5-day " +
+        "gainers and hold them in equal amounts. Sell any that drop out of the top three."
     },
     {
-      title: "Read the news",
-      text: "Read the news for all 12 stocks every morning. If a company has clearly good news, " +
-        "buy $1,500 of it. If it has clearly bad news, sell what you hold of it. " +
-        "Otherwise do nothing."
+      title: "Buy the dip",
+      text: "Each day, find the two Consumer Staples stocks that fell most yesterday and buy " +
+        "$1,000 of each. Sell a position once it is up 3%."
     },
     {
-      title: "Steady defensives",
-      text: "On the first day, split $9,000 evenly across JNJ, KO, WMT and XOM and hold them " +
-        "to the end. Keep the rest in cash."
+      title: "Index plus news",
+      text: "Put $7,000 into SPY on day 1 and hold it. With the rest, buy $1,000 of any S&P 500 " +
+        "stock with clearly good news, and sell it on clearly bad news."
     }
   ];
 

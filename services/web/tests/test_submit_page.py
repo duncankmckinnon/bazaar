@@ -214,29 +214,48 @@ def test_page_uses_the_board_background_and_no_low_contrast_text_colours():
     assert not re.search(r"(?<![-\w])color:\s*var\(--(?:calcium|lithium)\)", html)
 
 
-UNIVERSE = ("AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM")
+GICS_SECTORS = (
+    "Communication Services",
+    "Consumer Discretionary",
+    "Consumer Staples",
+    "Energy",
+    "Financials",
+    "Health Care",
+    "Industrials",
+    "Information Technology",
+    "Materials",
+    "Real Estate",
+    "Utilities",
+)
 
 
-def example_strings():
+def examples():
+    """Each example's title and text, joined."""
     block = re.search(r"var EXAMPLES = \[(.*?)\n  \];", page(), re.DOTALL).group(1)
-    return re.findall(r'"([^"]*)"', block)
+    return [" ".join(re.findall(r'"([^"]*)"', chunk)) for chunk in block.split("title:")[1:]]
 
 
-def test_lede_lists_the_twelve_tickers_as_alphabetical_chips():
+def test_lede_offers_the_s_and_p_500_without_ticker_chips():
     html = page()
-    chips = re.findall(r'<li class="ticker">([A-Z]+)</li>', html)
+    lede_html = re.search(r'<p class="lede">(.*?)</p>', html, re.DOTALL).group(1)
+    lede = re.sub(r"<[^>]+>", "", lede_html).replace("&amp;", "&")
 
-    assert chips == sorted(UNIVERSE)
-    assert "12 large US stocks" in html
-    assert "AAPL, MSFT and KO" not in html
+    assert lede.startswith(
+        "Your agent can trade any S&P 500 stock, using prices, news and filings, over "
+    )
+    assert 'class="ticker"' not in html and 'class="tickers"' not in html
+    assert ".ticker" not in html
+    assert "12 large US stocks" not in html
 
 
-def test_examples_name_only_tickers_in_the_universe():
-    words = re.findall(r"\b[A-Z]{1,5}\b", " ".join(example_strings()))
+def test_examples_work_by_sector_or_screen_and_name_only_spy():
+    found = examples()
 
-    assert words, "the examples should name some tickers"
-    assert set(words) <= set(UNIVERSE), set(words) - set(UNIVERSE)
-    assert len([s for s in example_strings() if len(s) > 40]) >= 3
+    assert len(found) == 3
+    for example in found:
+        assert any(name in example for name in (*GICS_SECTORS, "S&P 500")), example
+    words = re.findall(r"\b[A-Z]{1,5}\b", " ".join(found).replace("S&P 500", ""))
+    assert set(words) <= {"SPY"}, set(words) - {"SPY"}
 
 
 def input_tag(field_id):
