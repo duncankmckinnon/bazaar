@@ -19,6 +19,13 @@ from datetime import UTC, datetime
 
 import httpx
 
+# The web form requires contact details; operator scripts send this fixed, labelled one.
+OPERATOR_CONTACT = {
+    "email": "bazaar-ops@example.com",
+    "company": "Bazaar operators",
+    "role": "smoke test",
+}
+
 SLUG = re.compile(r"^[a-z0-9-]{3,40}$")
 INSTRUCTIONS = "Buy 10 shares of KO on the first trading day and hold to the end."
 FONT = "/fonts/DwightMedium.woff2"
@@ -115,7 +122,7 @@ def run(
             "submit",
             "POST",
             base_url + "/api/submissions",
-            json={"name": name, "handle": None, "instructions": INSTRUCTIONS},
+            json={"name": name, "handle": None, "instructions": INSTRUCTIONS, **OPERATOR_CONTACT},
         )
         if response.status_code != 201:
             raise SmokeFailure("submit", f"HTTP {response.status_code}: {_detail(response)}")

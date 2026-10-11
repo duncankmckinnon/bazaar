@@ -15,6 +15,13 @@ from collections.abc import Callable
 
 import httpx
 
+# The web form requires contact details; operator scripts send this fixed, labelled one.
+OPERATOR_CONTACT = {
+    "email": "bazaar-ops@example.com",
+    "company": "Bazaar operators",
+    "role": "house strategy",
+}
+
 RETRY_WAIT = 60.0
 PACING = 2.0
 
@@ -70,7 +77,12 @@ def submit_all(
         while True:
             r = client.post(
                 f"{base_url}/api/submissions",
-                json={"name": name, "handle": handle, "instructions": instructions},
+                json={
+                    "name": name,
+                    "handle": handle,
+                    "instructions": instructions,
+                    **OPERATOR_CONTACT,
+                },
             )
             if r.status_code in (200, 201, 202):
                 print(f"queued {name} {r.json().get('id')}", flush=True)

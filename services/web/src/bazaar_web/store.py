@@ -6,6 +6,7 @@ Each operation opens its own connection, so worker threads can report progress s
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -31,7 +32,12 @@ CREATE TABLE IF NOT EXISTS submissions (
     hidden INTEGER NOT NULL DEFAULT 0,
     latest_value TEXT,
     trace_context TEXT,
-    rerun_of TEXT
+    rerun_of TEXT,
+    -- Personal data, for contacting winners: kept in this database only, never shown publicly,
+    -- sent to the runner, traced or logged. Null on house runs and on rows from before them.
+    email TEXT,
+    company TEXT,
+    role TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -64,6 +70,18 @@ class StillInFlight(Exception):
 
 class Hidden(Exception):
     """Already rerun (its replacement is the live row) or hidden by moderation."""
+
+
+@dataclass(frozen=True)
+class Contact:
+    """A submitter's contact details. Personal data: see the email column."""
+
+    email: str | None = None
+    company: str | None = None
+    role: str | None = None
+
+    def __repr__(self) -> str:
+        return "Contact(...)"  # never print personal data, even in a traceback
 
 
 class CapReached(Exception):
@@ -111,7 +129,7 @@ class Store:
         """
         with self._tx() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(submissions)")}
-            for column in ("latest_value", "trace_context", "rerun_of"):
+            for column in ("latest_value", "trace_context", "rerun_of", "email", "company", "role"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
 
@@ -145,8 +163,10 @@ class Store:
         max_per_day: int,
         max_per_ip_hour: int,
         trace_context: str | None = None,
+        contact: Contact | None = None,
     ) -> str:
         """Insert a queued submission, checking the name and every cap in one transaction."""
+        contact = contact or Contact()
         now = self.now()
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         with self._tx() as conn:
@@ -176,7 +196,8 @@ class Store:
             submission_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, trace_context) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "created_at, trace_context, email, company, role) "
+                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
                 (
                     submission_id,
                     name,
@@ -185,6 +206,9 @@ class Store:
                     ip_hash,
                     now.isoformat(),
                     trace_context,
+                    contact.email,
+                    contact.company,
+                    contact.role,
                 ),
             )
             self._event(conn, f"{name} joined the queue", submission_id)
@@ -216,7 +240,8 @@ class Store:
             new_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, trace_context, rerun_of) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
+                "created_at, trace_context, rerun_of, email, company, role) "
+                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     old["name"],
@@ -226,6 +251,9 @@ class Store:
                     self._stamp(),
                     trace_context,
                     old_id,
+                    old["email"],  # the same person's run: their contact details carry over
+                    old["company"],
+                    old["role"],
                 ),
             )
             self._event(conn, f"{old['name']} re-queued", new_id)
@@ -340,6 +368,15 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM submissions WHERE status IN ('queued', 'running') AND hidden = 0 "
                 "ORDER BY rowid"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def contacts(self) -> list[dict[str, Any]]:
+        """Visible submissions that left contact details, oldest first (for the admin CSV)."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, name, handle, email, company, role, created_at FROM submissions "
+                "WHERE email IS NOT NULL AND hidden = 0 ORDER BY rowid"
             ).fetchall()
         return [dict(row) for row in rows]
 

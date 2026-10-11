@@ -9,7 +9,14 @@ from bazaar_web.store import Store
 from bazaar_web.worker import expected_run_dir
 from fastapi.testclient import TestClient
 
-VALID = {"name": "alice-bot", "handle": "@alice", "instructions": "Buy KO on dips, hold MSFT."}
+VALID = {
+    "name": "alice-bot",
+    "handle": "@alice",
+    "instructions": "Buy KO on dips, hold MSFT.",
+    "email": "alice@example.com",
+    "company": "Example Co",
+    "role": "Engineer",
+}
 
 
 def submit(client, ip="10.0.0.1", **body):
