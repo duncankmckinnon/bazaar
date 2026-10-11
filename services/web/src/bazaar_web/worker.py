@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -86,6 +87,9 @@ class Worker:
         self.on_scored = on_scored
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.tasks: list[asyncio.Task[None]] = []
+        # Runs get their own threads: the loop's default executor holds only
+        # min(32, cpus + 4), and runs past that would show "running" while they wait for one.
+        self.pool = ThreadPoolExecutor(settings.max_concurrent, thread_name_prefix="bazaar-run")
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -124,6 +128,7 @@ class Worker:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
     def enqueue(self, submission_id: str) -> None:
         """Safe from the threadpool that runs sync routes."""
@@ -191,7 +196,8 @@ class Worker:
                     )
 
         try:
-            run_dir = await asyncio.to_thread(in_thread)
+            # in_thread attaches the trace itself, so no context copy is needed (as to_thread does).
+            run_dir = await self.loop.run_in_executor(self.pool, in_thread)
         except Exception as exc:  # noqa: BLE001 - the runner raises on any failed run
             self._fail(submission, FAILED, exc)
             return
@@ -216,7 +222,9 @@ class Worker:
 
     def _fail(self, submission: dict[str, Any], error: str, exc: Exception) -> None:
         log.warning("submission %s failed: %s", submission["id"], self._redact(exc))
-        self.store.finish(submission["id"], run_dir=None, error=error)
+        self.store.finish(
+            submission["id"], run_dir=None, error=error, error_class=type(exc).__name__
+        )
         self.store.add_event(f"{submission['name']}'s run failed", submission["id"])
 
     async def _notify(self, submission_id: str, run_dir: Path) -> None:

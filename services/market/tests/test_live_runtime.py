@@ -1,5 +1,6 @@
 """deploy/live_runtime.py, offline: seed data, the market subprocess, and volume commits."""
 
+import dataclasses
 import importlib.util
 import socket
 import sqlite3
@@ -424,3 +425,116 @@ def test_a_valid_seed_with_a_stray_dotfile_reseeds_without_it(tmp_path, caplog):
     assert listing(volume / "runs") == ["v2-a"]
     assert listing(volume / "runs" / "v2-a") == ["evaluation.json", "record.json"]
     assert "copied 1 seed runs" in caplog.text
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_an_unset_or_blank_target_is_refused(value):
+    env = {} if value is None else {"BAZAAR_MODAL_TARGET": value}
+
+    with pytest.raises(ValueError, match="set BAZAAR_MODAL_TARGET=live or staging"):
+        rt.resolve_target(env)
+
+
+def test_the_live_target_is_the_conference_app():
+    target = rt.resolve_target({"BAZAAR_MODAL_TARGET": "live"})
+
+    assert (target.app, target.volume, target.secret) == (
+        "bazaar-live",
+        "bazaar-live-data",
+        "bazaar-live",
+    )
+    assert target.environment == "production"
+    assert dict(target.extra_env) == {}  # live keeps its caps from its secret or the defaults
+
+
+def test_the_staging_target_has_its_own_app_volume_and_secret():
+    target = rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+    assert (target.app, target.volume, target.secret) == (
+        "bazaar-staging",
+        "bazaar-staging-data",
+        "bazaar-staging",
+    )
+    assert target.environment == "staging"
+
+
+@pytest.mark.parametrize("value", ["prod", "Live", "STAGING", "bazaar-live", "staging2"])
+def test_an_unknown_target_is_refused(value):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_TARGET must be one of live, staging"):
+        rt.resolve_target({"BAZAAR_MODAL_TARGET": value})
+
+
+@pytest.mark.parametrize("field", ["app", "volume", "secret"])
+def test_staging_can_never_resolve_to_a_live_resource(monkeypatch, field):
+    staging = rt.TARGETS["staging"]
+    wrong = {"app": "bazaar-live", "volume": "bazaar-live-data", "secret": "bazaar-live"}[field]
+    monkeypatch.setitem(rt.TARGETS, "staging", dataclasses.replace(staging, **{field: wrong}))
+
+    with pytest.raises(ValueError, match="must not use a bazaar-live"):
+        rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+
+def test_modal_app_takes_every_live_name_from_the_target():
+    source = (Path(rt.__file__).parent / "modal_app.py").read_text()
+
+    assert '"bazaar-live' not in source
+    for name in (
+        "TARGET.app",
+        "TARGET.volume",
+        "TARGET.secret",
+        '"BAZAAR_ENVIRONMENT": TARGET.environment',
+        '"BAZAAR_MODAL_TARGET": TARGET.name',
+        "**TARGET.extra_env",
+    ):
+        assert name in source
+
+
+def test_resources_default_to_two_cores_and_4096_mib():
+    assert rt.resolve_resources({}) == (2.0, 4096)
+    assert rt.resolve_resources({"BAZAAR_MODAL_CPU": " ", "BAZAAR_MODAL_MEMORY": ""}) == (2.0, 4096)
+
+
+def test_resources_come_from_the_environment():
+    env = {"BAZAAR_MODAL_CPU": "3.5", "BAZAAR_MODAL_MEMORY": "8192"}
+
+    assert rt.resolve_resources(env) == (3.5, 8192)
+
+
+@pytest.mark.parametrize("cpu", ["two", "0", "-1", "nan", "inf"])
+def test_a_bad_cpu_value_is_refused(cpu):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_CPU"):
+        rt.resolve_resources({"BAZAAR_MODAL_CPU": cpu})
+
+
+@pytest.mark.parametrize("memory", ["4GiB", "4096.0", "0", "-1", "1e4"])
+def test_a_bad_memory_value_is_refused(memory):
+    with pytest.raises(ValueError, match="BAZAAR_MODAL_MEMORY"):
+        rt.resolve_resources({"BAZAAR_MODAL_MEMORY": memory})
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("BAZAAR_MAX_PER_IP_PER_HOUR", "1000"),
+        ("BAZAAR_MAX_SUBMISSIONS_PER_DAY", "1000"),
+        ("BAZAAR_MAX_QUEUE", "100"),
+    ],
+)
+def test_each_staging_cap_has_the_value_replay_specified(name, value):
+    staging = rt.resolve_target({"BAZAAR_MODAL_TARGET": "staging"})
+
+    assert staging.extra_env[name] == value
+    assert len(staging.extra_env) == 3
+    assert name not in rt.resolve_target({"BAZAAR_MODAL_TARGET": "live"}).extra_env
+
+
+def test_the_market_keeps_idle_connections_open_longer_than_clients_do(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda args, env: started.append(args))
+
+    rt.start_market(tmp_path / "market.sqlite3", port=8123, env={"BAZAAR_RUNNER_TOKEN": TOKEN})
+
+    [args] = started
+    assert args[args.index("--timeout-keep-alive") + 1] == "75"
+    assert rt.MARKET_KEEP_ALIVE > 5  # httpx's default keepalive_expiry
+    assert args[args.index("--port") + 1] == "8123"

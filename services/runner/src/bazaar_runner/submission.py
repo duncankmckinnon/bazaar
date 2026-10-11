@@ -29,7 +29,7 @@ from bazaar_agent.trading import TRADING_ROLE_VARIABLE, DecisionBudget, RuntimeC
 from bazaar_protocol.telemetry import redact
 
 from bazaar_runner.demo import DEMO_SYMBOLS, Launch, demo_spec
-from bazaar_runner.http_market import HttpMarketPort
+from bazaar_runner.http_market import HttpMarketPort, market_client
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import record_run
 from bazaar_runner.telemetry import configure_telemetry
@@ -191,8 +191,8 @@ async def _run(
     with TRADING_ROLE_VARIABLE.get(targeting_key=submission_id) as trading_role:
         async with (
             strategy_evaluation_session(),
-            httpx.AsyncClient(
-                base_url=market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
+            market_client(
+                market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
             ) as client,
         ):
             port = HttpMarketPort(client, experiment_id, approval_id, runner_token)

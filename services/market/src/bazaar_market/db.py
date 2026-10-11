@@ -5,6 +5,7 @@ the first read, so two writers can never both pass a balance check.
 """
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,8 @@ from pathlib import Path
 
 import logfire
 from bazaar_protocol import ErrorCode
+
+from bazaar_market.stats import STATS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS acct_experiments (
@@ -58,14 +61,28 @@ def parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def connect(database_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(
-        database_path, timeout=30, isolation_level=None, check_same_thread=False
-    )
+def connect(database_path: Path, *, read_only: bool = False) -> sqlite3.Connection:
+    """Every market connection: autocommit, rows by name, and the same 30 s wait for a lock.
+
+    `read_only` opens the file with mode=ro and leaves the journal mode alone (WAL persists
+    in the file once a writer has set it).
+    """
+    if read_only:
+        connection = sqlite3.connect(
+            f"{Path(database_path).resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=30,
+            check_same_thread=False,
+        )
+    else:
+        connection = sqlite3.connect(
+            database_path, timeout=30, isolation_level=None, check_same_thread=False
+        )
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 30000")
+    if not read_only:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
     return connection
 
 
@@ -123,7 +140,9 @@ def write_transaction(
 ) -> Iterator[sqlite3.Connection]:
     connection = connect(database_path)
     try:
+        started = time.perf_counter()
         connection.execute("BEGIN IMMEDIATE")
+        STATS.lock_wait((time.perf_counter() - started) * 1000)
         try:
             with _span("write", operation, connection) as traced:
                 yield traced

@@ -15,7 +15,7 @@ from uuid import UUID, uuid5
 import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext, OrderRequest, OrderResult
 
-from bazaar_runner.http_market import ACCOUNT_HEADER, APPROVAL_HEADER
+from bazaar_runner.http_market import ACCOUNT_HEADER, APPROVAL_HEADER, market_client
 from bazaar_runner.market import FiscalCycle, MarketPort
 from bazaar_runner.run import (
     AgentUsage,
@@ -91,8 +91,8 @@ class AgentStep(DecisionStep):
         cycles, read = await self._fiscal_cycles(ctx, market)
         attributes |= {"fiscal_cycles": len(cycles), "fiscal_cycles_read": read}
         try:
-            async with httpx.AsyncClient(
-                base_url=self._market_url,
+            async with market_client(
+                self._market_url,
                 headers=agent_headers(ctx),
                 timeout=self._timeout,
                 transport=self._transport,

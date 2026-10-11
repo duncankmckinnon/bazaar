@@ -25,6 +25,7 @@ from bazaar_market import (
     news_api,
     prices,
     prices_api,
+    stats,
 )
 from bazaar_market import (
     grants as grant_store,
@@ -93,7 +94,7 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         db.initialize(path, bundles.SCHEMA, grant_store.SCHEMA)
         ledger.initialize()
-        with closing(prices.sqlite3.connect(path)) as connection:
+        with closing(db.connect(path)) as connection:
             prices.ensure_schema(connection)
         with db.write_transaction(path) as connection:
             bundles.seed(connection)
@@ -127,6 +128,7 @@ def create_app(
     )
     ledger_api.install(app, ledger, grants, token)
     app.include_router(grant_store.build_router(recorded_grants, token))
+    app.include_router(stats.build_router(token))
     logfire.instrument_fastapi(
         app,
         capture_headers=False,
