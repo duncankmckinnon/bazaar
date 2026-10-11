@@ -87,6 +87,7 @@ def entry_row(
         "id": submission["id"] if submission else entry.run_id,
         "name": submission["name"] if submission else entry.policy_ref or entry.run_id,
         "handle": submission["handle"] if submission else None,
+        "lane": lane_of(submission),
         "kind": entry.kind or "agent",
         "status": status,
         "day": submission["day"] if submission else None,
@@ -97,6 +98,13 @@ def entry_row(
         "trace_id": entry.trace_id,
         "provisional": False,
     }
+
+
+def lane_of(submission: dict[str, Any] | None) -> str | None:
+    """'house' or 'human' for a submission's row; None for runs not submitted here (baselines)."""
+    if submission is None:
+        return None
+    return submission.get("lane") or "human"
 
 
 def provisional_return(submission: dict[str, Any], starting_cash: Decimal) -> float | None:
@@ -121,6 +129,7 @@ def submission_row(
         "id": submission["id"],
         "name": submission["name"],
         "handle": submission["handle"],
+        "lane": lane_of(submission),
         "kind": "agent",
         "status": submission["status"],
         "day": submission["day"],

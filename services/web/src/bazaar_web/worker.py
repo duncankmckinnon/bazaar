@@ -1,12 +1,18 @@
-"""In-process FIFO queue running submissions in threads, a few at a time."""
+"""Runs submissions in threads, in two lanes that never share slots.
+
+The human lane is a FIFO queue of attendee submissions on BAZAAR_MAX_CONCURRENT threads. The
+house lane has its own BAZAAR_HOUSE_CONCURRENT threads and keeps itself full with house
+strategies (bazaar_web.house) while it is enabled, not paused and under its hourly cap.
+"""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -17,6 +23,7 @@ from bazaar_replay.leaderboard import Run, load_run
 from opentelemetry import trace
 
 from bazaar_web.board import BoardSource, percent
+from bazaar_web.house import catalog
 from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
 
@@ -26,6 +33,17 @@ TRACER = trace.get_tracer("bazaar-web")
 
 FAILED = "the run failed; please try again"
 UNAVAILABLE = "runner unavailable"
+HOUSE_OFF = "the house lane is off"
+# How long an idle house slot (paused, capped or off) waits before it looks again; a resume
+# wakes it at once.
+HOUSE_IDLE_S = 5.0
+# Consecutive failed house runs back the whole lane off: 5 s, 10 s, 20 s ... up to 5 min; a
+# scored run resets it, and so does an admin resume. A failing market or runner must not become a
+# hot loop of failed rows and public "run failed" events: while backing off, house failures add
+# no wire event, and the HOUSE_FAIL_NOTICE-th failure in a row posts one notice instead.
+HOUSE_FAIL_BACKOFF_S = 5.0
+HOUSE_FAIL_BACKOFF_MAX_S = 300.0
+HOUSE_FAIL_NOTICE = 5
 
 
 class RunSubmission(Protocol):
@@ -90,13 +108,27 @@ class Worker:
         # Runs get their own threads: the loop's default executor holds only
         # min(32, cpus + 4), and runs past that would show "running" while they wait for one.
         self.pool = ThreadPoolExecutor(settings.max_concurrent, thread_name_prefix="bazaar-run")
+        # The house lane's own threads: a house run never takes a human slot, or the reverse.
+        self.house_slots = settings.house_concurrent if settings.house_enabled else 0
+        self.house_pool = (
+            ThreadPoolExecutor(self.house_slots, thread_name_prefix="bazaar-house")
+            if self.house_slots
+            else None
+        )
+        self.house_resume: list[str] = []  # house runs interrupted by a restart, run first
+        self.house_failures = 0  # consecutive failed house runs, lane-wide
+        self.house_backoff_until: datetime | None = None  # wall time, for the admin status
+        self._house_backoff_deadline = 0.0  # loop time
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
+        self.house_wake = asyncio.Event()
         await self._recover()
+        await self._recover_house()
         self.tasks = [
             asyncio.create_task(self._consume()) for _ in range(self.settings.max_concurrent)
         ]
+        self.tasks += [asyncio.create_task(self._house_slot()) for _ in range(self.house_slots)]
 
     async def _recover(self) -> None:
         """Pick up after a restart without paying for a run twice.
@@ -124,11 +156,97 @@ class Worker:
         for submission_id in restarted + waiting:
             self.queue.put_nowait(submission_id)
 
+    async def _recover_house(self) -> None:
+        """House runs cut off by a restart: score a finished one, else run it again in the house
+        lane (never among the humans). With the lane off, they end as failed."""
+        with logfire.suppress_instrumentation():
+            interrupted = self.store.ids_with_status("running", lane="house")
+            queued = self.store.ids_with_status("queued", lane="house")
+        for submission_id in interrupted + queued:
+            run_dir = expected_run_dir(self.settings.runs_dir, submission_id)
+            if finished(run_dir):
+                await self._scored(submission_id, run_dir)
+            elif self.house_pool is None:
+                self.store.finish(
+                    submission_id, run_dir=None, error=HOUSE_OFF, error_class="HouseLaneOff"
+                )
+            else:
+                self.store.requeue(submission_id)
+                self.house_resume.append(submission_id)
+
     async def stop(self) -> None:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.pool.shutdown(wait=False, cancel_futures=True)
+        if self.house_pool is not None:
+            self.house_pool.shutdown(wait=False, cancel_futures=True)
+
+    def wake_house(self) -> None:
+        """Safe from the threadpool that runs sync routes: idle house slots look again now. An
+        admin resume also ends a failure backoff (an explicit "try again")."""
+        self.loop.call_soon_threadsafe(self._reset_house_backoff)
+        self.loop.call_soon_threadsafe(self.house_wake.set)
+
+    def _reset_house_backoff(self) -> None:
+        self.house_failures = 0
+        self.house_backoff_until = None
+        self._house_backoff_deadline = 0.0
+
+    def _house_failed(self) -> None:
+        """Count a failed house run and push the lane's next start out."""
+        self.house_failures += 1
+        delay = min(HOUSE_FAIL_BACKOFF_S * 2 ** (self.house_failures - 1), HOUSE_FAIL_BACKOFF_MAX_S)
+        self._house_backoff_deadline = self.loop.time() + delay
+        self.house_backoff_until = self.store.now() + timedelta(seconds=delay)
+        log.warning("house run failed (%d in a row); next in %.0f s", self.house_failures, delay)
+        if self.house_failures == HOUSE_FAIL_NOTICE:
+            self.store.add_event(
+                f"house runs paused: runner failing; retrying in {delay:.0f}s", None
+            )
+
+    def _next_house(self) -> str | None:
+        """The next house run to start: an interrupted one first, else a new strategy."""
+        with logfire.suppress_instrumentation():
+            if self.store.house_state()["paused"]:
+                return None
+            if self.house_resume:
+                return self.house_resume.pop(0)
+            created = self.store.create_house(catalog(), self.settings.house_max_per_hour)
+        return created[0] if created else None
+
+    async def _house_wait(self, seconds: float) -> None:
+        """Sleep up to seconds; a resume (wake_house) ends it early."""
+        self.house_wake.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.house_wake.wait(), seconds)
+
+    async def _house_slot(self) -> None:
+        """One house slot: run house strategies back to back while they succeed; idle while
+        paused, capped or off, or while the lane backs off after failures."""
+        while True:
+            wait = self._house_backoff_deadline - self.loop.time()
+            if wait > 0:
+                await self._house_wait(wait)
+                continue
+            try:
+                submission_id = self._next_house()
+            except Exception:  # a store error must not end the slot
+                log.exception("house lane could not start a run")
+                submission_id = None
+            if submission_id is None:
+                await self._house_wait(HOUSE_IDLE_S)
+                continue
+            try:
+                await self._run(submission_id, self.house_pool)
+            except Exception:
+                log.exception("worker error on house submission %s", submission_id)
+            with logfire.suppress_instrumentation():
+                row = self.store.get(submission_id)
+            if row is not None and row["status"] == "scored":
+                self._reset_house_backoff()
+            else:
+                self._house_failed()
 
     def enqueue(self, submission_id: str) -> None:
         """Safe from the threadpool that runs sync routes."""
@@ -138,7 +256,7 @@ class Worker:
         while True:
             submission_id = await self.queue.get()
             try:
-                await self._run(submission_id)
+                await self._run(submission_id, self.pool)
             except Exception:
                 log.exception("worker error on submission %s", submission_id)
             finally:
@@ -149,16 +267,16 @@ class Worker:
             submission = self.store.get(submission_id)
         return carrier_of(submission) if submission else {}
 
-    async def _run(self, submission_id: str) -> None:
+    async def _run(self, submission_id: str, pool: ThreadPoolExecutor) -> None:
         with logfire.suppress_instrumentation():
             submission = self.store.get(submission_id)
         if submission is None or submission["status"] != "queued":
             return
         # Everything for this job, including its store writes, joins the submission's trace.
         with logfire.propagate.attach_context(carrier_of(submission)):
-            await self._run_submission(submission)
+            await self._run_submission(submission, pool)
 
-    async def _run_submission(self, submission: dict[str, Any]) -> None:
+    async def _run_submission(self, submission: dict[str, Any], pool: ThreadPoolExecutor) -> None:
         submission_id = submission["id"]
         name = submission["name"]
         self.store.mark_running(submission_id)
@@ -197,7 +315,7 @@ class Worker:
 
         try:
             # in_thread attaches the trace itself, so no context copy is needed (as to_thread does).
-            run_dir = await self.loop.run_in_executor(self.pool, in_thread)
+            run_dir = await self.loop.run_in_executor(pool, in_thread)
         except Exception as exc:  # noqa: BLE001 - the runner raises on any failed run
             self._fail(submission, FAILED, exc)
             return
@@ -225,6 +343,8 @@ class Worker:
         self.store.finish(
             submission["id"], run_dir=None, error=error, error_class=type(exc).__name__
         )
+        if submission.get("lane") == "house" and self.house_failures:
+            return  # backing off: the lane's one notice stands in for each failure
         self.store.add_event(f"{submission['name']}'s run failed", submission["id"])
 
     async def _notify(self, submission_id: str, run_dir: Path) -> None:

@@ -11,6 +11,31 @@ SECRET_ENV_VARS = (
     "LOGFIRE_TOKEN",
 )
 MAX_CONCURRENT_RANGE = range(1, 33)
+HOUSE_CONCURRENT_RANGE = range(17)
+TRUE, FALSE = {"1", "true", "yes", "on"}, {"0", "false", "no", "off", ""}
+
+
+def parse_int(name: str, raw: str | None, default: int | None, allowed: range) -> int | None:
+    """An int env var in the allowed range, or the default when unset. ValueError otherwise."""
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = None
+    if value is None or value not in allowed:
+        raise ValueError(
+            f"{name} must be an integer from {allowed[0]} to {allowed[-1]}, got {raw!r}"
+        )
+    return value
+
+
+def parse_flag(name: str, raw: str | None) -> bool:
+    """A boolean env var; unset or empty is off."""
+    value = (raw or "").strip().lower()
+    if value not in TRUE | FALSE:
+        raise ValueError(f"{name} must be one of 1/0, true/false, yes/no, on/off, got {raw!r}")
+    return value in TRUE
 
 
 def parse_max_concurrent(raw: str | None) -> int:
@@ -41,6 +66,10 @@ class Settings:
     market_db: Path | None = None  # read-only, for the ticker bar
     ticker_data_version: str = "demo-bundle-v1"
     max_concurrent: int = 3
+    # The house lane: its own slots, filled with house strategies while enabled and not paused.
+    house_enabled: bool = False
+    house_concurrent: int = 3
+    house_max_per_hour: int | None = None  # None: no limit
 
     def __post_init__(self) -> None:
         if (
@@ -52,6 +81,12 @@ class Settings:
                 "BAZAAR_MAX_CONCURRENT must be an integer from 1 to 32, "
                 f"got {self.max_concurrent!r}"
             )
+        if self.house_concurrent not in HOUSE_CONCURRENT_RANGE:
+            raise ValueError(
+                f"BAZAAR_HOUSE_CONCURRENT must be an integer from 0 to 16, got {self.house_concurrent!r}"
+            )
+        if self.house_max_per_hour is not None and self.house_max_per_hour < 1:
+            raise ValueError("BAZAAR_HOUSE_MAX_PER_HOUR must be at least 1 when set")
         template = self.logfire_dashboard_url
         if template is None:
             return
@@ -89,4 +124,17 @@ class Settings:
             market_db=Path(env["BAZAAR_MARKET_DB"]) if env.get("BAZAAR_MARKET_DB") else None,
             ticker_data_version=env.get("BAZAAR_TICKER_DATA_VERSION") or "demo-bundle-v1",
             max_concurrent=parse_max_concurrent(env.get("BAZAAR_MAX_CONCURRENT")),
+            house_enabled=parse_flag("BAZAAR_HOUSE_ENABLED", env.get("BAZAAR_HOUSE_ENABLED")),
+            house_concurrent=parse_int(
+                "BAZAAR_HOUSE_CONCURRENT",
+                env.get("BAZAAR_HOUSE_CONCURRENT"),
+                3,
+                HOUSE_CONCURRENT_RANGE,
+            ),
+            house_max_per_hour=parse_int(
+                "BAZAAR_HOUSE_MAX_PER_HOUR",
+                env.get("BAZAAR_HOUSE_MAX_PER_HOUR") or None,
+                None,
+                range(1, 100_001),
+            ),
         )

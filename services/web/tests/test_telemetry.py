@@ -162,6 +162,10 @@ def test_no_secret_reaches_any_span(seeded, helpers, capfire, monkeypatch):
         client.get("/api/admin/whoami", headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
         stats = client.get("/api/admin/stats", headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
         assert stats.status_code == 200 and "SENTINEL" not in stats.text
+        for path in ("/api/admin/house/pause", "/api/admin/house/resume"):
+            client.post(path, headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
+        house = client.get("/api/admin/house", headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
+        assert house.status_code == 200 and "SENTINEL" not in house.text
 
     dumped = json.dumps(spans(capfire), default=str)
     assert "SENTINEL" not in dumped
