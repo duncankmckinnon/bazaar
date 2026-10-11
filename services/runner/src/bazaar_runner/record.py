@@ -17,6 +17,7 @@ from pydantic import AwareDatetime, BaseModel, Field, model_validator
 from bazaar_runner.clock import build_schedule, schedule_digest
 from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import DecisionPolicy
+from bazaar_runner.role_source import active_role_source
 from bazaar_runner.run import (
     AgentUsage,
     DecisionError,
@@ -156,6 +157,9 @@ async def record_run(
     run_dir = runs_dir / str(spec.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     attributes = bazaar_attributes(spec, policy_ref, strategy_name, submission_id, handle)
+    # The source's name only, never the role text; on the span, not in baggage.
+    source = active_role_source()
+    role = {"bazaar.trading_role_source": source} if source else {}
     with (
         logfire.set_baggage(**attributes),
         logfire.span(
@@ -163,6 +167,7 @@ async def record_run(
             experiment_id=str(spec.experiment_id),
             policy_ref=policy_ref,
             **attributes,
+            **role,
         ) as span,
         redacted_exceptions(),
     ):

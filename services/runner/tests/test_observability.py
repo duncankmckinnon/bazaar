@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from .market_fakes import TOKEN
+from .market_fakes import BUNDLE, TOKEN
 from .test_submission import INSTRUCTIONS, GrantingMarket
 
 SENTINELS = {
@@ -599,7 +599,7 @@ def test_the_baggage_allow_list_is_exactly_the_strategy_attributes():
 
     spec = demo_spec(
         Launch("submission:x", submission_experiment_id("b-1"), submission_experiment_id("a")),
-        data_version="demo-bundle-v1",
+        bundle=BUNDLE,
         execution_rule_version="exec-v1",
         starting_cash=10000,
     )
@@ -664,8 +664,8 @@ def test_market_requests_carry_the_run_trace(monkeypatch, capfire, tmp_path):
         assert parent["attributes"].get("http.method") or parent["attributes"].get(
             "http.request.method"
         )
-        if path == "/control/grants":
-            continue  # bound before the run starts, so in a trace of its own
+        if path == "/control/grants" or path.startswith("/bundles/"):
+            continue  # read or bound before the run starts, so in a trace of their own
         assert int(trace_id, 16) == run["context"]["trace_id"]
         under |= {a["name"] for a in ancestors(parent, by_id)} & {
             "runner.decision",

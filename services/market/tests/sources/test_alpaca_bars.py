@@ -314,7 +314,10 @@ def test_another_feed_needs_its_own_data_version(tmp_path):
     with closing(sqlite3.connect(db)) as connection:
         import_bars_snapshot(connection, iex.dir, required={}, data_version="alpaca-bars-v1-iex")
 
-    assert SqliteMarketData(db, "alpaca-bars-v1-iex").price_source == "alpaca/iex/raw/alpaca-bars-v1-iex"
+    assert (
+        SqliteMarketData(db, "alpaca-bars-v1-iex").price_source
+        == "alpaca/iex/raw/alpaca-bars-v1-iex"
+    )
 
 
 def test_cli_import_bars_without_a_snapshot_prints_how_to_fetch_one(tmp_path, capsys):
@@ -363,3 +366,74 @@ def test_cli_errors_that_are_not_source_failures_keep_their_traceback(tmp_path):
 def test_cli_bars_without_keys_names_the_bars_command(tmp_path):
     with pytest.raises(SystemExit, match="^bars needs ALPACA_API_KEY.*sources bars$"):
         main(["bars", "--root", str(tmp_path)], env={})
+
+
+V2 = [date(2026, 9, 25), *(date(2026, 9, 28) + timedelta(days=n) for n in range(12))]
+V2 = [d for d in V2 if d.weekday() < 5]  # 2026-09-25 to 2026-10-09: 11 sessions
+
+
+def import_v2(tmp_path, pages, *flags):
+    snap = freeze(tmp_path, pages, start=V2[0], end=V2[-1])
+    return main(
+        ["import-bars", "--snapshot", str(snap.dir), "--db", str(tmp_path / "m.db"), *flags]
+    )
+
+
+REQUIRED = ["--required-from", "2026-09-25", "--required-to", "2026-10-09"]
+
+
+def test_cli_import_bars_checks_a_given_window_for_the_given_symbols(tmp_path, capsys):
+    pages = {t: [payload(t, V2)] for t in ("AAPL", "KO", "EA")}
+
+    code = import_v2(tmp_path, pages, "--symbols", "AAPL,KO", *REQUIRED)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "every weekday 2026-09-25 to 2026-10-09 present for AAPL, KO" in out
+    assert "left out, not imported: EA" in out
+
+
+def test_cli_import_bars_refuses_a_ticker_that_stops_before_the_window_ends(tmp_path, capsys):
+    # A gap between a ticker's first and last bar fails anyway; a missing last session does not.
+    gap = [d for d in V2 if d != date(2026, 10, 9)]
+    pages = {"AAPL": [payload("AAPL", V2)], "KO": [payload("KO", gap)]}
+
+    code = import_v2(tmp_path, pages, "--symbols", "AAPL,KO", *REQUIRED)
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "KO" in err and "2026-10-09" in err
+    with closing(sqlite3.connect(tmp_path / "m.db")) as connection:
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master")}
+        assert (
+            "data_bars" not in tables
+            or not connection.execute("SELECT COUNT(*) FROM data_bars").fetchone()[0]
+        )
+
+
+def test_required_symbols_can_differ_from_the_imported_symbols(tmp_path, capsys):
+    pages = {"AAPL": [payload("AAPL", V2)], "KO": [payload("KO", V2[:3])]}
+
+    code = import_v2(
+        tmp_path, pages, "--symbols", "AAPL,KO", "--required-symbols", "AAPL", *REQUIRED
+    )
+
+    assert code == 0
+    assert "present for AAPL\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--required-from", "2026-09-25"],
+        ["--required-to", "2026-10-09"],
+        ["--required-from", "2026-10-09", "--required-to", "2026-09-25", "--symbols", "KO"],
+        ["--required-symbols", "KO"],
+        REQUIRED,  # no symbols to apply it to
+    ],
+)
+def test_incomplete_required_flags_are_refused(tmp_path, capsys, flags):
+    code = import_v2(tmp_path, {"KO": [payload("KO", V2)]}, *flags)
+
+    assert code == 1
+    assert "--required" in capsys.readouterr().err

@@ -8,7 +8,7 @@ account's orders from the market to learn what actually settled.
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import NamedTuple
 from uuid import UUID, uuid5
 
@@ -41,9 +41,11 @@ class AgentDecision(NamedTuple):
     usage: AgentUsage | None = None
 
 
-# (ctx, account, the agent's client, the reserved client_order_id, fiscal cycles as of ctx).
+# One symbol's fiscal cycle as of the decision's cutoff, or None (none, or the read failed).
+CycleReader = Callable[[str], Awaitable[FiscalCycle | None]]
+# (ctx, account, the agent's client, the reserved client_order_id, a cycle reader or None).
 DecideWithAgent = Callable[
-    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, UUID, tuple[FiscalCycle, ...]],
+    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, UUID, CycleReader | None],
     Awaitable[AgentDecision],
 ]
 
@@ -58,19 +60,57 @@ def agent_headers(ctx: ExperimentContext) -> dict[str, str]:
     return {APPROVAL_HEADER: str(ctx.approval_id), ACCOUNT_HEADER: str(ctx.account_id)}
 
 
+class _CycleReads:
+    """The decision's fiscal-cycle reads: one symbol at a time, only when the agent asks for that
+    symbol's filings, at this decision's cutoff (so never past it). The market caps a cycles
+    request at 50 symbols; one symbol per read never comes near it. Failures are counted for the
+    decision span: missing cycles make filings unsupported, never a failed decision."""
+
+    def __init__(self, ctx: ExperimentContext, market: MarketPort) -> None:
+        self._ctx, self._market = ctx, market
+        self.found = self.absent = self.failed = 0
+
+    async def __call__(self, symbol: str) -> FiscalCycle | None:
+        try:
+            cycles = await self._market.fiscal_cycles(self._ctx, (symbol,))
+        except Exception as exc:  # noqa: BLE001 - never invent dates; record and go on
+            self.failed += 1
+            logger.warning(
+                "fiscal cycle for %s unavailable at %s: %s",
+                symbol,
+                self._ctx.simulated_at,
+                type(exc).__name__,
+            )
+            return None
+        cycle = next((c for c in cycles if c.symbol == symbol), None)
+        if cycle is None:
+            self.absent += 1
+        else:
+            self.found += 1
+        return cycle
+
+
+def _cycle_attributes(cycles: _CycleReads | None) -> dict[str, str | int]:
+    if cycles is None:
+        return {"fiscal_cycles": "off"}
+    return {
+        "fiscal_cycles_found": cycles.found,
+        "fiscal_cycles_absent": cycles.absent,
+        "fiscal_cycles_failed": cycles.failed,
+    }
+
+
 class AgentStep(DecisionStep):
     def __init__(
         self,
         decide: DecideWithAgent,
         *,
         market_url: str,
-        symbols: Sequence[str] = (),
         read_fiscal_cycles: bool = True,
         timeout: float = AGENT_TIMEOUT_SECONDS,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._decide = decide
-        self._symbols = tuple(symbols)
         self._read_fiscal_cycles = read_fiscal_cycles
         self._market_url = market_url
         self._timeout = timeout
@@ -88,8 +128,7 @@ class AgentStep(DecisionStep):
             "agent": True,
             "client_order_id": str(reserved),
         }
-        cycles, read = await self._fiscal_cycles(ctx, market)
-        attributes |= {"fiscal_cycles": len(cycles), "fiscal_cycles_read": read}
+        cycles = _CycleReads(ctx, market) if self._read_fiscal_cycles else None
         try:
             async with market_client(
                 self._market_url,
@@ -98,6 +137,7 @@ class AgentStep(DecisionStep):
                 transport=self._transport,
             ) as client:
                 outcome = await self._decide(ctx, account, client, reserved, cycles)
+                attributes |= _cycle_attributes(cycles)
         except asyncio.CancelledError:
             # Record what settled before propagating; the cancellation always wins.
             try:
@@ -110,6 +150,7 @@ class AgentStep(DecisionStep):
             raise
         except Exception as exc:  # noqa: BLE001 - an agent failure is reconciled, not trusted
             outcome = AgentDecision(None, None, f"the agent decision raised {type(exc).__name__}")
+            attributes |= _cycle_attributes(cycles)
         result = outcome.order_result
         if outcome.error is None and result is not None and result.client_order_id != reserved:
             outcome = outcome._replace(error="the agent reported an order under another id")
@@ -145,20 +186,6 @@ class AgentStep(DecisionStep):
         return StepOutcome(
             error=error, usage=usage, attributes=attributes | {"reconcile": reconciled}
         )
-
-    async def _fiscal_cycles(
-        self, ctx: ExperimentContext, market: MarketPort
-    ) -> tuple[tuple[FiscalCycle, ...], str]:
-        """As of this decision's cutoff. Missing cycles make filings unsupported, not a failure."""
-        if not self._read_fiscal_cycles or not self._symbols:
-            return (), "off"
-        try:
-            return await market.fiscal_cycles(ctx, self._symbols), "ok"
-        except Exception as exc:  # noqa: BLE001 - run on without cycles; never invent dates
-            logger.warning(
-                "fiscal cycles unavailable at %s: %s", ctx.simulated_at, type(exc).__name__
-            )
-            return (), "failed"
 
     async def _find(
         self, ctx: ExperimentContext, market: MarketPort, reserved: UUID

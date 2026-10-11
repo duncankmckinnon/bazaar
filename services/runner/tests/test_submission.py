@@ -13,7 +13,7 @@ from bazaar_protocol import ApiError, ErrorCode, ErrorDetail
 from bazaar_replay.leaderboard import Run, load_board, load_run
 from bazaar_runner import submission
 from bazaar_runner.agent import fixture_model_factory
-from bazaar_runner.demo import DEMO_SYMBOLS
+from bazaar_runner.bundle import DEMO_BUNDLE
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import RunRecord
@@ -25,7 +25,14 @@ from bazaar_runner.submission import (
     submission_experiment_id,
 )
 
-from .market_fakes import TOKEN, InMemoryMarket, delegating_transport
+from .market_fakes import (
+    SYMBOLS,
+    TOKEN,
+    InMemoryMarket,
+    bundle_body,
+    bundle_response,
+    delegating_transport,
+)
 
 INSTRUCTIONS = "Read the news once, buy ten AAPL at the first open, then hold."
 
@@ -48,6 +55,8 @@ class GrantingMarket:
     def transport(self) -> httpx.MockTransport:
         async def handle(request: httpx.Request) -> httpx.Response:
             self.paths.append(request.url.path)
+            if request.url.path.startswith("/bundles/"):
+                return bundle_response(self.fake, request)
             if request.url.path == "/control/grants":
                 if request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
                     return api_error(401, ErrorCode.UNAUTHORIZED, "runner token required")
@@ -116,7 +125,7 @@ def test_a_submission_runs_scores_and_reaches_the_board(markets, tmp_path):
     assert record.submission_id == "sub-1"
     assert record.manifest.policy_ref == "submission:momo"
     assert record.manifest.experiment_id == submission_experiment_id("sub-1")
-    assert record.manifest.data_version == "demo-bundle-v1"
+    assert record.manifest.data_version == "demo-bundle-v2"
     assert record.manifest.execution_rule_version == "exec-v1"
     assert record.manifest.starting_cash == 10000
     (order,) = record.orders
@@ -205,12 +214,12 @@ def test_the_runner_token_never_reaches_the_files(markets, tmp_path):
 
 def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, monkeypatch):
     markets["http://m1"] = GrantingMarket()
-    seen, quoted, days = [], [], []
+    seen, summarized, days = [], [], []
     real = trading.run_decision
 
     async def spy(**kwargs):
         seen.append((kwargs["budget"], kwargs["runtime"]))
-        quoted.append(kwargs["quote_symbols"])
+        summarized.append(kwargs["market_summary"] and "quote_symbols" not in kwargs)
         days.append(kwargs["trading_day"])
         return await real(**kwargs)
 
@@ -226,8 +235,12 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
         (8, 48_000, 20, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
-    # Every decision is told the demo symbols' prices and affordable whole shares.
-    assert quoted == [DEMO_SYMBOLS] * 10
+    # Every decision gets the market summary, never a per-symbol quote block.
+    assert summarized == [True] * 10
+    reads = [c[1] for c in markets["http://m1"].fake.calls if c[0] == "market"]
+    # Each decision: sectors, top gainers, top losers, plus one quotes read once it holds AAPL.
+    assert reads.count("sectors") == 10 and reads.count("screen") == 20
+    assert reads.count("quotes") == 9
     # ...and which trading day of the run it is.
     assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
     # Only those two limits differ; the default every other launch uses is unchanged.
@@ -418,3 +431,52 @@ def test_keyword_only_value_is_not_passed_positionally():
 
     _progress_reporter(keyword_value)(3, 7)
     assert seen == [(3, None)]
+
+
+def test_a_502_symbol_universe_never_asks_for_more_than_50_cycles(markets, tmp_path):
+    """The market caps GET fiscal-cycles at 50 symbols (422 above). Cycles are read lazily, one
+    symbol per filings read, so an S&P 500 sized universe never comes near the cap."""
+    market = GrantingMarket()
+    universe = (*SYMBOLS, *(f"S{i:03d}" for i in range(502 - len(SYMBOLS))))
+    market.fake.bundles[DEMO_BUNDLE] = bundle_body(DEMO_BUNDLE, symbols=universe)
+    markets["http://m1"] = market
+    run_dir, _ = submit(tmp_path, "http://m1")
+
+    assert record_in(run_dir).status == "completed"
+    asked = [c[2] for c in market.fake.calls if c[0] == "fiscal_cycles"]
+    # No eager universe read at all; the fixture agent reads no filings, so nothing is asked.
+    assert asked == []
+
+
+def test_an_incomplete_bundle_stops_the_submission_before_the_grant(markets, tmp_path):
+    market = GrantingMarket()
+    market.fake.bundles[DEMO_BUNDLE] = bundle_body(
+        DEMO_BUNDLE, incomplete=[(date(2026, 2, 4), ("EA",))]
+    )
+    markets["http://m1"] = market
+    with pytest.raises(SubmissionFailed, match="the demo data is not ready: .*2026-02-04 lacks EA"):
+        submit(tmp_path, "http://m1")
+    assert market.paths == [f"/bundles/{DEMO_BUNDLE}"] and market.grants == {}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_operator_env_picks_the_submission_bundle(markets, tmp_path, monkeypatch):
+    market = GrantingMarket()
+    market.fake.bundles["demo-bundle-x"] = bundle_body("demo-bundle-x")
+    markets["http://m1"] = market
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "demo-bundle-x")
+    run_dir, _ = submit(tmp_path, "http://m1")
+    assert record_in(run_dir).manifest.data_version == "demo-bundle-x"
+    assert market.paths[0] == "/bundles/demo-bundle-x"
+
+
+def test_a_malformed_operator_bundle_fails_before_any_side_effect(markets, tmp_path, monkeypatch):
+    market = GrantingMarket()
+    markets["http://m1"] = market
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "v2?x=1")
+    configured = []
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: configured.append(1))
+    with pytest.raises(SubmissionFailed, match="not a bundle id") as caught:
+        submit(tmp_path, "http://m1")
+    assert "v2?x=1" not in str(caught.value)
+    assert market.paths == [] and configured == [] and list(tmp_path.iterdir()) == []

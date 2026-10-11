@@ -17,10 +17,12 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from functools import partial
 from pathlib import Path
 
 from ..archive import html_to_text, truncate
 from ..filings import FILINGS_VERSION, TEXT_LIMIT, ExcludedFiling, FilingRecord, import_filings
+from .edgar import CUTOFF_FORMS, visible_at
 from .errors import SourceError
 from .models import Fact, Filing
 from .read import load_document, load_facts, load_filings
@@ -91,6 +93,25 @@ def document_window(documents_since: date, until: date) -> tuple[datetime, datet
     )
 
 
+def _label_checked(filing: Filing, window: tuple[datetime, datetime]) -> bool:
+    """Every 10-K, 10-Q and 8-K accepted inside the document window, served or not.
+
+    An early acceptance label can only be proven on a filing accepted after 17:30 Eastern, so a
+    proven one is evidence about the filer: its other labels, including the served ones accepted
+    earlier in the day, may be early too. After-hours 8-Ks are the best detector, so they are
+    checked even though they are never served. Filings accepted outside the window are not
+    checked, so a mislabel from years before (2014, in the S&P 500 snapshot) cannot stop it.
+    """
+    in_form = filing.form.removesuffix("/A") in CUTOFF_FORMS
+    return in_form and window[0] <= filing.accepted_at <= window[1]
+
+
+def _considered(filing: Filing, window: tuple[datetime, datetime]) -> bool:
+    """A 10-K or 10-Q accepted inside the document window: the filings this import can serve."""
+    in_form = filing.form.removesuffix("/A") in PERIOD_DAYS
+    return in_form and window[0] <= filing.accepted_at <= window[1]
+
+
 def import_filings_snapshot(
     connection: sqlite3.Connection,
     snapshot_dir: Path,
@@ -114,10 +135,12 @@ def import_filings_snapshot(
             facts_by_accession[fact.accession].append(fact)
         served = truncated = outside_window = 0
         excluded: list[Excluded] = []
-        for filing in load_filings(snapshot_dir, cik):
+        for filing in load_filings(
+            snapshot_dir, cik, checked=partial(_label_checked, window=window)
+        ):
             if filing.form.removesuffix("/A") not in PERIOD_DAYS:
                 continue
-            if not window[0] <= filing.accepted_at <= window[1]:
+            if not _considered(filing, window):
                 outside_window += 1
                 continue
             period = find_period(filing, facts_by_accession.get(filing.accession, []))
@@ -125,7 +148,7 @@ def import_filings_snapshot(
                 excluded.append(Excluded(filing.accession, filing.form, period))
                 gaps.append(
                     ExcludedFiling(
-                        symbol, filing.accession, filing.form, filing.accepted_at, period
+                        symbol, filing.accession, filing.form, visible_at(filing), period
                     )
                 )
                 continue
@@ -142,7 +165,7 @@ def import_filings_snapshot(
                     symbol=symbol,
                     accession=filing.accession,
                     form=filing.form,
-                    accepted_at=filing.accepted_at,
+                    accepted_at=visible_at(filing),
                     period_start=period[0],
                     period_end=period[1],
                     text=truncate(text, TEXT_LIMIT),

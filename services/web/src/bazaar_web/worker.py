@@ -23,7 +23,8 @@ from bazaar_replay.leaderboard import Run, load_run
 from opentelemetry import trace
 
 from bazaar_web.board import BoardSource, percent
-from bazaar_web.house import catalog
+from bazaar_web.bundle import BundleSource
+from bazaar_web.house import Catalog, catalog, catalog_for
 from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
 
@@ -97,8 +98,14 @@ class Worker:
         board: BoardSource,
         run_submission: RunSubmission | None,
         on_scored: Callable[[], Callable[[str, Path], None] | None],
+        bundles: BundleSource | None = None,
     ) -> None:
         self.store = store
+        # The house catalog follows the deploy's bundle (bazaar_web.house.catalog_for). Without
+        # a source (only direct test setups) the original 12-stock catalog is used.
+        self.bundles = bundles
+        self.house_waiting = False  # True while the lane waits for the bundle route
+        self.house_catalog_size = 0
         self.settings = settings
         self.board = board
         self.run_submission = run_submission
@@ -205,14 +212,29 @@ class Worker:
                 f"house runs paused: runner failing; retrying in {delay:.0f}s", None
             )
 
-    def _next_house(self) -> str | None:
-        """The next house run to start: an interrupted one first, else a new strategy."""
+    async def _house_catalog(self) -> Catalog | None:
+        """This deploy's house catalog, or None while the bundle route has not answered."""
+        if self.bundles is None:
+            found: Catalog | None = catalog()
+        else:
+            # Off the event loop: an unreachable market can take the fetch's whole timeout.
+            bundle = await asyncio.to_thread(self.bundles.get, fallback=False)
+            found = catalog_for(bundle)
+        self.house_waiting = found is None
+        self.house_catalog_size = len(found) if found else 0
+        return found
+
+    def _next_house(self, strategies: Catalog | None) -> str | None:
+        """The next house run to start: an interrupted one first, else a new strategy from
+        strategies; None while paused, capped or waiting for the bundle."""
         with logfire.suppress_instrumentation():
             if self.store.house_state()["paused"]:
                 return None
             if self.house_resume:
                 return self.house_resume.pop(0)
-            created = self.store.create_house(catalog(), self.settings.house_max_per_hour)
+            if strategies is None:
+                return None
+            created = self.store.create_house(strategies, self.settings.house_max_per_hour)
         return created[0] if created else None
 
     async def _house_wait(self, seconds: float) -> None:
@@ -230,7 +252,7 @@ class Worker:
                 await self._house_wait(wait)
                 continue
             try:
-                submission_id = self._next_house()
+                submission_id = self._next_house(await self._house_catalog())
             except Exception:  # a store error must not end the slot
                 log.exception("house lane could not start a run")
                 submission_id = None

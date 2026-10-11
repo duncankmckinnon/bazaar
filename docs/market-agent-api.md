@@ -111,6 +111,99 @@ A rejected order has `status: "rejected"`, order/request IDs, requested symbol/s
 `rejected_at`, a structured `error` and the unchanged `account` snapshot. Both domain outcomes
 return HTTP 200. Clients parse either with `order_result_adapter.validate_json(...)`.
 
+## Market-wide reads (v5)
+
+Agreed between the market and the runner on 2026-10-11, and amended the same day: `as_of_session`
+comes from the bars calendar, not the window's sessions, so day 1's open reads the previous close. The market implements these routes in
+`services/market/src/bazaar_market/market_api.py`. They live under
+`/experiments/{experiment_id}/market/`, and, like prices, every one needs `X-Bazaar-Approval` for
+that experiment (401 without it, 403 `experiment_not_approved` for another experiment's). The
+approval is checked before the parameters.
+
+**Point in time.** There is no client `as_of`. The server computes everything at the
+experiment's cutoff:
+
+- `as_of_session` is the latest session whose 16:00 America/New_York close is at or before the
+  cutoff, on the calendar of the bundle's bars version: a day on which some bar was observed at
+  its close. It is found the same way as the session the fill engine fills at
+  (`ledger.latest_session`), so a quote and a fill at the same cutoff use the same close. A cutoff
+  1 µs before a close gives the previous session; a cutoff at the close gives that session.
+- `as_of_session` can be **before the window start**. At the open of the first window day
+  (2026-09-28 13:30Z for demo-bundle-v2), it is the last close before it, 2026-09-25. Past the
+  window end, it stays at the last session with bars.
+- `available_at` does not choose the session. It decides which values are shown: a bar's close,
+  volume and changes are used only when its `available_at <= cutoff`. A bar not yet available at
+  the cutoff shows as missing (`no_bar_at_cutoff`, or a null change), even when its session has
+  closed, and its day still counts as a session.
+- When no session with bars has closed within 14 days before the cutoff, screen, quotes and
+  sectors answer 409 `experiment_not_running`, which is the case in which the fill engine
+  rejects with `market_closed`. Search is static and still answers.
+- The sessions before `as_of_session` are the days on which any member has a bar, which is the
+  same rule the ledger uses for an open market. Every one of them closed before the cutoff.
+  `pct_change_1d` is close(`as_of_session`) / close(previous session) − 1, and `pct_change_5d`
+  uses the close five sessions earlier. A change is `null` when either bar is missing, never 0
+  and never measured against an earlier session instead.
+
+**Wire rules.** Closes are decimal strings as stored. Percent values are strings with 2 decimal
+places, rounded half-even once (`0.02125` gives `"2.12"`). An unknown or repeated query parameter
+gives 422. An experiment whose data version has no stored universe (a plain bars version) gives
+404 `data_unavailable`, and an unknown experiment gives 404 `not_found`.
+
+Screen, quotes and sectors share this envelope:
+
+```json
+{"cutoff_at": "2026-10-02T20:00:00Z", "as_of_session": "2026-10-02", "data_version": "demo-bundle-v2"}
+```
+
+| Route | Query | Response (envelope plus) |
+| --- | --- | --- |
+| `GET .../market/screen` | `sort=pct_change_1d\|pct_change_5d\|volume` (default `pct_change_1d`), `direction=desc\|asc` (default `desc`), `sector=<GICS name>`, `limit=1..50` (default 20) | `sort`, `direction`, `sector` (string or null), `excluded`, `rows: [{symbol, name, sector, close, pct_change_1d, pct_change_5d, volume, observed_at}]` |
+| `GET .../market/quotes` | `symbols=A,B` (1 to 50) | `quotes: [{symbol, name, sector, close, observed_at, available_at, pct_change_1d, pct_change_5d, volume}]`, `missing: [{symbol, reason}]` |
+| `GET .../market/search` | `q` (1 to 64 characters), `limit=1..25` (default 10) | no envelope: `{data_version, query, results: [{symbol, name, sector}]}` |
+| `GET .../market/sectors` | none | `sectors: [{sector, symbols, with_bars, avg_pct_change_1d, avg_pct_change_5d, advancers, decliners, unchanged}]`, `benchmark: {symbol, close, pct_change_1d, pct_change_5d, observed_at}` |
+
+**Screen.** It covers the universe only and never lists the benchmark. A symbol whose sort key is
+null (no bar at `as_of_session`, or not enough history) is left out and counted in `excluded`.
+Other fields in a row may be null. Rows are ordered by the unrounded sort key, then by symbol
+ascending in both directions. `sector` must exactly match a GICS sector name in the universe, or
+the request gets 422.
+
+**Quotes.** Symbols are uppercased and deduplicated, and keep request order. More than 50
+distinct symbols, an empty item or a malformed symbol gives 422. An unknown symbol is not an
+error. It is listed in `missing` with reason `unknown_symbol`, and a member without a bar at
+`as_of_session` gets reason `no_bar_at_cutoff`. The benchmark (SPY) can be quoted, with sector
+`"Benchmark"`.
+
+**Search.** It is case-insensitive over the universe and the benchmark, and uses static metadata
+only, with no prices. Results are ranked by exact symbol, then symbol prefix, then name substring,
+then sector substring, and then by symbol.
+
+**Sectors.** Each sector is equal-weighted over its constituents, ordered by sector name.
+`symbols` counts constituents and `with_bars` counts those with a bar at `as_of_session`. The
+averages are means of the unrounded changes, rounded once, over the constituents whose change is
+not null. Advancers, decliners and unchanged count the sign of `pct_change_1d` and skip nulls.
+`benchmark` has null fields when SPY has no bar at `as_of_session`. It is null for a bundle with
+no benchmark (demo-bundle-v1).
+
+**Bundles.** `GET /bundles/{bundle_id}` (no credentials) returns `bundle_id`, `bars`, `news`,
+`filings`, `start_date`, `end_date`, `universe_name` (`"S&P 500"`, or null for v1),
+`universe: [{symbol, name, sector}]` (the benchmark is not in it), `benchmark` (`"SPY"`, or null
+for v1), `expected_sessions`, `sessions` and `incomplete_sessions: [{date, missing}]`. Sessions
+are judged over the universe and the benchmark.
+
+**Universe.** The demo-bundle-v2 universe is the S&P 500 constituents as of 2026-09-25 (Wikipedia
+revision of that date or earlier) that have a bar on every session the bundle needs: every window
+session, plus the lookback its first day needs for 5-day changes. A member removed from the index
+during the window is therefore excluded for the whole window. WBD was removed effective
+2026-10-06 and its last bar is 2026-10-05, so agents never see it, not even from 09-28 to 10-05.
+This is a deliberate, small survivorship choice. No future price is ever shown, but membership is
+decided with knowledge of the window's end. It is **not** point-in-time index membership, and
+evaluators must not treat it as such. The exclusions are listed in `data_universe_exclusions` and
+in the coverage report's ticker changes.
+
+News and filings are unchanged and per symbol (`/news/{symbol}`, `/filings/{symbol}`). A
+multi-symbol news tool calls them once per symbol. SPY is traded through the normal order path.
+
 ## Errors, replay and safety
 
 Transport/authentication/validation failures use `ApiError`, for example:

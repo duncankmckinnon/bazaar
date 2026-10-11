@@ -210,7 +210,7 @@ def test_the_symbols_field_changes_the_ticker_symbols(tmp_path):
     assert all([q["symbol"] for q in d["quotes"]] == eleven for d in payload["days"])
 
 
-def test_day_one_without_a_previous_bar_has_no_change(tmp_path):
+def test_a_day_without_any_previous_close_is_hidden(tmp_path):
     db = market_db(tmp_path / "m.sqlite3")
     with sqlite3.connect(db) as conn:
         conn.execute("DELETE FROM data_bars WHERE observed_at < ?", (stored_close(FEB[0]),))
@@ -218,15 +218,15 @@ def test_day_one_without_a_previous_bar_has_no_change(tmp_path):
 
     days = TickerSource(db).payload(parse(V1))["days"]
 
-    assert all(q["change_pct"] is None for q in days[0]["quotes"])
-    assert days[1]["quotes"][0]["change_pct"] == 0.99
+    assert [d["date"] for d in days] == [s.isoformat() for s in FEB[1:]]  # no movers on day 1
+    assert days[0]["quotes"][0]["change_pct"] == 0.99
 
 
 def test_no_bundle_means_no_window_and_no_days(tmp_path):
     payload = TickerSource(market_db(tmp_path / "m.sqlite3")).payload(None)
 
     assert payload == {
-        "window": {"start": None, "end": None, "symbols": list(SYMBOLS)},
+        "window": {"start": None, "end": None, "symbols": None},
         "data_version": None,
         "days": [],
     }
@@ -328,7 +328,8 @@ def test_the_board_window_comes_from_the_bundle(settings, helpers, tmp_path, bod
             c.get("/api/board")
 
     assert window == {
-        "start": start, "end": end, "starting_cash": 10000.0, "symbols": list(SYMBOLS), "days": 10,
+        "start": start, "end": end, "starting_cash": 10000.0, "universe": "12 STOCKS",
+        "symbols": list(SYMBOLS), "days": 10,
     }  # fmt: skip
     assert tickers["window"]["start"] == start and len(tickers["days"]) == 10
     assert len(calls) == 1  # one market call for every poll

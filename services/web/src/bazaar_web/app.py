@@ -24,7 +24,6 @@ from pydantic_core import PydanticCustomError
 from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.bundle import BundleSource
-from bazaar_web.house import catalog
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     LOCK_ERRORS,
@@ -57,6 +56,19 @@ def contact_text(value: str, *, limit: int, message: str) -> str:
     if not 1 <= len(value) <= limit:
         raise PydanticCustomError("value_error", message)
     return value
+
+
+# The board tags rows with this handle "AI": only the operators' house scripts (with the admin
+# token) and the house lane's own server-made rows may carry it.
+RESERVED_HANDLE = "house"
+
+
+def reserved_handle() -> HTTPException:
+    """A new 422 per refusal: a shared exception would keep the last request's frames (and its
+    parsed body, contact details included) alive until the next raise."""
+    return HTTPException(
+        422, [{"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}]
+    )
 
 
 class SubmissionIn(BaseModel):
@@ -160,7 +172,12 @@ def create_app(
             store = Store(settings.web_db, now) if now else Store(settings.web_db)
         board = BoardSource(settings.runs_dir)
         worker = Worker(
-            store, settings, board, run_submission, on_scored=lambda: app.state.on_scored
+            store,
+            settings,
+            board,
+            run_submission,
+            on_scored=lambda: app.state.on_scored,
+            bundles=bundles,
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
         await worker.start()
@@ -180,7 +197,7 @@ def create_app(
 
     app.state.on_scored = on_scored
     tickers = TickerSource(settings.market_db)
-    bundles = bundle_source or BundleSource(settings.market_url, settings.ticker_data_version)
+    bundles = bundle_source or BundleSource(settings.market_url, settings.data_bundle)
 
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(
@@ -210,8 +227,30 @@ def create_app(
     def submit_page() -> Response:
         return static_page("submit.html", "The submission form")
 
+    def is_admin(token: str | None) -> bool:
+        """The admin check every admin route uses: a constant-time compare with the token."""
+        return (
+            settings.admin_token is not None
+            and token is not None
+            and hmac.compare_digest(token.encode(), settings.admin_token.encode())
+        )
+
+    def require_admin(token: str | None) -> None:
+        if settings.admin_token is None:
+            raise HTTPException(404, "not found")
+        if not is_admin(token):
+            raise HTTPException(403, "forbidden")
+
+    AdminToken = Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")]
+
     @app.post("/api/submissions", status_code=201)
-    def submit(body: SubmissionIn, request: Request) -> dict[str, Any]:
+    def submit(body: SubmissionIn, request: Request, token: AdminToken = None) -> dict[str, Any]:
+        # The same 422 whether the token is missing, wrong or unset: no token oracle.
+        handle = body.handle
+        if handle is not None and handle.lower() == RESERVED_HANDLE:
+            if not is_admin(token):
+                raise reserved_handle()
+            handle = RESERVED_HANDLE  # stored exactly, so the board's AI tag matches
         store: Store = request.app.state.store
         ip_hash = hashlib.sha256(client_ip(request).encode()).hexdigest()
         # The run joins this request's trace: the worker re-attaches this context.
@@ -219,7 +258,7 @@ def create_app(
         try:
             submission_id = store.create(
                 name=body.name,
-                handle=body.handle,
+                handle=handle,
                 instructions=body.instructions,
                 ip_hash=ip_hash,
                 max_queue=settings.max_queue,
@@ -273,14 +312,6 @@ def create_app(
     def board(request: Request) -> dict[str, Any]:
         with logfire.suppress_instrumentation():  # polled; see submission_status
             return board_payload(request)
-
-    def require_admin(token: str | None) -> None:
-        if settings.admin_token is None:
-            raise HTTPException(404, "not found")
-        if token is None or not hmac.compare_digest(token.encode(), settings.admin_token.encode()):
-            raise HTTPException(403, "forbidden")
-
-    AdminToken = Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")]
 
     @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
     def hide(submission_id: str, request: Request, token: AdminToken = None) -> Response:
@@ -402,7 +433,9 @@ def create_app(
             "running": state["running"],
             "cursor": state["cursor"],
             "cycle": state["cycle"],
-            "catalog_size": len(catalog()),
+            "catalog_size": worker.house_catalog_size,
+            "waiting_for_bundle": worker.house_waiting,
+            "state": "waiting for bundle" if worker.house_waiting else None,
             "total_started": state["total_started"],
             "started_last_hour": state["last_hour"],
             "max_per_hour": cap,

@@ -19,9 +19,11 @@ from fastapi import Depends, FastAPI
 
 from bazaar_market import (
     bundles,
+    bundles_api,
     db,
     filings_api,
     ledger_api,
+    market_api,
     news_api,
     prices,
     prices_api,
@@ -126,8 +128,10 @@ def create_app(
     app.include_router(
         filings_api.router, dependencies=[Depends(ledger_api.approval_check(grants))]
     )
+    app.include_router(market_api.router, dependencies=[Depends(ledger_api.approval_check(grants))])
     ledger_api.install(app, ledger, grants, token)
     app.include_router(grant_store.build_router(recorded_grants, token))
+    app.include_router(bundles_api.router)
     app.include_router(stats.build_router(token))
     logfire.instrument_fastapi(
         app,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -51,8 +52,17 @@ class _Frozen:
 
 
 def load_filings(
-    snapshot_dir: Path, cik: int, *, forms: tuple[str, ...] | None = None
+    snapshot_dir: Path,
+    cik: int,
+    *,
+    forms: tuple[str, ...] | None = None,
+    checked: Callable[[Filing], bool] | None = None,
 ) -> list[Filing]:
+    """A company's frozen filing history, oldest first.
+
+    Every filing's acceptance label is checked, or only those `checked` selects: a caller that
+    serves some filings checks those, so an old mislabelled filing it never serves cannot stop it.
+    """
     frozen = _Frozen(snapshot_dir)
     main = f"submissions/CIK{cik:010d}.json"
     if not frozen.has(main):
@@ -65,7 +75,8 @@ def load_filings(
             raise SourceError(f"filing history for company {cik} is incomplete: {older}")
         filings += parse_submissions(frozen.read(older), cik=cik, forms=forms)
     for filing in filings:
-        check_acceptance_label(filing)
+        if checked is None or checked(filing):
+            check_acceptance_label(filing)
     return sorted(filings, key=lambda f: f.accepted_at)
 
 

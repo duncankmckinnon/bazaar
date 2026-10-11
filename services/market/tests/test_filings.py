@@ -289,3 +289,80 @@ def test_filings_imported_before_exclusions_existed_are_missing_not_an_error(tmp
 
     with pytest.raises(MissingCoverage, match="re-importing"):
         filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
+
+
+def acme_config(tmp_path):
+    config = tmp_path / "sources.toml"
+    config.write_text(
+        '[period]\nstart = 2025-07-01\nend = 2026-09-30\n[sp500]\ncommit = "c"\n'
+        '[edgar]\nforms = ["10-K", "10-Q", "8-K"]\ndocuments_since = 2024-07-01\n'
+        'user_agent = "test t@example.com"\n'
+        f'[[company]]\nticker = "ACME"\ncik = {CIK}\n'
+    )
+    return config
+
+
+def served_versions(db):
+    with closing(sqlite3.connect(db)) as connection:
+        rows = connection.execute("SELECT DISTINCT data_version FROM data_filings").fetchall()
+    return {r[0] for r in rows}
+
+
+@pytest.mark.parametrize(
+    ("flag", "stored"),
+    [([], "edgar-filings-v1"), (["--data-version", "edgar-filings-v2"], "edgar-filings-v2")],
+)
+def test_cli_import_filings_stores_the_data_version(tmp_path, capsys, flag, stored):
+    snapshot, db = edgar_snapshot(tmp_path), tmp_path / "m.db"
+
+    code = main(
+        ["import-filings", "--config", str(acme_config(tmp_path)), "--snapshot", str(snapshot),
+         "--db", str(db), *flag]
+    )  # fmt: skip
+
+    assert code == 0
+    assert served_versions(db) == {stored}
+    [served] = SqliteFilingArchive(db, stored).visible("ACME", START, CUTOFF, cutoff=CUTOFF)
+    assert served.accession == "k-1"
+    assert f"as {stored}" in capsys.readouterr().out
+
+
+# Labelled 08:00 Eastern on a weekday but filed the next day: the label is earlier than the
+# real acceptance (see sources.edgar.check_acceptance_label), which is evidence about the filer.
+EARLY_8K = ("e-2", "8-K", "", "2025-03-04", "2025-03-03T13:00:00.000Z")
+EARLY_OLD_8K = ("e-old", "8-K", "", "2014-11-12", "2014-11-11T10:02:55.000Z")
+EARLY_OLD_10Q = ("q-old", "10-Q", "2014-09-30", "2014-11-12", "2014-11-11T10:02:55.000Z")
+EARLY_10Q = ("q-2", "10-Q", "2025-06-30", "2025-08-05", "2025-08-04T13:00:00.000Z")
+
+
+def test_an_early_label_from_before_the_window_does_not_stop_the_import(tmp_path):
+    filings, [report] = load(tmp_path, extra=[EARLY_OLD_8K, EARLY_OLD_10Q])
+
+    assert report.served == 1
+    [served] = filings.visible("ACME", START, CUTOFF, cutoff=CUTOFF)
+    assert served.accession == "k-1"
+
+
+def test_an_early_8k_inside_the_window_stops_the_import_though_8ks_are_never_served(tmp_path):
+    with pytest.raises(SourceError, match="e-2.*earlier than the real acceptance"):
+        load(tmp_path, extra=[EARLY_8K])
+
+
+def test_an_early_10q_inside_the_window_stops_the_import(tmp_path):
+    with pytest.raises(SourceError, match="q-2.*earlier than the real acceptance"):
+        load(tmp_path, extra=[EARLY_10Q])
+
+
+# A 10-Q labelled overnight on Veterans Day 2025 and filed the next day, with no XBRL facts.
+HOLIDAY_10Q = ("q-h", "10-Q", "2025-09-30", "2025-11-12", "2025-11-11T07:50:50.000Z")
+
+
+def test_a_closed_day_label_passes_and_counts_from_the_next_filing_day(tmp_path):
+    filings, [report] = load(tmp_path, extra=[HOLIDAY_10Q])
+
+    assert [e.accession for e in report.excluded] == ["q-h"]
+    public = datetime(2025, 11, 12, 11, tzinfo=UTC)  # 06:00 EST on its filing date
+    before = public - timedelta(microseconds=1)
+    assert filings.visible("ACME", START, before, cutoff=before) != []  # the gap is not yet in
+    with pytest.raises(MissingCoverage, match="q-h"):
+        filings.visible("ACME", START, public, cutoff=public)

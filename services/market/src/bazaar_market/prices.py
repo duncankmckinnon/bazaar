@@ -213,6 +213,20 @@ def synthetic_bars(
     return bars
 
 
+def session_on(
+    connection: sqlite3.Connection, data_version: str, day: date
+) -> TradingSession | None:
+    """The session on `day` in `data_version`'s own calendar, or None when no symbol has a bar
+    at that day's close (market closed). Whether the bar is available yet is not checked here."""
+    traded = connection.execute(
+        "SELECT 1 FROM data_bars WHERE data_version = ? AND observed_at = ? LIMIT 1",
+        (data_version, _stored(close_at(day))),
+    ).fetchone()
+    if traded is None:
+        return None
+    return TradingSession(day=day, open_at=_eastern(day, SESSION_OPEN), close_at=close_at(day))
+
+
 def _observation(row: sqlite3.Row) -> PriceObservation:
     return PriceObservation(
         observed_at=datetime.fromisoformat(row["observed_at"]),
@@ -254,15 +268,8 @@ class SqliteMarketData:
             raise MissingData(f"no prices for {symbol} in {self.data_version}")
 
     def session(self, day: date) -> TradingSession | None:
-        """The session on `day`, or None when no symbol has a bar that day (market closed)."""
         with closing(self._connect()) as connection:
-            traded = connection.execute(
-                "SELECT 1 FROM data_bars WHERE data_version = ? AND observed_at = ? LIMIT 1",
-                (self.data_version, _stored(close_at(day))),
-            ).fetchone()
-        if traded is None:
-            return None
-        return TradingSession(day=day, open_at=_eastern(day, SESSION_OPEN), close_at=close_at(day))
+            return session_on(connection, self.data_version, day)
 
     def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
         """The latest close available at or before `cutoff`. Raises `MissingData` if none is."""

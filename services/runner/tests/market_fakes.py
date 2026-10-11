@@ -23,6 +23,7 @@ from bazaar_protocol import (
     PriceObservation,
     RejectedOrder,
 )
+from bazaar_runner.bundle import DEMO_BUNDLE, Bundle, BundleInfo, bundle_from
 from bazaar_runner.clock import ClockScript, TradingSession
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER, utc_z
 from bazaar_runner.market import FiscalCycle, FutureData, MarketError, MissingPrice
@@ -30,6 +31,7 @@ from bazaar_runner.run import RunSpec
 
 DATA_VERSION = "synthetic-v1"
 TOKEN = "runner-token-do-not-leak"
+MAX_CYCLE_SYMBOLS = 50
 CONTROL_ROUTES = {"PUT /cutoff", "POST /accounts", "POST /close"}
 
 
@@ -59,6 +61,55 @@ BASE = {
     "WMT": 100,
     "XOM": 110,
 }
+
+# The fixture universe: every symbol the fake market has prices for.
+SYMBOLS = tuple(BASE)
+# The benchmark has prices and is tradable but is not a universe member, as in the market.
+BENCHMARK = {"SPY": 400}
+# Invented fixture sectors: three groups, so the sector table has more than one row.
+FIXTURE_SECTORS = ("Fixture Tech", "Fixture Health", "Fixture Energy")
+
+
+def sector_of(symbol: str) -> str:
+    return FIXTURE_SECTORS[sum(map(ord, symbol)) % len(FIXTURE_SECTORS)]
+
+
+def bundle_body(
+    bundle_id: str = DATA_VERSION,
+    symbols=SYMBOLS,
+    sessions=tuple(s.date for s in SESSIONS),
+    start: date = SESSIONS[0].date,
+    end: date = SESSIONS[-1].date,
+    incomplete=(),
+    expected: int | None = None,
+    benchmark: str | None = None,
+) -> dict:
+    """A GET /bundles/{id} body in the market's shape (with a field the runner must ignore)."""
+    return {
+        "bundle_id": bundle_id,
+        "bars": "synthetic-bars",
+        "news": "synthetic-news",
+        "filings": "synthetic-filings",
+        "start_date": str(start),
+        "end_date": str(end),
+        "universe": [
+            {"symbol": s, "name": f"{s} Fixture Corp", "sector": sector_of(s)} for s in symbols
+        ],
+        "benchmark": benchmark,
+        "universe_name": "fixture universe",
+        "sessions": [str(d) for d in sessions],
+        "expected_sessions": len(sessions) if expected is None else expected,
+        "incomplete_sessions": [{"date": str(d), "missing": list(m)} for d, m in incomplete],
+        "a_later_market_field": True,
+    }
+
+
+def fixture_bundle(bundle_id: str = DATA_VERSION, symbols=SYMBOLS, benchmark=None) -> Bundle:
+    body = bundle_body(bundle_id, symbols, benchmark=benchmark)
+    return bundle_from(BundleInfo.model_validate(body))
+
+
+BUNDLE = fixture_bundle()
 
 SPEC = RunSpec(
     run_id=UUID("00000000-0000-0000-0000-0000000000a0"),
@@ -97,6 +148,8 @@ class InMemoryMarket:
         self.results: dict[UUID, list] = {}
         # What GET fiscal-cycles returns; a symbol with no public filing is simply absent.
         self.cycles: tuple[FiscalCycle, ...] = ()
+        # What GET /bundles/{id} serves: the fixture calendar under the run bundle's id too.
+        self.bundles = {b: bundle_body(b) for b in (DATA_VERSION, DEMO_BUNDLE)}
         self._ids = 0
 
     @property
@@ -108,16 +161,34 @@ class InMemoryMarket:
         self._ids += 1
         return UUID(int=self._ids)
 
+    def close(self, symbol: str, day: int) -> Decimal:
+        """The fixture close on trading day `day`; tests override it to make stocks fall."""
+        return Decimal((BASE | BENCHMARK)[symbol] + day)
+
     async def price_at(self, symbol, cutoff):
         if self.cutoff is not None and cutoff > self.cutoff:
             raise FutureData(f"{cutoff.isoformat()} is after the experiment cutoff")
         available = [(i, at) for i, at in enumerate(CLOSES) if at <= cutoff]
-        if symbol not in BASE or not available:
+        if symbol not in BASE | BENCHMARK or not available:
             raise MissingPrice(symbol, cutoff)
         day, close_at = available[-1]
         return PriceObservation(
-            observed_at=close_at, available_at=close_at, price=Decimal(BASE[symbol] + day)
+            observed_at=close_at, available_at=close_at, price=self.close(symbol, day)
         )
+
+    async def screen(self, ctx, request):
+        from bazaar_agent.market_view import Screen
+
+        screen = Screen.model_validate(market_read(self, "screen", request.query()))
+        screen.check(request, ctx)
+        return screen
+
+    async def quotes(self, ctx, request):
+        from bazaar_agent.market_view import Quotes
+
+        quotes = Quotes.model_validate(market_read(self, "quotes", request.query()))
+        quotes.check(request, ctx)
+        return quotes
 
     async def set_cutoff(self, experiment_id, cutoff, data_version, execution_rule_version):
         self.calls.append(("set_cutoff", cutoff))
@@ -226,6 +297,11 @@ class InMemoryMarket:
 
     async def fiscal_cycles(self, ctx, symbols):
         self.calls.append(("fiscal_cycles", ctx.simulated_at, tuple(symbols)))
+        # Like the market (filings_api MAX_CYCLE_SYMBOLS): more than 50 symbols is a 422.
+        if len(symbols) > MAX_CYCLE_SYMBOLS:
+            raise MarketError(
+                ErrorDetail(code=ErrorCode.INVALID_REQUEST, message="at most 50 symbols")
+            )
         return tuple(c for c in self.cycles if c.symbol in symbols)
 
     async def orders(self, ctx, start_at):
@@ -346,6 +422,92 @@ def news_page(symbol: str, available: int, params, data_version: str = DATA_VERS
     ]
 
 
+def _pct(now: Decimal, then: Decimal) -> str:
+    return f"{(now / then - 1) * 100:.2f}"
+
+
+def market_read(fake: "InMemoryMarket", kind: str, params) -> dict:
+    """The S2 contract's /market/* reads over the fixture closes, at the fake's cutoff.
+
+    Closes come from fake.close: by default they rise by 1 a day, so every 1d move is positive
+    and the cheapest stock moves most. Ties go to the symbol, as the market orders them."""
+    day = max(i for i, at in enumerate(CLOSES) if at <= fake.cutoff)
+    envelope = {
+        "cutoff_at": utc_z(fake.cutoff),
+        "as_of_session": str(CLOSES[day].date()),
+        "data_version": fake.data_version,
+    }
+
+    def row(symbol: str) -> dict:
+        close = fake.close(symbol, day)
+        return {
+            "symbol": symbol,
+            "name": f"{symbol} Fixture Corp",
+            "sector": sector_of(symbol),
+            "close": str(close),
+            "pct_change_1d": _pct(close, fake.close(symbol, day - 1)) if day >= 1 else None,
+            "pct_change_5d": _pct(close, fake.close(symbol, day - 5)) if day >= 5 else None,
+            "volume": "1000",
+            "observed_at": utc_z(CLOSES[day]),
+        }
+
+    fake.calls.append(("market", kind, dict(params)))
+    if kind == "quotes":
+        asked = params["symbols"].split(",")
+        return envelope | {
+            "quotes": [row(s) | {"available_at": utc_z(CLOSES[day])} for s in asked if s in BASE],
+            "missing": [{"symbol": s, "reason": "unknown_symbol"} for s in asked if s not in BASE],
+        }
+    if kind == "screen":
+        sort, direction = params.get("sort", "pct_change_1d"), params.get("direction", "desc")
+        rows = [row(s) for s in sorted(BASE)]
+        ranked = [r for r in rows if r[sort] is not None]
+        # Ties by symbol ascending in either direction, as the market does.
+        ranked.sort(
+            key=lambda r: (
+                -Decimal(r[sort]) if direction == "desc" else Decimal(r[sort]),
+                r["symbol"],
+            )
+        )
+        return envelope | {
+            "sort": sort,
+            "direction": direction,
+            "sector": params.get("sector"),
+            "excluded": len(rows) - len(ranked),
+            "rows": ranked[: int(params.get("limit", 20))],
+        }
+    if kind == "sectors":
+        return envelope | {
+            "sectors": [
+                {
+                    "sector": sector,
+                    "symbols": len(members),
+                    "with_bars": len(members),
+                    "avg_pct_change_1d": None,
+                    "avg_pct_change_5d": None,
+                    "advancers": len(members) if day >= 1 else 0,
+                    "decliners": 0,
+                    "unchanged": 0,
+                }
+                for sector in sorted(FIXTURE_SECTORS)
+                if (members := [s for s in BASE if sector_of(s) == sector])
+            ],
+            "benchmark": None,
+        }
+    raise AssertionError(f"the fixture market has no /market/{kind}")
+
+
+def bundle_response(fake: InMemoryMarket, request: httpx.Request) -> httpx.Response:
+    """GET /bundles/{id}: no credentials needed, 404 for a bundle the market does not have."""
+    if request.method != "GET":
+        return api_error(405, ErrorCode.INVALID_REQUEST)
+    body = fake.bundles.get(request.url.path.removeprefix("/bundles/"))
+    if body is None:
+        return api_error(404, ErrorCode.NOT_FOUND, "no such bundle")
+    fake.calls.append(("bundle", body["bundle_id"], dict(request.headers)))
+    return httpx.Response(200, json=body)
+
+
 def delegating_transport(
     fake: InMemoryMarket,
     seen: list[httpx.Request] | None = None,
@@ -358,6 +520,8 @@ def delegating_transport(
     async def handle(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
+        if request.url.path.startswith("/bundles/"):
+            return bundle_response(fake, request)
         if request.headers.get(APPROVAL_HEADER) != str(approval_id):
             return api_error(403, ErrorCode.EXPERIMENT_NOT_APPROVED)
         if route(request) in CONTROL_ROUTES and request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
@@ -367,7 +531,8 @@ def delegating_transport(
         body = json.loads(request.content) if request.content else {}
         view = SimpleNamespace(
             simulated_at=fake.cutoff,
-            data_version=SPEC.data_version,
+            # The experiment's own bundle, as the market echoes it (set by its first cutoff).
+            data_version=fake.data_version,
             execution_rule_version=SPEC.execution_rule_version,
         )
         try:
@@ -422,8 +587,12 @@ def delegating_transport(
                         "next_cursor": None,
                     }
                     return httpx.Response(200, json=page)
+                case "GET", ["market", kind]:
+                    return httpx.Response(200, json=market_read(fake, kind, request.url.params))
                 case "GET", ["fiscal-cycles"]:
                     symbols = request.url.params["symbols"].split(",")
+                    if len(symbols) > MAX_CYCLE_SYMBOLS:
+                        return api_error(422, ErrorCode.INVALID_REQUEST, "at most 50 symbols")
                     found = await fake.fiscal_cycles(view, symbols)
                     return httpx.Response(
                         200, json=[json.loads(c.model_dump_json()) for c in found]

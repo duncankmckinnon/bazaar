@@ -946,3 +946,52 @@ async def test_a_dropped_order_is_never_resent():
         result = await ResearchTools(client, context()).place_order(order_request())
     assert result.error.code == "network" and result.error.retryable
     assert seen == [("POST", True)]
+
+
+def filings_handler(seen):
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json=page([filing()], source="archive"))
+
+    return handler
+
+
+async def test_filings_resolve_the_cycle_on_demand_once_per_symbol():
+    asked, seen = [], []
+
+    async def reader(symbol):
+        asked.append(symbol)
+        return FiscalCycle(symbol=symbol, start="2020-01-01")
+
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(filings_handler(seen))
+    ) as client:
+        tools = ResearchTools(client, context().model_copy(update={"cycles": ()}), None, reader)
+        first = await tools.filings(request())
+        second = await tools.filings(request())
+    assert first.error is None and second.error is None
+    assert asked == ["AAPL"] and len(seen) == 2
+
+
+@pytest.mark.parametrize("outcome", ["none", "raises", "other symbol", "no reader"])
+async def test_filings_without_a_trusted_cycle_are_unsupported(outcome):
+    async def reader(symbol):
+        if outcome == "raises":
+            raise RuntimeError(f"{SECRET} route down")
+        if outcome == "other symbol":
+            return FiscalCycle(symbol="MSFT", start="2020-01-01")
+        return None
+
+    seen = []
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(filings_handler(seen))
+    ) as client:
+        tools = ResearchTools(
+            client,
+            context().model_copy(update={"cycles": ()}),
+            None,
+            None if outcome == "no reader" else reader,
+        )
+        result = await tools.filings(request())
+    assert result.error.code == "unsupported" and seen == []
+    assert SECRET not in result.model_dump_json()

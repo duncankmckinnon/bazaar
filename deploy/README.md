@@ -196,8 +196,13 @@ back up:
 ## Filling the board
 
 Two scripts submit house strategies to a running deploy, so the board has something on it before
-and between attendees. Both submit under the handle `house` (change it with `--handle`), take the
-deploy URL as an argument or the `BASE_URL` environment variable, and need no token.
+and between attendees. Both submit under the handle `house` (change it with `--handle`) and take the
+deploy URL as an argument or the `BASE_URL` environment variable.
+
+The web app reserves the `house` handle. Whoever runs the scripts needs `BAZAAR_ADMIN_TOKEN` in their environment;
+the scripts send it only on submissions and never print it. Without it they stop before making any request. A 422
+"That handle is reserved" means the token is missing or wrong, and both scripts stop at once. Every house submission
+carries the same placeholder operator contact (`bazaar-ops@example.com`), which the contacts CSV leaves out.
 
 - `scripts/house_strategies.py` submits a fixed batch of 30 varied strategies once. Use it to seed
   an empty board.
@@ -218,7 +223,9 @@ Each run cost about $0.26 to $1.28 in model calls on the live deploy (observed i
 against the same caps as attendees: the queue cap, the daily cap and the per-IP hourly cap all answer 429. With the
 default per-IP cap of 5 an hour, 30 strategies from one address take about 6 hours. On 429 or 503,
 `house_strategies.py` waits 60 seconds and retries the same name. On 429, `house_feeder.py` waits 5 minutes and then
-moves on to the next generated name; the rate-limited name is dropped. A name that is already taken is skipped. Stop
+moves on to the next generated name; the rate-limited name is dropped. A name that is already taken is skipped. Any
+other 422 stops `house_feeder.py`, because its generated names would only repeat it; `house_strategies.py` reports it
+for that strategy and continues. Stop
 either script with Ctrl-C; submissions already queued still run. The submit page's link to a strategy's Logfire
 dashboard comes from `BAZAAR_LOGFIRE_DASHBOARD_URL`.
 

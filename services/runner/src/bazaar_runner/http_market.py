@@ -102,6 +102,23 @@ def note_retry(method: str, path: str, exc: Exception) -> None:
     logger.warning("retried %s %s once after %s", method, path, type(exc).__name__)
 
 
+async def send(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
+    """One request, by the runner's rule for dropped connections.
+
+    A GET is idempotent, so a dropped connection gets exactly one more attempt. POST and PUT
+    (orders, accounts, the cutoff, grants, close) get one attempt only: an ambiguous order is
+    never resent (market-agent API docs), and the decision's reconciliation, which reads the
+    account's orders, settles what happened. Timeouts and HTTP error statuses are never retried.
+    Other transport errors propagate to the caller."""
+    try:
+        return await client.request(method, url, **kwargs)
+    except RETRYABLE_TRANSPORT_ERRORS as exc:
+        if method != "GET":
+            raise
+        note_retry(method, url, exc)
+    return await client.request(method, url, **kwargs)
+
+
 def parse_order_page(content: bytes) -> tuple[tuple[OrderResult, ...], str | None]:
     """The one place that knows the GET orders shape; the market route is not live yet.
 
@@ -194,23 +211,13 @@ class HttpMarketPort:
     ) -> bytes:
         headers = self._headers | {RUNNER_TOKEN_HEADER: self._token} if control else self._headers
         url = (self._root if root is None else root) + path
-        # A GET is idempotent, so a dropped connection gets exactly one more attempt. POST and PUT
-        # (orders, accounts, the cutoff, grants, close) get one attempt only: an ambiguous order
-        # is never resent (market-agent API docs), and the decision's reconciliation, which
-        # reads the account's orders, settles what happened. Timeouts and HTTP error statuses
-        # are never retried.
-        for attempt in range(2):
-            try:
-                response = await self._client.request(method, url, headers=headers, **kwargs)
-                break
-            except httpx.TransportError as exc:
-                if method == "GET" and not attempt and isinstance(exc, RETRYABLE_TRANSPORT_ERRORS):
-                    note_retry(method, url, exc)
-                    continue
-                detail = ErrorDetail(
-                    code=ErrorCode.INTERNAL_ERROR, message=f"{type(exc).__name__}: {exc}"
-                )
-                raise self._redact(MarketError(detail)) from None
+        try:
+            response = await send(self._client, method, url, headers=headers, **kwargs)
+        except httpx.TransportError as exc:
+            detail = ErrorDetail(
+                code=ErrorCode.INTERNAL_ERROR, message=f"{type(exc).__name__}: {exc}"
+            )
+            raise self._redact(MarketError(detail)) from None
         if response.is_error:
             raise self._redact(_market_error(response, control=control))
         return response.content
@@ -306,6 +313,32 @@ class HttpMarketPort:
         params = {"symbols": ",".join(symbols)}
         content = await self._request("GET", "/fiscal-cycles", params=params)
         return parse_fiscal_cycles(content)
+
+    async def _market_read(self, ctx: ExperimentContext, kind: str, request, model):
+        # Not a control route: the approval header only. The server reads at the cutoff.
+        self._check(ctx.experiment_id)
+        content = await self._request("GET", f"/market/{kind}", params=request.query())
+        try:
+            read = model.model_validate_json(content)
+            read.check(request, ctx)
+        except (ValidationError, ValueError):
+            raise MarketError(
+                ErrorDetail(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message=f"the market's {kind} answer does not match the contract",
+                )
+            ) from None
+        return read
+
+    async def screen(self, ctx: ExperimentContext, request):
+        from bazaar_agent.market_view import Screen
+
+        return await self._market_read(ctx, "screen", request, Screen)
+
+    async def quotes(self, ctx: ExperimentContext, request):
+        from bazaar_agent.market_view import Quotes
+
+        return await self._market_read(ctx, "quotes", request, Quotes)
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
         params = {

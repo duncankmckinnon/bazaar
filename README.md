@@ -145,7 +145,7 @@ are the optional host-Python workflow; they are not required for Docker setup.
    uv run --env-file .env python -m bazaar_market.sources bars --version demo
    ```
 
-`config/demo-sources.toml` decides what is downloaded: thirteen companies, 2025-07-01 to 2026-09-30.
+`config/demo-sources.toml` decides what is downloaded: thirteen companies, 2025-07-01 to 2026-09-30 (the v1 data). `config/sp500-sources.toml` is the v2 (S&P 500) config.
 Edit that file to change the companies or the period.
 `--version` names the snapshot. Without it the name is the current UTC minute.
 

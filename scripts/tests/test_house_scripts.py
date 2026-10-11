@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from bazaar_web.store import OPERATOR_CONTACT_EMAIL
 
 SCRIPTS = Path(__file__).parents[1]
 UNIVERSE = {"AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM"}
@@ -26,6 +27,30 @@ house_feeder = load("house_feeder")
 
 def tickers(text):
     return set(re.findall(r"\b[A-Z]{1,5}\b", text))
+
+
+SENTINEL = "tok-SENTINEL-123"
+HEADER = "x-bazaar-admin-token"
+
+
+@pytest.fixture(autouse=True)
+def admin_token(monkeypatch, capsys):
+    """Every test runs with a sentinel token, and the token must never be printed."""
+    monkeypatch.setenv("BAZAAR_ADMIN_TOKEN", SENTINEL)
+    yield
+    out, err = capsys.readouterr()
+    assert SENTINEL not in out and SENTINEL not in err
+
+
+def output(capsys):
+    out, err = capsys.readouterr()
+    assert SENTINEL not in out and SENTINEL not in err
+    return out, err
+
+
+def reserved_handle_422():
+    detail = [{"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}]
+    return httpx.Response(422, json={"detail": detail})
 
 
 class Sleeps(list):
@@ -74,7 +99,7 @@ def test_house_batch_skips_a_taken_name_without_a_retry_wait(capsys, taken):
     assert house_strategies.submit_all(client, BASE, only=2, sleep=sleeps) == 1
     assert [p["name"] for p in posts] == list(house_strategies.STRATEGIES)[:2]
     assert sleeps == [2.0, 2.0]  # only the pacing between submissions, no 60s retry wait
-    assert "skip blue-chip-hodl: name taken" in capsys.readouterr().out
+    assert "skip blue-chip-hodl: name taken" in output(capsys)[0]
 
 
 def test_house_batch_waits_60s_on_429_and_retries_the_same_name():
@@ -138,7 +163,7 @@ def test_feeder_stops_at_max(capsys):
 
     assert board.run(depth=100, limit=5) == 5
     assert len(board.posted) == 5
-    assert capsys.readouterr().out.rstrip().endswith("done")
+    assert output(capsys)[0].rstrip().endswith("done")
 
 
 def test_feeder_skips_a_taken_name_instantly():
@@ -179,3 +204,141 @@ def test_generated_names_are_valid_unique_and_deterministic():
         assert SLUG.match(name), name
         assert 20 <= len(text) <= 4000
         assert tickers(text) <= UNIVERSE, name
+
+
+# ---------- the reserved house handle ----------
+
+
+def recording_client(responses):
+    """Every request is recorded; POSTs answer from `responses`, the board is empty."""
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path == "/api/board":
+            return httpx.Response(200, json={"rows": []})
+        posts = sum(r.method == "POST" for r in requests)
+        return responses[min(posts - 1, len(responses) - 1)]
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), requests
+
+
+OK = httpx.Response(201, json={"id": "s1", "status": "queued", "position": 1})
+
+
+def test_token_goes_on_posts_only(capsys):
+    client, requests = recording_client([OK])
+
+    assert house_feeder.feed(client, BASE, depth=100, limit=1, sleep=Sleeps()) == 1
+    assert house_strategies.submit_all(client, BASE, only=1, sleep=Sleeps()) == 1
+    posts = [r for r in requests if r.method == "POST"]
+    gets = [r for r in requests if r.method == "GET"]
+    assert len(posts) == 2 and gets
+    assert all(r.headers.get(HEADER) == SENTINEL for r in posts)
+    assert all(HEADER not in r.headers for r in gets)
+    output(capsys)
+
+
+@pytest.mark.parametrize("handle", ["house", "HOUSE", " house "])
+def test_house_handle_without_a_token_stops_before_any_request(monkeypatch, capsys, handle):
+    monkeypatch.delenv("BAZAAR_ADMIN_TOKEN")
+    for run in (
+        lambda c: house_strategies.submit_all(c, BASE, handle=handle, sleep=Sleeps()),
+        lambda c: house_feeder.feed(c, BASE, handle=handle, sleep=Sleeps()),
+    ):
+        client, requests = recording_client([OK])
+        with pytest.raises(SystemExit) as stopped:
+            run(client)
+        assert stopped.value.code != 0
+        assert requests == []
+    _, err = output(capsys)
+    assert err.count("BAZAAR_ADMIN_TOKEN is required to submit as the house handle") == 2
+
+
+def test_empty_token_counts_as_missing(monkeypatch):
+    monkeypatch.setenv("BAZAAR_ADMIN_TOKEN", "")
+    client, requests = recording_client([OK])
+    with pytest.raises(SystemExit):
+        house_strategies.submit_all(client, BASE, sleep=Sleeps())
+    assert requests == []
+
+
+def test_other_handles_work_without_a_token(monkeypatch, capsys):
+    monkeypatch.delenv("BAZAAR_ADMIN_TOKEN")
+    client, requests = recording_client([OK])
+
+    assert house_strategies.submit_all(client, BASE, handle="crew", only=1, sleep=Sleeps()) == 1
+    assert house_feeder.feed(client, BASE, handle="crew", depth=100, limit=1, sleep=Sleeps()) == 1
+    assert all(HEADER not in r.headers for r in requests)
+    output(capsys)
+
+
+def test_reserved_handle_422_is_fatal_in_both_scripts_after_one_post(capsys):
+    for run in (
+        lambda c, s: house_strategies.submit_all(c, BASE, only=3, sleep=s),
+        lambda c, s: house_feeder.feed(c, BASE, depth=100, limit=3, sleep=s),
+    ):
+        client, requests = recording_client([reserved_handle_422()])
+        sleeps = Sleeps()
+        with pytest.raises(SystemExit) as stopped:
+            run(client, sleeps)
+        assert stopped.value.code != 0
+        assert sum(r.method == "POST" for r in requests) == 1
+        assert sleeps == []
+    out, _ = output(capsys)
+    assert out.count("That handle is reserved") == 2
+
+
+def test_feeder_stops_on_any_other_422_without_looping(capsys):
+    too_long = httpx.Response(
+        422,
+        json={"detail": [{"loc": ["body", "instructions"], "msg": "String too long"}]},
+    )
+    client, requests = recording_client([too_long])
+    sleeps = Sleeps()
+
+    with pytest.raises(SystemExit) as stopped:
+        house_feeder.feed(client, BASE, depth=100, limit=5, sleep=sleeps)
+    assert stopped.value.code != 0
+    assert sum(r.method == "POST" for r in requests) == 1
+    assert sleeps == []
+    assert "String too long" in output(capsys)[0]
+
+
+def test_batch_keeps_going_past_another_422(capsys):
+    too_long = httpx.Response(
+        422,
+        json={"detail": [{"loc": ["body", "instructions"], "msg": "String too long"}]},
+    )
+    client, requests = recording_client([too_long, OK])
+
+    assert house_strategies.submit_all(client, BASE, only=2, sleep=Sleeps()) == 1
+    assert sum(r.method == "POST" for r in requests) == 2
+    assert "FAIL blue-chip-hodl: 422" in output(capsys)[0]
+
+
+def test_name_taken_422_still_skips_instantly_in_the_feeder():
+    taken = httpx.Response(422, json={"detail": "that name is taken"})
+    client, _ = recording_client([taken, OK])
+    sleeps = Sleeps()
+
+    assert house_feeder.feed(client, BASE, depth=100, limit=1, sleep=sleeps) == 1
+    assert sleeps == [3.0]  # only the pacing after the success
+
+
+def test_a_house_post_carries_the_operator_contact_and_the_admin_header():
+    client, requests = recording_client([OK])
+
+    assert house_strategies.submit_all(client, BASE, only=1, sleep=Sleeps()) == 1
+    assert house_feeder.feed(client, BASE, depth=100, limit=1, sleep=Sleeps()) == 1
+    posts = [r for r in requests if r.method == "POST"]
+    assert len(posts) == 2
+    for post in posts:
+        body = json.loads(post.content)
+        assert set(body) == {"name", "handle", "instructions", "email", "company", "role"}
+        assert body["handle"] == "house"
+        assert {k: body[k] for k in ("email", "company", "role")} == house_feeder.OPERATOR_CONTACT
+        assert post.headers.get(HEADER) == SENTINEL
+    assert house_strategies.OPERATOR_CONTACT == house_feeder.OPERATOR_CONTACT
+    # The contacts CSV leaves house runs out by this exact email.
+    assert house_feeder.OPERATOR_CONTACT["email"] == OPERATOR_CONTACT_EMAIL

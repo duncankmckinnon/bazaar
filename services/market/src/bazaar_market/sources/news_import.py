@@ -7,6 +7,7 @@ file is revised and available at `updated_at`, or at `created_at` if that is lat
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,13 +56,18 @@ def import_news_snapshot(
     data_version: str = NEWS_VERSION,
     expected: tuple[str, ...] | None = None,
     symbols: tuple[str, ...] | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> NewsImportReport:
     """Check that every wanted symbol was fetched completely, then store its articles.
 
     `expected` lists the symbols the fetch was meant to cover, usually the config's news
     symbols. `symbols`, when given, replaces it and the other fetched symbols are left out.
     An article with an empty headline cannot be served and is counted, not stored.
+    `aliases` maps a fetched news tag to the universe symbol its articles are stored under
+    (Alpaca tags Berkshire's class B as BRK/B and BRK, not BRK.B). An article found under two
+    tags of one symbol is stored once, and the symbol's window is the part all its tags cover.
     """
+    aliases = aliases or {}
     snapshot_dir = Path(snapshot_dir)
     fetched = recorded_windows(snapshot_dir)
     if not fetched:
@@ -71,13 +77,17 @@ def import_news_snapshot(
     if never:
         raise SourceError(f"missing coverage: {snapshot_dir} never fetched {', '.join(never)}")
 
+    by_symbol: dict[str, list[str]] = {}
+    for tag in sorted(set(wanted)):
+        by_symbol.setdefault(aliases.get(tag, tag), []).append(tag)
     records: list[NewsRecord] = []
     coverage = {}
     report = []
-    for symbol in sorted(set(wanted)):
-        coverage[symbol] = news_coverage(snapshot_dir, symbol)
-        items = load_news(snapshot_dir, symbol)
-        kept = [to_record(symbol, item) for item in items if item.headline.strip()]
+    for symbol, tags in sorted(by_symbol.items()):
+        windows = [news_coverage(snapshot_dir, tag) for tag in tags]
+        coverage[symbol] = (max(w[0] for w in windows), min(w[1] for w in windows))
+        items = {item.id: item for tag in tags for item in load_news(snapshot_dir, tag)}
+        kept = [to_record(symbol, item) for item in items.values() if item.headline.strip()]
         records += kept
         report.append(SymbolNews(symbol, len(kept), len(items) - len(kept)))
     import_news(connection, records, coverage, data_version=data_version)

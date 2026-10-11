@@ -252,16 +252,23 @@ class SqliteFilingArchive:
         for an older period never moves a company's cycle backwards.
         """
         with closing(self._connect()) as connection:
-            imported = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_filings'"
-            ).fetchone()
-            if imported is None:
-                raise MissingCoverage(f"no filings are imported under {self.data_version}")
-            marks = ", ".join("?" for _ in symbols)
-            rows = connection.execute(
-                "SELECT symbol, MAX(period_end) AS period_end FROM data_filings "
-                f"WHERE data_version = ? AND accepted_at <= ? AND symbol IN ({marks}) "
-                "GROUP BY symbol",
-                (self.data_version, stored_time(cutoff), *symbols),
-            ).fetchall()
-        return {r["symbol"]: date.fromisoformat(r["period_end"]) for r in rows}
+            return latest_period_ends(connection, self.data_version, symbols, cutoff)
+
+
+def latest_period_ends(
+    connection: sqlite3.Connection, data_version: str, symbols: list[str], cutoff: datetime
+) -> dict[str, date]:
+    """SqliteFilingArchive.latest_period_ends on a connection the caller opened."""
+    imported = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'data_filings'"
+    ).fetchone()
+    if imported is None:
+        raise MissingCoverage(f"no filings are imported under {data_version}")
+    marks = ", ".join("?" for _ in symbols)
+    rows = connection.execute(
+        "SELECT symbol, MAX(period_end) AS period_end FROM data_filings "
+        f"WHERE data_version = ? AND accepted_at <= ? AND symbol IN ({marks}) "
+        "GROUP BY symbol",
+        (data_version, stored_time(cutoff), *symbols),
+    ).fetchall()
+    return {r[0]: date.fromisoformat(r[1]) for r in rows}
