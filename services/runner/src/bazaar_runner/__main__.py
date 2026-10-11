@@ -53,6 +53,7 @@ from bazaar_runner.http_market import (
     market_client,
 )
 from bazaar_runner.record import Evaluate
+from bazaar_runner.role_source import RoleSourceError, role_source, trading_role_from
 from bazaar_runner.telemetry import configure_telemetry
 
 logger = logging.getLogger("bazaar_runner")
@@ -292,9 +293,16 @@ async def amain(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
+    try:
+        source = role_source()
+    except RoleSourceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     configure_telemetry()
     try:
-        return asyncio.run(amain(args))
+        # Entered before asyncio.run, which copies this context into every launch.
+        with trading_role_from(source):
+            return asyncio.run(amain(args))
     # By name only: any other ValueError (a pydantic ValidationError, say) keeps its traceback.
     except (RunnerConfigError, DemoUnavailable, DuplicateLaunch, BundleError) as exc:
         print(f"error: {exc}", file=sys.stderr)

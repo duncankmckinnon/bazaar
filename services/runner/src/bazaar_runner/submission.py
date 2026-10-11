@@ -33,6 +33,7 @@ from bazaar_runner.demo import Launch, demo_spec
 from bazaar_runner.http_market import HttpMarketPort, market_client
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import record_run
+from bazaar_runner.role_source import RoleSourceError, role_source, trading_role_from
 from bazaar_runner.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,8 @@ def run_submission(
     """Run one agent over the run bundle's sessions and return its scored run directory.
 
     The bundle is $BAZAAR_DATA_BUNDLE (the operator's, shared with the web app), else
-    DEMO_BUNDLE; a malformed value fails before anything else happens.
+    DEMO_BUNDLE, and the trading role comes from $BAZAAR_TRADING_ROLE_SOURCE (role_source);
+    a malformed value of either fails before anything else happens.
 
     The run directory appears in runs_dir all at once (record.json and evaluation.json) or not
     at all. Any failure raises SubmissionFailed with a readable message and leaves nothing behind.
@@ -135,25 +137,31 @@ def run_submission(
         bundle_id = run_bundle_id()
     except BundleError as exc:
         raise SubmissionFailed(f"the demo data is not configured: {exc}") from None
+    try:
+        source = role_source()
+    except RoleSourceError as exc:
+        raise SubmissionFailed(f"the trading role is not configured: {exc}") from None
     # Configures Logfire only if nothing in this process has (the web app usually has).
     configure_telemetry()
     staging = runs_dir / f".tmp-{uuid4().hex}"
     try:
-        run_dir = asyncio.run(
-            _run(
-                submission_id=submission_id,
-                name=name,
-                instructions=instructions,
-                market_url=market_url,
-                runner_token=runner_token,
-                bundle_id=bundle_id,
-                staging=staging,
-                runs_dir=runs_dir,
-                model=model,
-                on_progress=on_progress,
-                handle=handle,
+        # Entered before asyncio.run, which copies this context into the run.
+        with trading_role_from(source):
+            run_dir = asyncio.run(
+                _run(
+                    submission_id=submission_id,
+                    name=name,
+                    instructions=instructions,
+                    market_url=market_url,
+                    runner_token=runner_token,
+                    bundle_id=bundle_id,
+                    staging=staging,
+                    runs_dir=runs_dir,
+                    model=model,
+                    on_progress=on_progress,
+                    handle=handle,
+                )
             )
-        )
     except SubmissionFailed as exc:
         raise SubmissionFailed(redact(str(exc), runner_token)) from None
     except BundleError as exc:
