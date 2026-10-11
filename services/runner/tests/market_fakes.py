@@ -64,6 +64,8 @@ BASE = {
 
 # The fixture universe: every symbol the fake market has prices for.
 SYMBOLS = tuple(BASE)
+# The benchmark has prices and is tradable but is not a universe member, as in the market.
+BENCHMARK = {"SPY": 400}
 # Invented fixture sectors: three groups, so the sector table has more than one row.
 FIXTURE_SECTORS = ("Fixture Tech", "Fixture Health", "Fixture Energy")
 
@@ -102,8 +104,9 @@ def bundle_body(
     }
 
 
-def fixture_bundle(bundle_id: str = DATA_VERSION, symbols=SYMBOLS) -> Bundle:
-    return bundle_from(BundleInfo.model_validate(bundle_body(bundle_id, symbols)))
+def fixture_bundle(bundle_id: str = DATA_VERSION, symbols=SYMBOLS, benchmark=None) -> Bundle:
+    body = bundle_body(bundle_id, symbols, benchmark=benchmark)
+    return bundle_from(BundleInfo.model_validate(body))
 
 
 BUNDLE = fixture_bundle()
@@ -158,16 +161,34 @@ class InMemoryMarket:
         self._ids += 1
         return UUID(int=self._ids)
 
+    def close(self, symbol: str, day: int) -> Decimal:
+        """The fixture close on trading day `day`; tests override it to make stocks fall."""
+        return Decimal((BASE | BENCHMARK)[symbol] + day)
+
     async def price_at(self, symbol, cutoff):
         if self.cutoff is not None and cutoff > self.cutoff:
             raise FutureData(f"{cutoff.isoformat()} is after the experiment cutoff")
         available = [(i, at) for i, at in enumerate(CLOSES) if at <= cutoff]
-        if symbol not in BASE or not available:
+        if symbol not in BASE | BENCHMARK or not available:
             raise MissingPrice(symbol, cutoff)
         day, close_at = available[-1]
         return PriceObservation(
-            observed_at=close_at, available_at=close_at, price=Decimal(BASE[symbol] + day)
+            observed_at=close_at, available_at=close_at, price=self.close(symbol, day)
         )
+
+    async def screen(self, ctx, request):
+        from bazaar_agent.market_view import Screen
+
+        screen = Screen.model_validate(market_read(self, "screen", request.query()))
+        screen.check(request, ctx)
+        return screen
+
+    async def quotes(self, ctx, request):
+        from bazaar_agent.market_view import Quotes
+
+        quotes = Quotes.model_validate(market_read(self, "quotes", request.query()))
+        quotes.check(request, ctx)
+        return quotes
 
     async def set_cutoff(self, experiment_id, cutoff, data_version, execution_rule_version):
         self.calls.append(("set_cutoff", cutoff))
@@ -401,14 +422,15 @@ def news_page(symbol: str, available: int, params, data_version: str = DATA_VERS
     ]
 
 
-def _pct(now: int, then: int) -> str:
-    return f"{(Decimal(now) / Decimal(then) - 1) * 100:.2f}"
+def _pct(now: Decimal, then: Decimal) -> str:
+    return f"{(now / then - 1) * 100:.2f}"
 
 
 def market_read(fake: "InMemoryMarket", kind: str, params) -> dict:
     """The S2 contract's /market/* reads over the fixture closes, at the fake's cutoff.
 
-    Closes rise by 1 a day, so every 1d move is positive and the cheapest stock moves most."""
+    Closes come from fake.close: by default they rise by 1 a day, so every 1d move is positive
+    and the cheapest stock moves most. Ties go to the symbol, as the market orders them."""
     day = max(i for i, at in enumerate(CLOSES) if at <= fake.cutoff)
     envelope = {
         "cutoff_at": utc_z(fake.cutoff),
@@ -417,14 +439,14 @@ def market_read(fake: "InMemoryMarket", kind: str, params) -> dict:
     }
 
     def row(symbol: str) -> dict:
-        close = BASE[symbol] + day
+        close = fake.close(symbol, day)
         return {
             "symbol": symbol,
             "name": f"{symbol} Fixture Corp",
             "sector": sector_of(symbol),
             "close": str(close),
-            "pct_change_1d": _pct(close, close - 1) if day >= 1 else None,
-            "pct_change_5d": _pct(close, close - 5) if day >= 5 else None,
+            "pct_change_1d": _pct(close, fake.close(symbol, day - 1)) if day >= 1 else None,
+            "pct_change_5d": _pct(close, fake.close(symbol, day - 5)) if day >= 5 else None,
             "volume": "1000",
             "observed_at": utc_z(CLOSES[day]),
         }
@@ -440,7 +462,13 @@ def market_read(fake: "InMemoryMarket", kind: str, params) -> dict:
         sort, direction = params.get("sort", "pct_change_1d"), params.get("direction", "desc")
         rows = [row(s) for s in sorted(BASE)]
         ranked = [r for r in rows if r[sort] is not None]
-        ranked.sort(key=lambda r: Decimal(r[sort]), reverse=direction == "desc")
+        # Ties by symbol ascending in either direction, as the market does.
+        ranked.sort(
+            key=lambda r: (
+                -Decimal(r[sort]) if direction == "desc" else Decimal(r[sort]),
+                r["symbol"],
+            )
+        )
         return envelope | {
             "sort": sort,
             "direction": direction,
@@ -503,7 +531,8 @@ def delegating_transport(
         body = json.loads(request.content) if request.content else {}
         view = SimpleNamespace(
             simulated_at=fake.cutoff,
-            data_version=SPEC.data_version,
+            # The experiment's own bundle, as the market echoes it (set by its first cutoff).
+            data_version=fake.data_version,
             execution_rule_version=SPEC.execution_rule_version,
         )
         try:

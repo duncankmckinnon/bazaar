@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from bazaar_protocol import (
@@ -21,6 +21,10 @@ from bazaar_protocol import (
     Symbol,
     WireModel,
 )
+
+if TYPE_CHECKING:
+    # The one typed client module for the universe reads lives with the agent (bazaar_agent).
+    from bazaar_agent.market_view import Quotes, QuotesRequest, Screen, ScreenRequest
 
 
 class FiscalCycle(WireModel):
@@ -119,6 +123,14 @@ class MarketPort(Protocol):
         self, ctx: ExperimentContext, symbols: Sequence[str]
     ) -> tuple[FiscalCycle, ...]:
         """Each symbol's cycle as of ctx's cutoff; a symbol with no public filing is absent."""
+        ...
+
+    async def screen(self, ctx: ExperimentContext, request: "ScreenRequest") -> "Screen":
+        """The universe ranked at ctx's cutoff (GET market/screen), checked against ctx."""
+        ...
+
+    async def quotes(self, ctx: ExperimentContext, request: "QuotesRequest") -> "Quotes":
+        """Up to 50 symbols' latest closes at ctx's cutoff (GET market/quotes), checked."""
         ...
 
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:

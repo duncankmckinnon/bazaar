@@ -3,7 +3,9 @@
     uv run --package bazaar-runner python -m bazaar_runner --demo
 
 Four launches: agent-fixture-v1 (the agent places its own order through bazaar_agent.trading),
-scripted-momentum-v1 (drop it with --no-momentum), and the buy-and-hold and cash-only baselines.
+scripted-momentum-v2 (the universe's top movers from one screen per decision; drop it with
+--no-momentum), baseline-buy-and-hold-spy (the bundle's benchmark, bought on day 1) and
+baseline-cash-only.
 Every launch runs on the one --data-version bundle (default $BAZAAR_DATA_BUNDLE, else
 DEMO_BUNDLE). The runner reads it
 once from the market's GET /bundles/{id}: the universe and the trading sessions come from there,
@@ -12,7 +14,7 @@ Logfire sends only when LOGFIRE_TOKEN is set in the environment; the runner neve
 
 Ids come from flags or environment variables. The runner token comes only from
 BAZAAR_RUNNER_TOKEN and is never printed. The agent harness (bazaar_agent.trading), evals
-(bazaar_evaluation) and the baselines (bazaar_replay) are on the demo integration branch.
+(bazaar_evaluation) and the cash-only baseline (bazaar_replay) are on the demo integration branch.
 """
 
 import argparse
@@ -33,13 +35,14 @@ from bazaar_runner.bundle import (
 )
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
-    BUY_AND_HOLD_REF,
+    BUY_AND_HOLD_SPY_REF,
     CASH_ONLY_REF,
-    MOMENTUM_REF,
+    MOMENTUM_V2_REF,
+    BuyAndHoldBenchmark,
     DuplicateLaunch,
     Launch,
     PolicyFactory,
-    ScriptedMomentum,
+    ScriptedMomentumV2,
     check_one_agent_per_experiment,
     run_demo,
 )
@@ -58,8 +61,8 @@ logger = logging.getLogger("bazaar_runner")
 # and port.
 DEMO_LAUNCHES = (
     ("agent-fixture", AGENT_FIXTURE_REF, ()),
-    ("momentum", MOMENTUM_REF, ("agent",)),
-    ("buy-and-hold", BUY_AND_HOLD_REF, ()),
+    ("momentum", MOMENTUM_V2_REF, ("agent",)),
+    ("buy-and-hold", BUY_AND_HOLD_SPY_REF, ()),
     ("cash-only", CASH_ONLY_REF, ()),
 )
 KINDS = ("experiment", "approval")
@@ -181,7 +184,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def demo_launches(args: argparse.Namespace) -> list[tuple[str, str, tuple[str, ...]]]:
-    return [row for row in DEMO_LAUNCHES if not (args.no_momentum and row[1] == MOMENTUM_REF)]
+    return [row for row in DEMO_LAUNCHES if not (args.no_momentum and row[1] == MOMENTUM_V2_REF)]
 
 
 def _ids(args: argparse.Namespace, prefix: str) -> dict[str, UUID | None]:
@@ -229,14 +232,14 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
 
     policies: dict[str, PolicyFactory] = {
         AGENT_FIXTURE_REF: agent,
-        MOMENTUM_REF: lambda bundle, prices: ScriptedMomentum(bundle.symbols, prices),
+        MOMENTUM_V2_REF: lambda bundle, prices: ScriptedMomentumV2(bundle.symbols),
+        BUY_AND_HOLD_SPY_REF: lambda bundle, prices: BuyAndHoldBenchmark(bundle.benchmark, prices),
     }
     try:
-        from bazaar_replay.baselines import BuyAndHold, CashOnly
+        from bazaar_replay.baselines import CashOnly
     except ImportError:
-        logger.warning("bazaar_replay is not installed; skipping the baseline runs")
+        logger.warning("bazaar_replay is not installed; skipping the cash-only run")
     else:
-        policies[BUY_AND_HOLD_REF] = lambda bundle, prices: BuyAndHold(bundle.symbols, prices)
         policies[CASH_ONLY_REF] = lambda bundle, prices: CashOnly()
     return policies
 
@@ -251,7 +254,9 @@ async def amain(args: argparse.Namespace) -> int:
             ids = _ids(args, prefix)
             launches.append(Launch(ref, ids["experiment"], ids["approval"]))
     if args.refused_demo:
-        launches.append(Launch(MOMENTUM_REF, args.refused_experiment_id, args.refused_approval_id))
+        launches.append(
+            Launch(MOMENTUM_V2_REF, args.refused_experiment_id, args.refused_approval_id)
+        )
     # One agent per experiment: refuse before any port, account or order exists.
     check_one_agent_per_experiment(launches)
 

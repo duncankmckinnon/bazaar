@@ -10,8 +10,10 @@ from bazaar_runner import __main__ as cli
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
+    BUY_AND_HOLD_SPY_REF,
     CASH_ONLY_REF,
     MOMENTUM_REF,
+    MOMENTUM_V2_REF,
     DuplicateLaunch,
     Launch,
     ScriptedMomentum,
@@ -285,19 +287,20 @@ def test_other_value_errors_are_not_swallowed_by_the_cli(offline_cli, monkeypatc
 def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
     args = cli.parse_args(["--demo", *cli_ids()])
     assert args.data_version == "demo-bundle-v2"
+    # The S&P 500 launch set (spec v5): equal-weight and momentum v1 are gone.
     assert [ref for _, ref, _ in cli.demo_launches(args)] == [
         "agent-fixture-v1",
-        "scripted-momentum-v1",
-        "baseline-buy-and-hold",
+        "scripted-momentum-v2",
+        "baseline-buy-and-hold-spy",
         "baseline-cash-only",
     ]
-    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_REF]
+    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_V2_REF]
     args = cli.parse_args(["--demo", "--no-momentum", *cli_ids(*rows)])
-    assert MOMENTUM_REF not in [ref for _, ref, _ in cli.demo_launches(args)]
+    assert MOMENTUM_V2_REF not in [ref for _, ref, _ in cli.demo_launches(args)]
 
 
 def test_the_deprecated_agent_names_still_set_momentum_but_warn(offline_cli, monkeypatch, caplog):
-    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_REF]
+    rows = [r for r in cli.DEMO_LAUNCHES if r[1] != MOMENTUM_V2_REF]
     by_flag = cli.parse_args(
         [
             "--demo",
@@ -599,43 +602,155 @@ class ReadingMarket(InMemoryMarket):
         return await super().price_at(symbol, cutoff)
 
 
-async def test_an_eleven_symbol_bundle_is_every_policys_universe(monkeypatch, tmp_path):
-    """The universe comes from the bundle: no policy reads, quotes or orders a dropped symbol."""
-    pytest.importorskip("bazaar_replay.baselines")
-    pytest.importorskip("bazaar_agent.trading")
+MOMENTUM2 = Launch(MOMENTUM_V2_REF, UUID(int=0xE6), UUID(int=0xA6))
+HOLD_SPY = Launch(BUY_AND_HOLD_SPY_REF, UUID(int=0xE7), UUID(int=0xA7))
+ELEVEN_SPY = fixture_bundle("demo-bundle-eleven", ELEVEN.symbols, benchmark="SPY")
+
+
+class MovingMarket(InMemoryMarket):
+    """EA (outside the eleven) is the day's top mover; KO rises to day 3, then falls."""
+
+    def close(self, symbol, day):
+        if symbol == "EA":
+            return Decimal(150 + 10 * day)
+        if symbol == "KO":
+            return Decimal(60 + day if day <= 3 else 63 - 2 * (day - 3))
+        return super().close(symbol, day)
+
+
+async def run_cli_set(tmp_path, monkeypatch, markets=None, bundle=ELEVEN_SPY):
     from bazaar_runner import agent, agent_step
 
     made, steps = [], []
     monkeypatch.setattr(agent, "make_agent_decider", lambda *a, **kw: made.append(kw))
     monkeypatch.setattr(agent_step, "AgentStep", lambda *a, **kw: steps.append(kw) or cash_only)
-    policies = cli.load_policies("http://market")
-    launches = [MOMENTUM, CASH, HOLD, AGENT]
-    markets = {launch: ReadingMarket() for launch in launches}
+    launches = [MOMENTUM2, CASH, HOLD_SPY, AGENT]
+    markets = markets or {launch: MovingMarket() for launch in launches}
     records = await run_demo(
         launches,
         markets,
-        policies,
+        cli.load_policies("http://market"),
         starting_cash=Decimal(10000),
         runs_dir=tmp_path,
-        bundle=ELEVEN,
+        bundle=bundle,
         execution_rule_version="exec-v1",
     )
+    return records, markets, made, steps
 
-    assert len(ELEVEN.symbols) == 11 and "EA" not in ELEVEN.symbols
+
+async def test_the_cli_set_runs_on_an_eleven_symbol_bundle(monkeypatch, tmp_path):
+    """The universe and benchmark come from the bundle: nothing orders a dropped symbol."""
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    records, _, made, steps = await run_cli_set(tmp_path, monkeypatch)
+
     assert all(
         r.status == "completed" and r.manifest.data_version == ELEVEN.bundle_id for r in records
-    )
-    # The agent's trading day and its research symbols; its market summary reads the market.
+    ), [r.failure for r in records]
     (decider,) = made
     assert decider["sessions"] == ELEVEN.sessions and "quote_symbols" not in decider
     # The agent has no eager universe read: cycles are read per filings request.
     assert len(steps) == 1 and "symbols" not in steps[0]
-    hold = records[2]
-    assert sorted(o.request.symbol for o in hold.orders) == sorted(ELEVEN.symbols)
-    assert markets[MOMENTUM].read == markets[HOLD].read == set(ELEVEN.symbols)
+    # EA tops every screen but is not in the bundle, so nothing ever orders it.
     assert all(o.request.symbol != "EA" for r in records for o in r.orders)
-    # Every run reads the twelve-symbol fixture prices, yet none of them touched EA.
-    assert all("EA" not in m.read for m in markets.values())
+
+
+async def test_buy_and_hold_spy_buys_only_the_benchmark_on_day_one(monkeypatch, tmp_path):
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    (_, _, hold, _), *_ = await run_cli_set(tmp_path, monkeypatch)
+
+    (order,) = hold.orders
+    # The first open sees the 2026-01-30 close, 400: floor(10000 / 400) = 25 whole shares.
+    assert (order.request.symbol, order.request.side, order.request.quantity) == ("SPY", "buy", 25)
+    assert order.decided_at == SESSIONS[0].open_at and order.result.status == "filled"
+    assert hold.final_account.cash == 0 and len(hold.marks) == len(SESSIONS)
+
+
+async def test_buy_and_hold_spy_fails_loudly_without_a_benchmark(monkeypatch, tmp_path):
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    with pytest.raises(ValueError, match="no benchmark"):
+        await run_cli_set(tmp_path, monkeypatch, bundle=ELEVEN)
+
+
+async def test_momentum_v2_screens_once_per_decision_and_follows_the_movers(monkeypatch, tmp_path):
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    (momentum, *_), markets, _, _ = await run_cli_set(tmp_path, monkeypatch)
+    calls = markets[MOMENTUM2].calls
+
+    # Exactly one screen per decision, the top 5 by 1d change; quotes only for holdings.
+    screens = [c for c in calls if c[:2] == ("market", "screen")]
+    assert len(screens) == len(SESSIONS)
+    assert {tuple(sorted(c[2].items())) for c in screens} == {
+        (("direction", "desc"), ("limit", "5"), ("sort", "pct_change_1d"))
+    }
+    assert not [c for c in calls if c[0] == "market" and c[1] not in ("screen", "quotes")]
+    # No per-stock price reads: the screen and quotes carry every price it uses.
+    orders = [(o.decided_at, o.request.side.value, o.request.symbol) for o in momentum.orders]
+    # Day 1 has no 1d change yet; day 2 buys the top two movers in the universe, KO and FISV.
+    assert orders[:2] == [(SESSIONS[1].open_at, "buy", "KO"), (SESSIONS[1].open_at, "buy", "FISV")]
+    # KO falls after day 3, so it is sold at the next decision that sees the fall.
+    assert ("sell", "KO") in {(side, symbol) for _, side, symbol in orders}
+    assert all(o.result.status == "filled" for o in momentum.orders)
+    assert all(o.result.account.cash >= 0 for o in momentum.orders)
+    assert {symbol for *_, symbol in orders} <= set(ELEVEN.symbols)
+    # At most two new holdings per decision.
+    buys_per_day = {}
+    for at, side, _ in orders:
+        buys_per_day[at] = buys_per_day.get(at, 0) + (side == "buy")
+    assert max(buys_per_day.values()) <= 2
+
+
+async def test_momentum_v2_is_deterministic(monkeypatch, tmp_path):
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    first, *_ = await run_cli_set(tmp_path / "a", monkeypatch)
+    second, *_ = await run_cli_set(tmp_path / "b", monkeypatch)
+
+    def dumped(records):
+        return [r.model_dump(mode="json", exclude={"trace_id"}) for r in records]
+
+    assert dumped(first) == dumped(second) and first[0].orders
+
+
+async def test_the_agent_fixture_runs_on_a_500_symbol_bundle(tmp_path):
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_runner.agent import (
+        AGENT_FIXTURE_INSTRUCTIONS,
+        fixture_model_factory,
+        make_agent_decider,
+    )
+    from bazaar_runner.agent_step import AgentStep
+
+    universe = (*SYMBOLS, *(f"S{i:03d}" for i in range(500 - len(SYMBOLS))))
+    big = fixture_bundle("demo-bundle-500", universe, benchmark="SPY")
+    market = InMemoryMarket()
+    (record,) = await run_demo(
+        [AGENT],
+        {AGENT: market},
+        {
+            AGENT_FIXTURE_REF: lambda bundle, prices: AgentStep(
+                make_agent_decider(
+                    AGENT_FIXTURE_INSTRUCTIONS, fixture_model_factory(), sessions=bundle.sessions
+                ),
+                market_url="http://market",
+                transport=delegating_transport(market, approval_id=AGENT.approval_id),
+            )
+        },
+        starting_cash=Decimal(10000),
+        runs_dir=tmp_path,
+        bundle=big,
+        execution_rule_version="exec-v1",
+    )
+    assert len(big.symbols) == 500
+    assert record.status == "completed" and record.decision_errors == (), record.failure
+    (order,) = record.orders
+    assert (order.request.symbol, order.result.status) == ("AAPL", "filled")
+    # The summary reads stay bounded: one sectors and two screens per decision.
+    reads = [c[1] for c in market.calls if c[0] == "market"]
+    assert reads.count("sectors") == len(SESSIONS) and reads.count("screen") == 2 * len(SESSIONS)
 
 
 async def test_the_twelve_symbol_bundle_still_drives_buy_and_hold(tmp_path):

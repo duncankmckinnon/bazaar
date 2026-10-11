@@ -314,6 +314,32 @@ class HttpMarketPort:
         content = await self._request("GET", "/fiscal-cycles", params=params)
         return parse_fiscal_cycles(content)
 
+    async def _market_read(self, ctx: ExperimentContext, kind: str, request, model):
+        # Not a control route: the approval header only. The server reads at the cutoff.
+        self._check(ctx.experiment_id)
+        content = await self._request("GET", f"/market/{kind}", params=request.query())
+        try:
+            read = model.model_validate_json(content)
+            read.check(request, ctx)
+        except (ValidationError, ValueError):
+            raise MarketError(
+                ErrorDetail(
+                    code=ErrorCode.INTERNAL_ERROR,
+                    message=f"the market's {kind} answer does not match the contract",
+                )
+            ) from None
+        return read
+
+    async def screen(self, ctx: ExperimentContext, request):
+        from bazaar_agent.market_view import Screen
+
+        return await self._market_read(ctx, "screen", request, Screen)
+
+    async def quotes(self, ctx: ExperimentContext, request):
+        from bazaar_agent.market_view import Quotes
+
+        return await self._market_read(ctx, "quotes", request, Quotes)
+
     async def price_at(self, symbol: str, cutoff: datetime) -> PriceObservation:
         params = {
             "start_at": utc_z(cutoff - PRICE_LOOKBACK),
