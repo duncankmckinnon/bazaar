@@ -15,7 +15,8 @@ from bazaar_web.tickers import TickerSource
 from fastapi.testclient import TestClient
 
 # The market's bar table (bazaar_market.prices on main), copied so the test builds its own
-# synthetic database without importing market code. The web reads only closes from it.
+# synthetic database without importing market code. The web reads closes from it, and the
+# bundle table only for the legacy v1 fallback (bars version), as main does.
 MARKET_SCHEMA = """
 CREATE TABLE data_bars (
     data_version TEXT NOT NULL, symbol TEXT NOT NULL, observed_at TEXT NOT NULL,
@@ -23,6 +24,10 @@ CREATE TABLE data_bars (
     close TEXT NOT NULL, volume INTEGER NOT NULL CHECK (volume >= 0), source TEXT NOT NULL,
     PRIMARY KEY (data_version, symbol, observed_at)
 );
+CREATE TABLE data_bundles (
+    bundle_id TEXT PRIMARY KEY, bars TEXT NOT NULL, news TEXT NOT NULL, filings TEXT NOT NULL
+);
+INSERT INTO data_bundles VALUES ('demo-bundle-v1', 'synthetic-bars-v1', 'news-v1', 'filings-v1');
 """
 FEB = [date(2026, 2, d) for d in (2, 3, 4, 5, 6, 9, 10, 11, 12, 13)]
 SEP_OCT = [date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30)] + [
@@ -303,8 +308,8 @@ def test_a_failing_read_still_closes_its_connection(tmp_path, monkeypatch, case)
 # ---------- through the app ----------
 
 
-def app_with(settings, helpers, *responses, **changes):
-    bundles, calls, clock = source(*responses)
+def app_with(settings, helpers, *responses, bundle_id="demo-bundle-v1", **changes):
+    bundles, calls, clock = source(*responses, bundle_id=bundle_id)
     app = create_app(
         dataclasses.replace(settings, **changes), helpers.FakeRunner(), bundle_source=bundles
     )
@@ -329,8 +334,11 @@ def test_the_board_window_comes_from_the_bundle(settings, helpers, tmp_path, bod
     assert len(calls) == 1  # one market call for every poll
 
 
-@pytest.mark.parametrize("failure", [404, httpx.ConnectError("refused")])
-def test_without_a_bundle_the_board_has_no_window_and_no_ticker_days(
+FAILURES = [404, 500, httpx.ConnectError("refused"), httpx.ReadTimeout("slow"), {"bad": 1}]
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+def test_v1_falls_back_to_mains_feb_window_when_the_route_is_unavailable(
     settings, helpers, tmp_path, failure
 ):
     app, calls, _ = app_with(settings, helpers, failure, market_db=market_db(tmp_path / "m.db"))
@@ -340,11 +348,52 @@ def test_without_a_bundle_the_board_has_no_window_and_no_ticker_days(
         c.get("/api/board")
 
     assert board.status_code == tickers.status_code == 200
+    window = board.json()["window"]
+    assert (window["start"], window["end"], window["days"]) == ("2026-02-02", "2026-02-13", 10)
+    assert window["symbols"] == list(SYMBOLS)
+    days = tickers.json()["days"]
+    # The bars version comes from the market DB's bundle table, as on main.
+    assert [d["date"] for d in days] == [s.isoformat() for s in FEB]
+    assert tickers.json()["window"]["start"] == "2026-02-02"
+    assert len(calls) == 1  # retried no sooner than RETRY_S
+
+
+@pytest.mark.parametrize("failure", FAILURES)
+def test_any_other_bundle_id_has_no_window_when_the_route_is_unavailable(
+    settings, helpers, tmp_path, failure
+):
+    app, _, _ = app_with(
+        settings, helpers, failure, bundle_id="demo-bundle-v2", market_db=market_db(tmp_path / "m")
+    )
+    with TestClient(app) as c:
+        board = c.get("/api/board")
+        tickers = c.get("/api/tickers")
+
+    assert board.status_code == tickers.status_code == 200
     assert {k: board.json()["window"][k] for k in ("start", "end", "days")} == {
         "start": None, "end": None, "days": None,
     }  # fmt: skip
     assert tickers.json()["days"] == [] and tickers.json()["window"]["start"] is None
-    assert len(calls) == 1  # retried no sooner than RETRY_S
+
+
+def test_the_route_takes_over_from_the_v1_fallback_after_the_retry_window(
+    settings, helpers, tmp_path
+):
+    v1_from_route = bundle_body(SEP_OCT, bars="synthetic-bars-v2")  # the route answers later
+    app, calls, clock = app_with(
+        settings, helpers, 404, v1_from_route, market_db=market_db(tmp_path / "m.db")
+    )
+    with TestClient(app) as c:
+        before = c.get("/api/board").json()["window"]["start"]
+        before_days = c.get("/api/tickers").json()["days"]
+        clock.t += RETRY_S
+        after = c.get("/api/board").json()["window"]
+        after_days = c.get("/api/tickers").json()["days"]
+
+    assert before == "2026-02-02" and before_days[0]["date"] == "2026-02-02"
+    assert (after["start"], after["end"], after["days"]) == ("2026-09-28", "2026-10-09", 10)
+    assert [d["date"] for d in after_days] == [s.isoformat() for s in SEP_OCT]
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("shape", ["universe", "symbols"])

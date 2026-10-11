@@ -25,6 +25,21 @@ def session_date(observed_at: str) -> date:
     return datetime.fromisoformat(observed_at).astimezone(EASTERN).date()
 
 
+def bars_version(conn: sqlite3.Connection, data_version: str) -> str:
+    """A bundle id's bars component, or the value itself when it is a plain bars version.
+
+    Mirrors bazaar_market.bundles.component(..., "bars"); a database without bundles has none.
+    Only the legacy fallback needs it: the bundle route names its bars version.
+    """
+    try:
+        row = conn.execute(
+            "SELECT bars FROM data_bundles WHERE bundle_id = ?", (data_version,)
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return data_version
+    return row[0] if row else data_version
+
+
 def pct_change(close: Decimal, previous: Decimal | None) -> float | None:
     if previous is None or previous <= 0:
         return None
@@ -34,23 +49,24 @@ def pct_change(close: Decimal, previous: Decimal | None) -> float | None:
 def read_days(path: Path, bundle: Bundle) -> list[dict[str, Any]]:
     """Each bundle session's closes, with the change from the previous bar (even pre-window)."""
     symbols = bundle.symbols
-    sessions = set(bundle.sessions)
     uri = f"{path.resolve().as_uri()}?mode=ro"
     # closing(): a bare "with connect()" commits but never closes, even on success.
     with closing(sqlite3.connect(uri, uri=True, timeout=30)) as conn:
+        bars = bundle.bars or bars_version(conn, bundle.bundle_id)
         marks = ", ".join("?" * len(symbols))
         before = datetime.combine(bundle.end + timedelta(days=1), datetime.min.time(), UTC)
         rows = conn.execute(
             f"SELECT symbol, observed_at, close FROM data_bars WHERE data_version = ? "
             f"AND symbol IN ({marks}) AND observed_at < ? ORDER BY symbol, observed_at",
-            (bundle.bars, *symbols, before.isoformat()),
+            (bars, *symbols, before.isoformat()),
         ).fetchall()
 
     by_day: dict[date, dict[str, dict[str, Any]]] = {}
     previous: dict[str, Decimal] = {}
     for symbol, observed_at, close_text in rows:
         day, close = session_date(observed_at), Decimal(close_text)
-        if day in sessions:
+        in_window = day in bundle.sessions if bundle.sessions else bundle.start <= day <= bundle.end
+        if in_window:
             by_day.setdefault(day, {})[symbol] = {
                 "symbol": symbol,
                 "close": float(close),

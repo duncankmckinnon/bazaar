@@ -172,7 +172,7 @@ def build_board(
         "end": bundle.end.isoformat() if bundle else None,
         "starting_cash": float(starting_cash),
         "symbols": list(bundle.symbols if bundle else SYMBOLS),
-        "days": len(bundle.sessions) if bundle else None,
+        "days": bundle.days if bundle else None,
     }
     return {
         "window": window,

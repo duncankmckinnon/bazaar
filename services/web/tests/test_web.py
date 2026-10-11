@@ -426,13 +426,14 @@ def test_pages_fall_back_to_placeholders(settings, helpers, tmp_path, monkeypatc
     assert "The submission form is coming soon." in form.text
 
 
-def test_empty_runs_dir_and_no_bundle_give_no_window(settings, helpers):
+def test_empty_runs_dir_and_no_bundle_route_give_the_v1_fallback_window(settings, helpers):
+    # The default bundle is demo-bundle-v1 and conftest's market has no bundle route.
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         payload = client.get("/api/board").json()
 
     assert payload["window"] == {
-        "start": None,
-        "end": None,
+        "start": "2026-02-02",
+        "end": "2026-02-13",
         "starting_cash": 10000.0,
         "symbols": [
             "AAPL",
@@ -448,7 +449,7 @@ def test_empty_runs_dir_and_no_bundle_give_no_window(settings, helpers):
             "WMT",
             "XOM",
         ],
-        "days": None,
+        "days": 10,
     }
     assert payload["rows"] == []
 
