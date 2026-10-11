@@ -3,7 +3,9 @@
 Each operation opens its own connection, so worker threads can report progress safely.
 """
 
+import logging
 import sqlite3
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -31,7 +33,8 @@ CREATE TABLE IF NOT EXISTS submissions (
     hidden INTEGER NOT NULL DEFAULT 0,
     latest_value TEXT,
     trace_context TEXT,
-    rerun_of TEXT
+    rerun_of TEXT,
+    error_class TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -48,6 +51,36 @@ CREATE TABLE IF NOT EXISTS submission_progress (
 """
 
 Now = Callable[[], datetime]
+
+log = logging.getLogger("bazaar_web.store")
+
+
+class LockErrors:
+    """Counts SQLite "database is locked" / "busy" errors in this process. Measures only."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return self._count
+
+    @contextmanager
+    def counted(self) -> Iterator[None]:
+        try:
+            yield
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "locked" in message or "busy" in message:
+                with self._lock:
+                    self._count += 1
+                log.warning("sqlite lock error: %s", exc)
+            raise
+
+
+LOCK_ERRORS = LockErrors()
 
 
 class NameTaken(Exception):
@@ -84,10 +117,17 @@ class TracedConnection:
         self.traced = logfire.instrument_sqlite3(conn)
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
-        return self.traced.cursor().execute(sql, params)
+        with LOCK_ERRORS.counted():
+            return self.traced.cursor().execute(sql, params)
+
+    def control(self, sql: str) -> None:
+        """BEGIN, COMMIT or ROLLBACK, untraced."""
+        with LOCK_ERRORS.counted():
+            self.raw.execute(sql)
 
     def executescript(self, script: str) -> sqlite3.Cursor:
-        return self.raw.executescript(script)
+        with LOCK_ERRORS.counted():
+            return self.raw.executescript(script)
 
     def close(self) -> None:
         self.raw.close()
@@ -111,7 +151,7 @@ class Store:
         """
         with self._tx() as conn:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(submissions)")}
-            for column in ("latest_value", "trace_context", "rerun_of"):
+            for column in ("latest_value", "trace_context", "rerun_of", "error_class"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
 
@@ -123,13 +163,13 @@ class Store:
     @contextmanager
     def _tx(self) -> Iterator["TracedConnection"]:
         with closing(self._connect()) as conn:
-            conn.raw.execute("BEGIN IMMEDIATE")
+            conn.control("BEGIN IMMEDIATE")
             try:
                 yield conn
             except BaseException:
-                conn.raw.execute("ROLLBACK")
+                conn.control("ROLLBACK")
                 raise
-            conn.raw.execute("COMMIT")
+            conn.control("COMMIT")
 
     def _stamp(self) -> str:
         return self.now().isoformat()
@@ -298,13 +338,21 @@ class Store:
             found.setdefault(row["submission_id"], []).append((row["day"], row["value"]))
         return found
 
-    def finish(self, submission_id: str, *, run_dir: str | None, error: str | None) -> None:
+    def finish(
+        self,
+        submission_id: str,
+        *,
+        run_dir: str | None,
+        error: str | None,
+        error_class: str | None = None,
+    ) -> None:
+        """error is the public text; error_class only the exception's class name, for stats."""
         status = "failed" if error else "scored"
         with self._tx() as conn:
             conn.execute(
-                "UPDATE submissions SET status = ?, run_dir = ?, error = ?, finished_at = ? "
-                "WHERE id = ?",
-                (status, run_dir, error, self._stamp(), submission_id),
+                "UPDATE submissions SET status = ?, run_dir = ?, error = ?, error_class = ?, "
+                "finished_at = ? WHERE id = ?",
+                (status, run_dir, error, error_class, self._stamp(), submission_id),
             )
 
     def hide(self, submission_id: str) -> bool:
@@ -334,6 +382,15 @@ class Store:
             conn.execute(
                 "DELETE FROM submission_progress WHERE submission_id = ?", (submission_id,)
             )
+
+    def timings(self) -> list[dict[str, Any]]:
+        """Every submission's status, timestamps and failure class, hidden ones included."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, name, status, created_at, started_at, finished_at, error_class, "
+                "rerun_of FROM submissions ORDER BY rowid"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def in_flight(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as conn:

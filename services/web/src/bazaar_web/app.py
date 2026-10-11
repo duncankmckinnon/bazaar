@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -15,10 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from bazaar_web import telemetry
+from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
+    LOCK_ERRORS,
     CapReached,
     Hidden,
     NameTaken,
@@ -240,6 +242,31 @@ def create_app(
             "peer": request.client.host if request.client else None,
             "cap_ip": client_ip(request),
         }
+
+    @app.get("/api/admin/stats")
+    def admin_stats(
+        request: Request, token: AdminToken = None, since: str | None = None
+    ) -> dict[str, Any]:
+        """Throughput since ?since= (ISO; default the last 6 hours). Untraced, like the polls."""
+        require_admin(token)
+        store: Store = request.app.state.store
+        try:
+            # An unencoded "+00:00" offset arrives as " 00:00".
+            start = (
+                stats.parse_time(since.replace(" ", "+"))
+                if since
+                else store.now() - timedelta(hours=6)
+            )
+        except ValueError:
+            raise HTTPException(422, "since must be an ISO 8601 timestamp") from None
+        with logfire.suppress_instrumentation():
+            rows = store.timings()
+        return stats.summarize(
+            rows,
+            since=start,
+            max_concurrent=settings.max_concurrent,
+            lock_errors=LOCK_ERRORS.count,
+        )
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     logfire.instrument_fastapi(
