@@ -264,7 +264,7 @@ def create_app(
         with logfire.suppress_instrumentation():
             rows = store.timings()
             counts = store.lane_counts()
-            house = house_status(store)
+            house = house_status(store, request.app.state.worker)
         lanes = {
             "human": {
                 "slots": settings.max_concurrent,
@@ -281,8 +281,9 @@ def create_app(
             lanes=lanes,
         )
 
-    def house_status(store: Store) -> dict[str, Any]:
+    def house_status(store: Store, worker: Worker) -> dict[str, Any]:
         state = store.house_state()
+        until = worker.house_backoff_until
         cap = settings.house_max_per_hour
         return {
             "enabled": settings.house_enabled and settings.house_concurrent > 0,
@@ -296,26 +297,28 @@ def create_app(
             "started_last_hour": state["last_hour"],
             "max_per_hour": cap,
             "rate_limited": cap is not None and state["last_hour"] >= cap,
+            "consecutive_failures": worker.house_failures,
+            "backoff_until": until.isoformat() if until and until > store.now() else None,
         }
 
     @app.get("/api/admin/house")
     def house(request: Request, token: AdminToken = None) -> dict[str, Any]:
         require_admin(token)
-        return house_status(request.app.state.store)
+        return house_status(request.app.state.store, request.app.state.worker)
 
     @app.post("/api/admin/house/pause")
     def house_pause(request: Request, token: AdminToken = None) -> dict[str, Any]:
         """Stop starting house runs (running ones finish). Kept across restarts."""
         require_admin(token)
         request.app.state.store.set_house_paused(True)
-        return house_status(request.app.state.store)
+        return house_status(request.app.state.store, request.app.state.worker)
 
     @app.post("/api/admin/house/resume")
     def house_resume(request: Request, token: AdminToken = None) -> dict[str, Any]:
         require_admin(token)
         request.app.state.store.set_house_paused(False)
         request.app.state.worker.wake_house()
-        return house_status(request.app.state.store)
+        return house_status(request.app.state.store, request.app.state.worker)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     logfire.instrument_fastapi(

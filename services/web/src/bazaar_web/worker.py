@@ -12,7 +12,7 @@ import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,6 +37,13 @@ HOUSE_OFF = "the house lane is off"
 # How long an idle house slot (paused, capped or off) waits before it looks again; a resume
 # wakes it at once.
 HOUSE_IDLE_S = 5.0
+# Consecutive failed house runs back the whole lane off: 5 s, 10 s, 20 s ... up to 5 min; a
+# scored run resets it, and so does an admin resume. A failing market or runner must not become a
+# hot loop of failed rows and public "run failed" events: while backing off, house failures add
+# no wire event, and the HOUSE_FAIL_NOTICE-th failure in a row posts one notice instead.
+HOUSE_FAIL_BACKOFF_S = 5.0
+HOUSE_FAIL_BACKOFF_MAX_S = 300.0
+HOUSE_FAIL_NOTICE = 5
 
 
 class RunSubmission(Protocol):
@@ -109,6 +116,9 @@ class Worker:
             else None
         )
         self.house_resume: list[str] = []  # house runs interrupted by a restart, run first
+        self.house_failures = 0  # consecutive failed house runs, lane-wide
+        self.house_backoff_until: datetime | None = None  # wall time, for the admin status
+        self._house_backoff_deadline = 0.0  # loop time
 
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -173,8 +183,27 @@ class Worker:
             self.house_pool.shutdown(wait=False, cancel_futures=True)
 
     def wake_house(self) -> None:
-        """Safe from the threadpool that runs sync routes: idle house slots look again now."""
+        """Safe from the threadpool that runs sync routes: idle house slots look again now. An
+        admin resume also ends a failure backoff (an explicit "try again")."""
+        self.loop.call_soon_threadsafe(self._reset_house_backoff)
         self.loop.call_soon_threadsafe(self.house_wake.set)
+
+    def _reset_house_backoff(self) -> None:
+        self.house_failures = 0
+        self.house_backoff_until = None
+        self._house_backoff_deadline = 0.0
+
+    def _house_failed(self) -> None:
+        """Count a failed house run and push the lane's next start out."""
+        self.house_failures += 1
+        delay = min(HOUSE_FAIL_BACKOFF_S * 2 ** (self.house_failures - 1), HOUSE_FAIL_BACKOFF_MAX_S)
+        self._house_backoff_deadline = self.loop.time() + delay
+        self.house_backoff_until = self.store.now() + timedelta(seconds=delay)
+        log.warning("house run failed (%d in a row); next in %.0f s", self.house_failures, delay)
+        if self.house_failures == HOUSE_FAIL_NOTICE:
+            self.store.add_event(
+                f"house runs paused: runner failing; retrying in {delay:.0f}s", None
+            )
 
     def _next_house(self) -> str | None:
         """The next house run to start: an interrupted one first, else a new strategy."""
@@ -186,23 +215,38 @@ class Worker:
             created = self.store.create_house(catalog(), self.settings.house_max_per_hour)
         return created[0] if created else None
 
+    async def _house_wait(self, seconds: float) -> None:
+        """Sleep up to seconds; a resume (wake_house) ends it early."""
+        self.house_wake.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self.house_wake.wait(), seconds)
+
     async def _house_slot(self) -> None:
-        """One house slot: run house strategies back to back; idle while paused or capped."""
+        """One house slot: run house strategies back to back while they succeed; idle while
+        paused, capped or off, or while the lane backs off after failures."""
         while True:
+            wait = self._house_backoff_deadline - self.loop.time()
+            if wait > 0:
+                await self._house_wait(wait)
+                continue
             try:
                 submission_id = self._next_house()
             except Exception:  # a store error must not end the slot
                 log.exception("house lane could not start a run")
                 submission_id = None
             if submission_id is None:
-                self.house_wake.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self.house_wake.wait(), HOUSE_IDLE_S)
+                await self._house_wait(HOUSE_IDLE_S)
                 continue
             try:
                 await self._run(submission_id, self.house_pool)
             except Exception:
                 log.exception("worker error on house submission %s", submission_id)
+            with logfire.suppress_instrumentation():
+                row = self.store.get(submission_id)
+            if row is not None and row["status"] == "scored":
+                self._reset_house_backoff()
+            else:
+                self._house_failed()
 
     def enqueue(self, submission_id: str) -> None:
         """Safe from the threadpool that runs sync routes."""
@@ -299,6 +343,8 @@ class Worker:
         self.store.finish(
             submission["id"], run_dir=None, error=error, error_class=type(exc).__name__
         )
+        if submission.get("lane") == "house" and self.house_failures:
+            return  # backing off: the lane's one notice stands in for each failure
         self.store.add_event(f"{submission['name']}'s run failed", submission["id"])
 
     async def _notify(self, submission_id: str, run_dir: Path) -> None:

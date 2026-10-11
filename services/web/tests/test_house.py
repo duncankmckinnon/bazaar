@@ -1,6 +1,7 @@
 import dataclasses
 import sqlite3
 import threading
+import time
 from datetime import timedelta
 
 import bazaar_web.worker
@@ -379,3 +380,89 @@ def test_migration_adds_lane_and_house_state_to_an_old_database(tmp_path):
             name="new-bot", handle=None, instructions="x" * 20, ip_hash="h",
             max_queue=1, max_per_day=150, max_per_ip_hour=5,
         )  # fmt: skip
+
+
+# ---------- failure backoff ----------
+
+
+class FailingRunner(LaneRunner):
+    """Fails at once while failing is set; otherwise finishes like LaneRunner(auto=True)."""
+
+    def __init__(self, helpers):
+        super().__init__(helpers, auto=True)
+        self.failing = threading.Event()
+        self.failing.set()
+
+    def __call__(self, *, name, **kwargs):
+        if self.failing.is_set():
+            with self.lock:
+                self.started.append(name)
+            raise RuntimeError("market down")
+        return super().__call__(name=name, **kwargs)
+
+
+@pytest.fixture
+def scaled_backoff(monkeypatch):
+    """The backoff at 1:100, so a simulated minute takes 0.6 s: 0.05 s doubling to 3 s."""
+    monkeypatch.setattr(bazaar_web.worker, "HOUSE_FAIL_BACKOFF_S", 0.05)
+    monkeypatch.setattr(bazaar_web.worker, "HOUSE_FAIL_BACKOFF_MAX_S", 3.0)
+
+
+def house_rows(path):
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute("SELECT status FROM submissions WHERE lane = 'house'").fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def test_a_failing_runner_backs_the_lane_off(settings, helpers, scaled_backoff):
+    runner = FailingRunner(helpers)
+    config = lanes(settings, house_concurrent=3)
+    with TestClient(create_app(config, runner)) as client:
+        helpers.wait_for(lambda: len(runner.started) >= 3)
+        time.sleep(0.6)  # a simulated minute
+        state = client.get("/api/admin/house", headers=ADMIN).json()
+        events = [e["text"] for e in client.get("/api/board").json()["events"]]
+        client.post("/api/admin/house/pause", headers=ADMIN)
+
+    rows = house_rows(config.web_db)
+    # Without the backoff three slots made hundreds of rows a second; with it, 5 + 10 + 20 + 40
+    # + 80 + 160 s of waiting covers the minute after the first failures.
+    assert 3 <= len(rows) <= 12 and set(rows) == {"failed"}
+    assert state["consecutive_failures"] == len(rows)
+    assert state["backoff_until"] is not None
+    notices = [e for e in events if e.startswith("house runs paused: runner failing")]
+    assert len(notices) == (1 if len(rows) >= 5 else 0)
+    assert sum(e.endswith("'s run failed") for e in events) <= 3  # the first ones only
+
+
+def test_the_backoff_resets_after_a_success(settings, helpers, scaled_backoff):
+    runner = FailingRunner(helpers)
+    config = lanes(settings, house_concurrent=1)
+    with TestClient(create_app(config, runner)) as client:
+        helpers.wait_for(lambda: len(runner.started) >= 3)
+        failing = client.get("/api/admin/house", headers=ADMIN).json()
+        runner.failing.clear()
+        helpers.wait_for(lambda: "scored" in house_rows(config.web_db), timeout=10)
+        recovered = client.get("/api/admin/house", headers=ADMIN).json()
+        client.post("/api/admin/house/pause", headers=ADMIN)
+
+    assert failing["consecutive_failures"] >= 3 and failing["backoff_until"] is not None
+    assert (recovered["consecutive_failures"], recovered["backoff_until"]) == (0, None)
+
+
+def test_resume_ends_a_backoff(settings, helpers, monkeypatch):
+    monkeypatch.setattr(bazaar_web.worker, "HOUSE_FAIL_BACKOFF_S", 60.0)  # far longer than the test
+    runner = FailingRunner(helpers)
+    config = lanes(settings, house_concurrent=1)
+    with TestClient(create_app(config, runner)) as client:
+        helpers.wait_for(lambda: len(runner.started) == 1)
+        helpers.wait_for(
+            lambda: client.get("/api/admin/house", headers=ADMIN).json()["consecutive_failures"]
+        )
+        runner.failing.clear()
+        resumed = client.post("/api/admin/house/resume", headers=ADMIN).json()
+        helpers.wait_for(lambda: "scored" in house_rows(config.web_db))
+        client.post("/api/admin/house/pause", headers=ADMIN)
+
+    assert resumed["consecutive_failures"] in (0, 1)  # the reset runs on the loop right after
