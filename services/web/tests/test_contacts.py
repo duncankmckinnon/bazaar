@@ -256,17 +256,22 @@ def test_contacts_csv_is_not_traced(settings, helpers, capfire, caplog):
     # Distinctive values, so stray spans from elsewhere can never mask or fake a result.
     sentinels = ("zz-csvtrace@example.com", "ZZCSVTRACECOMPANY", "ZZCSVTRACEROLE")
     caplog.set_level(logging.DEBUG)
-    Store(settings.web_db).create(
+    store = Store(settings.web_db)
+    sid = store.create(
         name="csv-trace-bot", handle=None, instructions="Buy KO on dips, hold MSFT.",
         ip_hash="h", max_queue=30, max_per_day=150, max_per_ip_hour=5,
         contact=Contact(*sentinels),
     )  # fmt: skip
+    store.finish(sid, run_dir=None, error="the run failed; please try again")  # nothing to run
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         capfire.exporter.clear()
         response = client.get("/api/admin/contacts", headers=ADMIN)
 
     assert sentinels[0] in response.text  # the export really carried them
     spans = capfire.exporter.exported_spans_as_dict()
+    # The route is untraced: no request span and no sqlite span (its reads run suppressed).
+    # Reliable since conftest drains earlier tests' run threads.
+    assert spans == []
     # (a) No span for the contacts request: not by name, route, path or URL.
     for span in spans:
         where = json.dumps([span["name"], span["attributes"]], default=str)
