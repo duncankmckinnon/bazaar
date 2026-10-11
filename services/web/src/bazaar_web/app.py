@@ -24,6 +24,7 @@ from bazaar_web.store import (
     LOCK_ERRORS,
     CapReached,
     Hidden,
+    HouseRun,
     NameTaken,
     NotFound,
     Now,
@@ -230,6 +231,8 @@ def create_app(
             raise HTTPException(409, "that submission is still queued or running") from None
         except Hidden:
             raise HTTPException(409, "that submission was already rerun or is hidden") from None
+        except HouseRun:
+            raise HTTPException(409, "house runs refill automatically") from None
         position = store.position(new_id)  # read before a worker can pick it up
         request.app.state.worker.enqueue(new_id)
         request.app.state.board.invalidate()

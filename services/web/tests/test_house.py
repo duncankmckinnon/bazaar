@@ -466,3 +466,40 @@ def test_resume_ends_a_backoff(settings, helpers, monkeypatch):
         client.post("/api/admin/house/pause", headers=ADMIN)
 
     assert resumed["consecutive_failures"] in (0, 1)  # the reset runs on the loop right after
+
+
+# ---------- admin rerun ----------
+
+
+def test_a_house_row_cannot_be_rerun_and_nothing_changes(settings, helpers):
+    store = Store(settings.web_db)
+    sid, name = store.create_house(catalog(), None)
+    store.finish(sid, run_dir=None, error="the run failed; please try again")
+    with sqlite3.connect(settings.web_db) as conn:
+        before = conn.execute("SELECT * FROM submissions ORDER BY rowid").fetchall()
+    conn.close()
+
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        response = client.post(f"/api/admin/submissions/{sid}/rerun", headers=ADMIN)
+
+    assert (response.status_code, response.json()) == (
+        409,
+        {"detail": "house runs refill automatically"},
+    )
+    with sqlite3.connect(settings.web_db) as conn:
+        after = conn.execute("SELECT * FROM submissions ORDER BY rowid").fetchall()
+    conn.close()
+    assert after == before  # no rename, no hide, no new row
+    assert Store(settings.web_db).get(sid)["name"] == name
+
+
+def test_a_human_row_still_reruns(seeded, helpers):
+    with TestClient(create_app(seeded, helpers.FakeRunner())) as client:
+        sid = client.post("/api/submissions", json=body("human-one")).json()["id"]
+        helpers.wait_for(lambda: status(client, sid)["status"] == "scored")
+        response = client.post(f"/api/admin/submissions/{sid}/rerun", headers=ADMIN)
+        new_id = response.json()["id"]
+        helpers.wait_for(lambda: status(client, new_id)["status"] == "scored")
+
+    assert response.status_code == 201
+    assert Store(seeded.web_db).get(new_id)["lane"] == "human"

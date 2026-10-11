@@ -111,6 +111,10 @@ class Hidden(Exception):
     """Already rerun (its replacement is the live row) or hidden by moderation."""
 
 
+class HouseRun(Exception):
+    """A house-lane row: the lane refills itself, so there is nothing to rerun."""
+
+
 class CapReached(Exception):
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
@@ -339,6 +343,8 @@ class Store:
             # paid run under the "~" name) and never un-hides a moderated name.
             if old["hidden"]:
                 raise Hidden
+            if old["lane"] == "house":
+                raise HouseRun
             if old["status"] in ("queued", "running"):
                 raise StillInFlight
             conn.execute(
