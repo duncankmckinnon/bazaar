@@ -207,3 +207,32 @@ def test_a_bundle_without_new_fields_keeps_its_symbols():
         symbols=("AAA",), days=3,
     )  # fmt: skip
     assert (v1.universe_name, v1.benchmark, v1.universe) == (None, None, "1 STOCKS")
+
+
+# ---------- the reserved handle ----------
+
+
+@pytest.mark.parametrize("handle", ["house", "House", "HOUSE", " house ", "\thoUSe\n"])
+def test_attendees_cannot_take_the_house_handle(settings, helpers, handle):
+    from bazaar_web.app import create_app
+    from fastapi.testclient import TestClient
+
+    body = {"name": "spoof-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        response = client.post("/api/submissions", json=body)
+
+    assert response.status_code == 422
+    [error] = response.json()["detail"]
+    assert (error["loc"], error["msg"]) == (["body", "handle"], "That handle is reserved")
+
+
+@pytest.mark.parametrize("handle", ["@alice", "household", "the-house", None, "   "])
+def test_other_handles_are_still_accepted(settings, helpers, handle):
+    from bazaar_web.app import create_app
+    from fastapi.testclient import TestClient
+
+    body = {"name": "real-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        response = client.post("/api/submissions", json=body)
+
+    assert response.status_code == 201, response.text

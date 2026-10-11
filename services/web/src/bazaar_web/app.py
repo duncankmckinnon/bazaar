@@ -57,6 +57,9 @@ def contact_text(value: str, *, limit: int, message: str) -> str:
     return value
 
 
+RESERVED_HANDLE = "house"
+
+
 class SubmissionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +104,10 @@ class SubmissionIn(BaseModel):
         value = value.strip()
         if len(value) > 40:
             raise ValueError("handle must be at most 40 characters")
+        # "house" marks the house lane's own rows (made server-side, never posted here), and the
+        # board tags them "AI"; an attendee must not be able to claim it.
+        if value.lower() == RESERVED_HANDLE:
+            raise PydanticCustomError("value_error", "That handle is reserved")
         return value or None
 
     @field_validator("instructions")

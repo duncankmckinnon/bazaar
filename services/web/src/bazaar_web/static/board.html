@@ -364,6 +364,8 @@ function renderBoard(data) {
     const nm = li.querySelector(".nm");
     nm.querySelector(".ai")?.remove();  // first, so setName finds its link as before
     setName(nm, r.name, safeUrl(r.logfire_url));
+    // Only server-made house rows carry handle "house" (attendees can't claim it). Once
+    // perf/house-lane merges, the handle check can go in favour of lane alone.
     if (r.lane === "house" || r.handle === "house") {
       const tag = document.createElement("i");
       tag.className = "ai";
