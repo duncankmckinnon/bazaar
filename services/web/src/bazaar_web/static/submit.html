@@ -110,7 +110,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 
   <section id="form-view" aria-labelledby="form-title">
     <h1 id="form-title">Enter your trading agent</h1>
-    <p class="lede">Your agent sees prices, news and filings for <b>12 large US stocks</b>, Feb 2 to 13 2026, starting with <b>$10,000</b>.</p>
+    <p class="lede">Your agent sees prices, news and filings for <b>12 large US stocks</b> over <span id="window">10 recent trading days</span>, starting with <b>$10,000</b>.</p>
     <ul class="tickers" aria-label="The 12 stocks">
       <li class="ticker">AAPL</li><li class="ticker">AMZN</li><li class="ticker">EA</li><li class="ticker">FISV</li>
       <li class="ticker">JNJ</li><li class="ticker">JPM</li><li class="ticker">KO</li><li class="ticker">META</li>
@@ -483,6 +483,32 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     return typeof value === "number" && isFinite(value) ? value : null;
   }
 
+  // windowText:start
+  // "10 trading days, Sep 28 to Oct 9 2026" from the board's window, or null if it is not valid.
+  // Dates are split, not parsed with new Date(), which would shift them by the viewer's timezone.
+  function windowText(win) {
+    var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    function parse(iso) {
+      if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) { return null; }
+      var parts = iso.split("-").map(Number);
+      var year = parts[0], month = parts[1], day = parts[2];
+      var leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+      var lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      if (month < 1 || month > 12 || day < 1 || day > lengths[month - 1]) { return null; }
+      return { iso: iso, year: year, label: MONTHS[month - 1] + " " + day };
+    }
+    if (!win || typeof win !== "object") { return null; }
+    var start = parse(win.start);
+    var end = parse(win.end);
+    if (!start || !end || end.iso < start.iso) { return null; }
+    var days = Number.isInteger(win.days) && win.days > 0 ? win.days : 10;
+    var range = start.year === end.year
+      ? start.label + " to " + end.label + " " + end.year
+      : start.label + " " + start.year + " to " + end.label + " " + end.year;
+    return days + (days === 1 ? " trading day, " : " trading days, ") + range;
+  }
+  // windowText:end
+
   // safeLogfireUrl:start
   // Only an absolute https URL on pydantic.dev (Logfire's hosts) may become a link.
   function safeLogfireUrl(value) {
@@ -645,6 +671,14 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     byId("form-view").hidden = false;
     nameInput.focus();
   });
+
+  // The trading window comes from the board, once; the static text stays if anything is off.
+  fetch("/api/board", { cache: "no-store" }).then(function (response) {
+    return response.ok ? response.json() : null;
+  }).then(function (board) {
+    var text = windowText(board && board.window);
+    if (text) { byId("window").textContent = text; }
+  }).catch(function () { /* keep the static window text */ });
 
   var saved = store.get();
   if (saved) { showStatus(saved); }

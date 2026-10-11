@@ -29,11 +29,12 @@ def test_no_external_scripts_and_only_google_font_urls():
     assert hosts <= {"fonts.googleapis.com", "fonts.gstatic.com"}
 
 
-def test_uses_the_submission_api_and_not_the_board_api():
+def test_uses_the_submission_api_and_reads_the_board_once_for_its_window():
     html = page()
 
     assert "/api/submissions" in html
-    assert "/api/board" not in html
+    assert html.count("/api/board") == 1  # a single fetch on load, for the trading window
+    assert "setInterval" not in html
 
 
 def test_validates_the_name_slug_and_strategy_length():
@@ -69,6 +70,7 @@ def run_page_function(name, calls):
     )
     sources += re.findall(r"// safeLogfireUrl:start(.*?)// safeLogfireUrl:end", page(), re.DOTALL)
     sources += re.findall(r"// contactErrors:start(.*?)// contactErrors:end", page(), re.DOTALL)
+    sources += re.findall(r"// windowText:start(.*?)// windowText:end", page(), re.DOTALL)
     script = (
         "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
     )
@@ -328,3 +330,52 @@ def test_server_field_errors_map_to_the_contact_fields():
 
     for name in ("name", "handle", "instructions", "email", "company", "role"):
         assert re.search(rf"\b{name}: ", fields), name
+
+
+def test_window_text_formats_the_api_window():
+    calls = [
+        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 10}),
+        json.dumps({"start": "2025-12-29", "end": "2026-01-09", "days": 10}),
+        json.dumps({"start": "2026-09-28", "end": "2026-10-09"}),
+        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 5}),
+        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 0}),
+        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": "7"}),
+        json.dumps({"start": "2026-10-09", "end": "2026-10-09", "days": 1}),
+        json.dumps({"start": "2024-02-29", "end": "2024-03-01", "days": 2}),
+    ]
+
+    assert run_page_function("windowText", calls) == [
+        "10 trading days, Sep 28 to Oct 9 2026",
+        "10 trading days, Dec 29 2025 to Jan 9 2026",
+        "10 trading days, Sep 28 to Oct 9 2026",
+        "5 trading days, Sep 28 to Oct 9 2026",
+        "10 trading days, Sep 28 to Oct 9 2026",
+        "10 trading days, Sep 28 to Oct 9 2026",
+        "1 trading day, Oct 9 to Oct 9 2026",
+        "2 trading days, Feb 29 to Mar 1 2024",
+    ]
+
+
+def test_window_text_rejects_invalid_windows():
+    calls = [
+        "null",
+        "{}",
+        json.dumps({"start": "2026-13-01", "end": "2026-12-31"}),
+        json.dumps({"start": "2026-02-01", "end": "2026-02-30"}),
+        json.dumps({"start": "2025-02-29", "end": "2025-03-01"}),
+        json.dumps({"start": "2026-10-09", "end": "2026-09-28"}),
+        json.dumps({"start": 20260928, "end": "2026-10-09"}),
+        json.dumps({"start": "2026-9-28", "end": "2026-10-09"}),
+        json.dumps({"start": "2026-09-28T00:00:00Z", "end": "2026-10-09"}),
+        '"2026-09-28"',
+    ]
+
+    assert run_page_function("windowText", calls) == [None] * len(calls)
+
+
+def test_lede_markup_has_no_hard_coded_dates():
+    lede = re.search(r'<p class="lede">(.*?)</p>', page(), re.DOTALL).group(1)
+
+    assert "Feb 2" not in lede and "2026" not in lede
+    assert "10 recent trading days" in lede
+    assert "// windowText:start" in page() and "// windowText:end" in page()
