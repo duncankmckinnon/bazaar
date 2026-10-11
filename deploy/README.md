@@ -32,6 +32,37 @@ The Modal secret `bazaar-live`, which Anthony creates. Nobody prints its values.
 The caps (`BAZAAR_MAX_QUEUE`, `BAZAAR_MAX_SUBMISSIONS_PER_DAY`, `BAZAAR_MAX_PER_IP_PER_HOUR`) can go in the same secret.
 Without them the web app uses its defaults.
 
+## The market data bundle
+
+The market DB that `BAZAAR_DEPLOY_MARKET_DB` points at holds `demo-bundle-v1`. It maps three imports
+(`services/market/src/bazaar_market/bundles.py`): bars `alpaca-bars-v1`, news `alpaca-news-v1` and filings
+`edgar-filings-v1`, which are the import commands' defaults.
+
+- **Bars are required.** Fetch and import them with `services/market/README.md` section 1.
+- **News is needed for the agent's news reads.** Without it the market answers `news` with 404 `data_unavailable`.
+- **Filings are optional.** Without them `GET /fiscal-cycles` returns `[]` and the agent's `filings()` tool returns
+  `unsupported`.
+
+After the bars, import news and filings into the same DB:
+
+```sh
+# News (reads ALPACA_API_KEY and ALPACA_SECRET_KEY)
+uv run --env-file .env python -m bazaar_market.sources news --version news-2026-10-06
+uv run python -m bazaar_market.sources import-news \
+    --snapshot data/raw/alpaca-news/news-2026-10-06 --db data/market.sqlite3
+
+# Filings (no API key; EDGAR needs a contact user agent, see below)
+uv run --env-file .env python -m bazaar_market.sources edgar --version edgar-2026-10-06
+uv run python -m bazaar_market.sources import-filings \
+    --snapshot data/raw/edgar/edgar-2026-10-06 --db data/market.sqlite3
+```
+
+Bars are unadjusted on purpose: adjusted history rewrites old prices with later corporate actions, which would leak
+the future into the past (`sources/alpaca_bars.py`). Raw snapshots under `data/raw/` and the market DB
+(`data/*.sqlite3*`) are gitignored. The provider terms have not been reviewed, so never commit downloaded data. The
+keys are `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` for Alpaca. EDGAR needs a user agent with a contact address;
+`config/demo-sources.toml` sets one, and `SEC_USER_AGENT` overrides it. Never print the keys' values.
+
 ## Deploy (PM only)
 
 ```sh
@@ -157,6 +188,68 @@ back up:
    ```
 
    Then redeploy without `BAZAAR_RESEED_RUNS`. The `reseeded-<id>` marker stays, so that id never runs again.
+
+## Filling the board
+
+Two scripts submit house strategies to a running deploy, so the board has something on it before
+and between attendees. Both submit under the handle `house` (change it with `--handle`), take the
+deploy URL as an argument or the `BASE_URL` environment variable, and need no token.
+
+- `scripts/house_strategies.py` submits a fixed batch of 30 varied strategies once. Use it to seed
+  an empty board.
+
+  ```bash
+  uv run python scripts/house_strategies.py BASE_URL [--handle house] [--only N]
+  ```
+
+- `scripts/house_feeder.py` keeps the board busy without crowding out attendees. It submits a new
+  generated strategy whenever fewer than `--depth` submissions are queued or running, and stops
+  after `--max` have been queued. Use it while the board is on screen.
+
+  ```bash
+  uv run python scripts/house_feeder.py BASE_URL [--depth 4] [--max 80] [--handle house]
+  ```
+
+Each run cost about $0.26 to $1.28 in model calls on the live deploy (observed in October 2026). House runs count
+against the same caps as attendees: the queue cap, the daily cap and the per-IP hourly cap all answer 429. With the
+default per-IP cap of 5 an hour, 30 strategies from one address take about 6 hours. On 429 or 503,
+`house_strategies.py` waits 60 seconds and retries the same name. On 429, `house_feeder.py` waits 5 minutes and then
+moves on to the next generated name; the rate-limited name is dropped. A name that is already taken is skipped. Stop
+either script with Ctrl-C; submissions already queued still run. The submit page's link to a strategy's Logfire
+dashboard comes from `BAZAAR_LOGFIRE_DASHBOARD_URL`.
+
+## Logfire
+
+Runs export to the `bazaar-demo` Logfire project when `LOGFIRE_TOKEN`, a project write token, is set. On Modal it
+comes from the `bazaar-live` secret above. Every process configures Logfire with `send_to_logfire="if-token-present"`,
+so nothing is sent without it. `docs/telemetry.md` lists the spans and attributes.
+
+## Trust boundaries
+
+The boundaries are the point of the demo:
+
+- **The agent never moves the clock.** Only the runner holds `X-Bazaar-Runner-Token`, which the market requires on
+  its control routes (`ledger_api.py`, `grants.py`). The agent's market client carries only `X-Bazaar-Approval` and
+  `X-Bazaar-Account` (`runner/agent_step.py`).
+- **The agent never sees prices after the cutoff.** The market answers 403 for prices, news or filings past the
+  experiment's current time (`prices_api.py`, `news_api.py`, `filings_api.py`).
+- **The agent never changes a balance except by placing an order.** Cash changes only when an order fills; opening
+  and closing accounts are runner-only control routes.
+- **The agent never sees its scores.** None of its tools returns a score, and the strategy judge runs after the
+  decision and writes only to spans (`agent/strategy_evaluation.py`, applied in `agent/trading.py`).
+
+## Open questions for Duncan
+
+1. Account on news and filings: the research routes take the account from the `X-Bazaar-Account` header. Keep the
+   header, or add the account to the route?
+2. Fiscal cycles: a cycle starts the day after the latest 10-K/10-Q period end accepted by the cutoff, so in effect a
+   filing is visible from its acceptance. "Prior fiscal year only" would be a stricter rule that you would define.
+   Which do you want?
+3. `ResearchTools` pins identical queries, and nothing clears the pins after an order, so `orders()` after
+   `market_order()` in one decision fails with `invalid_response` (the history legitimately changed). The runner
+   reconciles it, but should the pins be cleared after an order?
+4. Market approvals are bound to the experiment, not the account (`grants.py`), so they are safe only with one
+   agent per experiment. #18 should issue account-scoped credentials.
 
 ## Modal APIs used, checked against modal 1.6.1
 
