@@ -40,10 +40,20 @@ class LaneRunner:
 
     def gate(self, name):
         with self.lock:
-            return self.gates.setdefault(name, threading.Event())
+            gate = self.gates.setdefault(name, threading.Event())
+            if getattr(self, "released", False):
+                gate.set()
+            return gate
 
     def release(self, name):
         self.gate(name).set()
+
+    def release_all(self):
+        """For conftest's teardown drain: open every gate, now and from now on."""
+        with self.lock:
+            self.released = True
+            for gate in self.gates.values():
+                gate.set()
 
     def running(self, prefix=""):
         with self.lock:
@@ -154,7 +164,11 @@ def test_the_house_lane_stays_full_and_refills(settings, helpers):
     house_rows = [r for r in board if r["lane"] == "house"]
     assert {r["status"] for r in house_rows} == {"running", "scored"}  # never sat queued
     assert all(r["handle"] == "house" for r in house_rows)
-    assert [n for n in runner.started] == [house_name(s, 1) for s, _ in catalog()[:4]]
+    # Releasing the last runs inside the client lets the slots refill once more before the app
+    # stops, so check catalog order over however many started, at least the 4 above.
+    started = list(runner.started)
+    assert len(started) >= 4
+    assert started == [house_name(s, 1) for s, _ in catalog()[: len(started)]]
 
 
 @pytest.mark.parametrize("change", [{"house_enabled": False}, {"house_concurrent": 0}])
@@ -185,6 +199,7 @@ def test_pause_and_resume_persist_across_restarts(settings, helpers):
         assert runner.started == []  # still paused after the restart
         resumed = client.post("/api/admin/house/resume", headers=ADMIN).json()
         helpers.wait_for(lambda: len(runner.running("house-")) == 1)
+        client.post("/api/admin/house/pause", headers=ADMIN)  # first, so the slot can't refill
         runner.release(runner.running()[0])
 
     assert resumed["paused"] is False
@@ -206,8 +221,9 @@ def test_the_cursor_survives_a_restart_and_names_never_repeat(settings, helpers)
         names += runner.started
         Store(config.web_db).set_house_paused(False)
 
+    # Two slots take names in catalog order, but their threads may start in either order.
     assert len(names) == len(set(names))
-    assert names == [house_name(s, 1) for s, _ in catalog()[: len(names)]]
+    assert set(names) == {house_name(s, 1) for s, _ in catalog()[: len(names)]}
 
 
 def test_the_cycle_goes_up_after_the_catalog_and_taken_names_are_skipped(tmp_path):
