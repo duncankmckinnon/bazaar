@@ -22,8 +22,6 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import httpx
-
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
@@ -38,7 +36,12 @@ from bazaar_runner.demo import (
     demo_script,
     run_demo,
 )
-from bazaar_runner.http_market import DEFAULT_BASE_URL, HttpMarketPort, RunnerConfigError
+from bazaar_runner.http_market import (
+    DEFAULT_BASE_URL,
+    HttpMarketPort,
+    RunnerConfigError,
+    market_client,
+)
 from bazaar_runner.record import Evaluate
 from bazaar_runner.telemetry import configure_telemetry
 
@@ -237,7 +240,7 @@ async def amain(args: argparse.Namespace) -> int:
 
     async with (
         strategy_evaluation_session(),
-        httpx.AsyncClient(base_url=args.market_url, timeout=30) as client,
+        market_client(args.market_url, timeout=30) as client,
     ):
         # Built before any run, so a missing token stops the CLI at startup.
         ports = {
