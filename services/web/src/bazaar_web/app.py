@@ -60,9 +60,14 @@ def contact_text(value: str, *, limit: int, message: str) -> str:
 # The board tags rows with this handle "AI": only the operators' house scripts (with the admin
 # token) and the house lane's own server-made rows may carry it.
 RESERVED_HANDLE = "house"
-RESERVED = HTTPException(
-    422, [{"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}]
-)
+
+
+def reserved_handle() -> HTTPException:
+    """A new 422 per refusal: a shared exception would keep the last request's frames (and its
+    parsed body, contact details included) alive until the next raise."""
+    return HTTPException(
+        422, [{"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}]
+    )
 
 
 class SubmissionIn(BaseModel):
@@ -235,12 +240,11 @@ def create_app(
     @app.post("/api/submissions", status_code=201)
     def submit(body: SubmissionIn, request: Request, token: AdminToken = None) -> dict[str, Any]:
         # The same 422 whether the token is missing, wrong or unset: no token oracle.
-        if (
-            body.handle is not None
-            and body.handle.lower() == RESERVED_HANDLE
-            and not is_admin(token)
-        ):
-            raise RESERVED
+        handle = body.handle
+        if handle is not None and handle.lower() == RESERVED_HANDLE:
+            if not is_admin(token):
+                raise reserved_handle()
+            handle = RESERVED_HANDLE  # stored exactly, so the board's AI tag matches
         store: Store = request.app.state.store
         ip_hash = hashlib.sha256(client_ip(request).encode()).hexdigest()
         # The run joins this request's trace: the worker re-attaches this context.
@@ -248,7 +252,7 @@ def create_app(
         try:
             submission_id = store.create(
                 name=body.name,
-                handle=body.handle,
+                handle=handle,
                 instructions=body.instructions,
                 ip_hash=ip_hash,
                 max_queue=settings.max_queue,

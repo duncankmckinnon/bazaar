@@ -249,7 +249,7 @@ def test_with_the_admin_token_the_house_handle_is_allowed(settings, helpers):
     response = post_handle(settings, helpers, " House ", ADMIN)
 
     assert response.status_code == 201, response.text
-    assert Store(settings.web_db).get(response.json()["id"])["handle"] == "House"
+    assert Store(settings.web_db).get(response.json()["id"])["handle"] == "house"  # normalised
 
 
 def test_with_no_admin_token_configured_even_a_header_gets_the_422(settings, helpers):
@@ -273,3 +273,11 @@ def test_the_reserved_422_is_byte_identical_with_and_without_a_wrong_token(setti
     assert {k: v for k, v in bare.headers.items() if k != "date"} == {
         k: v for k, v in wrong.headers.items() if k != "date"
     }
+
+
+def test_each_refusal_raises_a_new_exception():
+    from bazaar_web.app import reserved_handle
+
+    first, second = reserved_handle(), reserved_handle()
+    assert first is not second and first.detail == second.detail
+    assert first.status_code == 422
