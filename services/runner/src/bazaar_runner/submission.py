@@ -4,7 +4,7 @@ run_submission is synchronous and self-contained so the web worker can call up t
 from threads: each call has its own event loop, HTTP clients and market experiment. The only
 shared state is the one-time Logfire configuration.
 
-Progress: after each of the 10 session closes the run calls on_progress(day, value) if the
+Progress: after each of the bundle's session closes the run calls on_progress(day, value) if the
 callback accepts two positional arguments (signature.bind(day, value) succeeds, so (day, value),
 (day, value=None) and *args all count), and on_progress(day) otherwise. value is the Decimal
 portfolio value marked at that close (PortfolioSnapshot.portfolio_value, value-v1). The shape is
@@ -28,7 +28,8 @@ from bazaar_agent.strategy_evaluation import strategy_evaluation_session
 from bazaar_agent.trading import TRADING_ROLE_VARIABLE, DecisionBudget, RuntimeConfig
 from bazaar_protocol.telemetry import redact
 
-from bazaar_runner.demo import DEMO_SYMBOLS, Launch, demo_spec
+from bazaar_runner.bundle import DEMO_BUNDLE, BundleError, read_bundle
+from bazaar_runner.demo import Launch, demo_spec
 from bazaar_runner.http_market import HttpMarketPort, market_client
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import record_run
@@ -36,7 +37,6 @@ from bazaar_runner.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
 
-DATA_VERSION = "demo-bundle-v1"
 EXECUTION_RULE_VERSION = "exec-v1"
 STARTING_CASH = Decimal(10000)
 MARKET_TIMEOUT_SECONDS = 30.0
@@ -123,7 +123,7 @@ def run_submission(
     on_progress: Callable[..., None] | None = None,
     handle: str | None = None,
 ) -> Path:
-    """Run one agent over the demo fortnight and return its scored run directory.
+    """Run one agent over DEMO_BUNDLE's sessions and return its scored run directory.
 
     The run directory appears in runs_dir all at once (record.json and evaluation.json) or not
     at all. Any failure raises SubmissionFailed with a readable message and leaves nothing behind.
@@ -148,6 +148,9 @@ def run_submission(
         )
     except SubmissionFailed as exc:
         raise SubmissionFailed(redact(str(exc), runner_token)) from None
+    except BundleError as exc:
+        message = f"the demo data is not ready: {exc}"
+        raise SubmissionFailed(redact(message, runner_token)) from None
     except MarketError as exc:
         message = f"the market refused the run: {exc.detail.message}"
         raise SubmissionFailed(redact(message, runner_token)) from None
@@ -180,12 +183,6 @@ async def _run(
     experiment_id = submission_experiment_id(submission_id)
     approval_id = uuid4()
     launch = Launch(f"submission:{name}", experiment_id, approval_id)
-    spec = demo_spec(
-        launch,
-        data_version=DATA_VERSION,
-        execution_rule_version=EXECUTION_RULE_VERSION,
-        starting_cash=STARTING_CASH,
-    )
     transport = _transport_for(market_url)
     await TRADING_ROLE_VARIABLE.refresh(force=True)
     with TRADING_ROLE_VARIABLE.get(targeting_key=submission_id) as trading_role:
@@ -195,6 +192,14 @@ async def _run(
                 market_url, timeout=MARKET_TIMEOUT_SECONDS, transport=transport
             ) as client,
         ):
+            # Read before the grant: a bundle the market cannot run leaves no approval bound.
+            bundle = await read_bundle(client, DEMO_BUNDLE)
+            spec = demo_spec(
+                launch,
+                bundle=bundle,
+                execution_rule_version=EXECUTION_RULE_VERSION,
+                starting_cash=STARTING_CASH,
+            )
             port = HttpMarketPort(client, experiment_id, approval_id, runner_token)
             await port.grant(approval_id)
             step = AgentStep(
@@ -204,12 +209,12 @@ async def _run(
                     _model_factory(model),
                     budget=SUBMISSION_BUDGET,
                     runtime=SUBMISSION_RUNTIME,
-                    quote_symbols=DEMO_SYMBOLS,
+                    quote_symbols=bundle.symbols,
                     sessions=spec.script.sessions,
                     trading_role=trading_role.value,
                 ),
                 market_url=market_url,
-                symbols=DEMO_SYMBOLS,
+                symbols=bundle.symbols,
                 transport=transport,
             )
             record, evaluation = await record_run(

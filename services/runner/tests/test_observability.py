@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from .market_fakes import TOKEN
+from .market_fakes import BUNDLE, TOKEN
 from .test_submission import INSTRUCTIONS, GrantingMarket
 
 SENTINELS = {
@@ -599,7 +599,7 @@ def test_the_baggage_allow_list_is_exactly_the_strategy_attributes():
 
     spec = demo_spec(
         Launch("submission:x", submission_experiment_id("b-1"), submission_experiment_id("a")),
-        data_version="demo-bundle-v1",
+        bundle=BUNDLE,
         execution_rule_version="exec-v1",
         starting_cash=10000,
     )

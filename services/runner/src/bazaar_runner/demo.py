@@ -1,35 +1,19 @@
-"""The AI Engineer NYC demo: a scripted agent and a baseline over the same simulated fortnight."""
+"""The AI Engineer NYC demo: a scripted agent and the baselines over one bundle's sessions."""
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from bazaar_protocol import AccountSnapshot, ExperimentContext, OrderRequest, OrderSide
 
-from bazaar_runner.clock import ClockScript, TradingSession
+from bazaar_runner.bundle import Bundle
 from bazaar_runner.market import MarketPort
 from bazaar_runner.policy import Decision, DecisionPolicy, PriceAt
 from bazaar_runner.record import Evaluate, RunRecord, record_run
 from bazaar_runner.run import DecisionStep, RunSpec
 
-# The demo universe (Anthony, v2): twelve large US stocks, all with bars across the window.
-DEMO_SYMBOLS = (
-    "AAPL",
-    "AMZN",
-    "EA",
-    "FISV",
-    "JNJ",
-    "JPM",
-    "KO",
-    "META",
-    "MSFT",
-    "NVDA",
-    "WMT",
-    "XOM",
-)
 MOMENTUM_REF = "scripted-momentum-v1"
 AGENT_FIXTURE_REF = "agent-fixture-v1"
 BUY_AND_HOLD_REF = "baseline-buy-and-hold"
@@ -37,23 +21,9 @@ CASH_ONLY_REF = "baseline-cash-only"
 # Agent and strategy ids are derived from the policy name until the demo goes through the registry.
 _IDS = uuid5(NAMESPACE_URL, "https://github.com/duncankmckinnon/bazaar/runner")
 
-# Called once per launch with that launch's own price lookup.
-PolicyFactory = Callable[[PriceAt], DecisionPolicy | DecisionStep]
-
-
-def demo_script() -> ClockScript:
-    """2026-02-02..13, ten EST sessions: decide at the 09:30 open, mark at the 16:00 close."""
-    days = [date(2026, 2, 2) + timedelta(days=n) for n in range(12)]
-    sessions = tuple(
-        TradingSession(
-            date=day,
-            open_at=datetime(day.year, day.month, day.day, 14, 30, tzinfo=UTC),
-            close_at=datetime(day.year, day.month, day.day, 21, 0, tzinfo=UTC),
-        )
-        for day in days
-        if day.weekday() < 5
-    )
-    return ClockScript(sessions=sessions, decision_offsets=(timedelta(0),))
+# Called once per launch with the run's bundle (its universe and sessions) and that launch's own
+# price lookup.
+PolicyFactory = Callable[[Bundle, PriceAt], DecisionPolicy | DecisionStep]
 
 
 class ScriptedMomentum:
@@ -107,7 +77,7 @@ class Launch:
 
 
 def demo_spec(
-    launch: Launch, *, data_version: str, execution_rule_version: str, starting_cash: Decimal
+    launch: Launch, *, bundle: Bundle, execution_rule_version: str, starting_cash: Decimal
 ) -> RunSpec:
     return RunSpec(
         # One run per experiment, so a relaunch reuses the market's idempotent account request.
@@ -116,10 +86,10 @@ def demo_spec(
         agent_id=uuid5(_IDS, f"agent:{launch.policy_ref}"),
         strategy_version_id=uuid5(_IDS, f"strategy:{launch.policy_ref}"),
         approval_id=launch.approval_id,
-        data_version=data_version,
+        data_version=bundle.bundle_id,
         execution_rule_version=execution_rule_version,
         starting_cash=starting_cash,
-        script=demo_script(),
+        script=bundle.script,
     )
 
 
@@ -146,27 +116,29 @@ async def run_demo(
     ports: Mapping[Launch, MarketPort],
     policies: Mapping[str, PolicyFactory],
     *,
-    data_version: str,
+    bundle: Bundle,
     execution_rule_version: str,
     starting_cash: Decimal,
     runs_dir: Path,
     evaluate: Evaluate | None = None,
 ) -> list[RunRecord]:
-    """Run each launch in turn on its own port. Every policy reads prices only from that port."""
+    """Run each launch in turn on its own port, all on one bundle's universe and sessions.
+
+    Every policy reads prices only from its own port."""
     check_one_agent_per_experiment(launches)
     records = []
     for launch in launches:
         port = ports[launch]
         spec = demo_spec(
             launch,
-            data_version=data_version,
+            bundle=bundle,
             execution_rule_version=execution_rule_version,
             starting_cash=starting_cash,
         )
         record, _ = await record_run(
             spec,
             port,
-            policies[launch.policy_ref](port.price_at),
+            policies[launch.policy_ref](bundle, port.price_at),
             policy_ref=launch.policy_ref,
             runs_dir=runs_dir,
             evaluate=evaluate,

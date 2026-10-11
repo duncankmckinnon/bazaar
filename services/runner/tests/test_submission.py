@@ -11,9 +11,9 @@ import pytest
 from bazaar_agent import trading
 from bazaar_protocol import ApiError, ErrorCode, ErrorDetail
 from bazaar_replay.leaderboard import Run, load_board, load_run
-from bazaar_runner import submission
+from bazaar_runner import agent_step, submission
 from bazaar_runner.agent import fixture_model_factory
-from bazaar_runner.demo import DEMO_SYMBOLS
+from bazaar_runner.bundle import DEMO_BUNDLE
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER
 from bazaar_runner.market import MarketError
 from bazaar_runner.record import RunRecord
@@ -25,7 +25,14 @@ from bazaar_runner.submission import (
     submission_experiment_id,
 )
 
-from .market_fakes import TOKEN, InMemoryMarket, delegating_transport
+from .market_fakes import (
+    SYMBOLS,
+    TOKEN,
+    InMemoryMarket,
+    bundle_body,
+    bundle_response,
+    delegating_transport,
+)
 
 INSTRUCTIONS = "Read the news once, buy ten AAPL at the first open, then hold."
 
@@ -48,6 +55,8 @@ class GrantingMarket:
     def transport(self) -> httpx.MockTransport:
         async def handle(request: httpx.Request) -> httpx.Response:
             self.paths.append(request.url.path)
+            if request.url.path.startswith("/bundles/"):
+                return bundle_response(self.fake, request)
             if request.url.path == "/control/grants":
                 if request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
                     return api_error(401, ErrorCode.UNAUTHORIZED, "runner token required")
@@ -116,7 +125,7 @@ def test_a_submission_runs_scores_and_reaches_the_board(markets, tmp_path):
     assert record.submission_id == "sub-1"
     assert record.manifest.policy_ref == "submission:momo"
     assert record.manifest.experiment_id == submission_experiment_id("sub-1")
-    assert record.manifest.data_version == "demo-bundle-v1"
+    assert record.manifest.data_version == "demo-bundle-v2"
     assert record.manifest.execution_rule_version == "exec-v1"
     assert record.manifest.starting_cash == 10000
     (order,) = record.orders
@@ -226,8 +235,8 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
         (8, 48_000, 20, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
-    # Every decision is told the demo symbols' prices and affordable whole shares.
-    assert quoted == [DEMO_SYMBOLS] * 10
+    # Every decision is told the bundle's symbols' prices and affordable whole shares.
+    assert quoted == [SYMBOLS] * 10
     # ...and which trading day of the run it is.
     assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
     # Only those two limits differ; the default every other launch uses is unchanged.
@@ -418,3 +427,39 @@ def test_keyword_only_value_is_not_passed_positionally():
 
     _progress_reporter(keyword_value)(3, 7)
     assert seen == [(3, None)]
+
+
+def test_a_submission_quotes_and_trades_only_the_bundles_symbols(markets, tmp_path, monkeypatch):
+    market = GrantingMarket()
+    eleven = tuple(s for s in SYMBOLS if s != "EA")
+    market.fake.bundles[DEMO_BUNDLE] = bundle_body(DEMO_BUNDLE, symbols=eleven)
+    markets["http://m1"] = market
+    quoted, steps = [], []
+    real_decision, real_step = trading.run_decision, agent_step.AgentStep.__init__
+
+    async def spy(**kwargs):
+        quoted.append(kwargs["quote_symbols"])
+        return await real_decision(**kwargs)
+
+    def step_spy(self, *args, **kwargs):
+        steps.append(kwargs["symbols"])
+        real_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(trading, "run_decision", spy)
+    monkeypatch.setattr(agent_step.AgentStep, "__init__", step_spy)
+    run_dir, _ = submit(tmp_path, "http://m1")
+
+    assert record_in(run_dir).status == "completed"
+    assert quoted == [eleven] * 10 and steps == [eleven]
+
+
+def test_an_incomplete_bundle_stops_the_submission_before_the_grant(markets, tmp_path):
+    market = GrantingMarket()
+    market.fake.bundles[DEMO_BUNDLE] = bundle_body(
+        DEMO_BUNDLE, incomplete=[(date(2026, 2, 4), ("EA",))]
+    )
+    markets["http://m1"] = market
+    with pytest.raises(SubmissionFailed, match="the demo data is not ready: .*2026-02-04 lacks EA"):
+        submit(tmp_path, "http://m1")
+    assert market.paths == [f"/bundles/{DEMO_BUNDLE}"] and market.grants == {}
+    assert list(tmp_path.iterdir()) == []

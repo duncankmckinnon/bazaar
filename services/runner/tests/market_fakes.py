@@ -23,6 +23,7 @@ from bazaar_protocol import (
     PriceObservation,
     RejectedOrder,
 )
+from bazaar_runner.bundle import DEMO_BUNDLE, Bundle, BundleInfo, bundle_from
 from bazaar_runner.clock import ClockScript, TradingSession
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER, utc_z
 from bazaar_runner.market import FiscalCycle, FutureData, MarketError, MissingPrice
@@ -59,6 +60,41 @@ BASE = {
     "WMT": 100,
     "XOM": 110,
 }
+
+# The fixture universe: every symbol the fake market has prices for.
+SYMBOLS = tuple(BASE)
+
+
+def bundle_body(
+    bundle_id: str = DATA_VERSION,
+    symbols=SYMBOLS,
+    sessions=tuple(s.date for s in SESSIONS),
+    start: date = SESSIONS[0].date,
+    end: date = SESSIONS[-1].date,
+    incomplete=(),
+    expected: int | None = None,
+) -> dict:
+    """A GET /bundles/{id} body in the market's shape (with a field the runner must ignore)."""
+    return {
+        "bundle_id": bundle_id,
+        "bars": "synthetic-bars",
+        "news": "synthetic-news",
+        "filings": "synthetic-filings",
+        "start_date": str(start),
+        "end_date": str(end),
+        "symbols": list(symbols),
+        "sessions": [str(d) for d in sessions],
+        "expected_sessions": len(sessions) if expected is None else expected,
+        "incomplete_sessions": [{"date": str(d), "missing": list(m)} for d, m in incomplete],
+        "a_later_market_field": True,
+    }
+
+
+def fixture_bundle(bundle_id: str = DATA_VERSION, symbols=SYMBOLS) -> Bundle:
+    return bundle_from(BundleInfo.model_validate(bundle_body(bundle_id, symbols)))
+
+
+BUNDLE = fixture_bundle()
 
 SPEC = RunSpec(
     run_id=UUID("00000000-0000-0000-0000-0000000000a0"),
@@ -97,6 +133,8 @@ class InMemoryMarket:
         self.results: dict[UUID, list] = {}
         # What GET fiscal-cycles returns; a symbol with no public filing is simply absent.
         self.cycles: tuple[FiscalCycle, ...] = ()
+        # What GET /bundles/{id} serves: the fixture calendar under the run bundle's id too.
+        self.bundles = {b: bundle_body(b) for b in (DATA_VERSION, DEMO_BUNDLE)}
         self._ids = 0
 
     @property
@@ -346,6 +384,17 @@ def news_page(symbol: str, available: int, params, data_version: str = DATA_VERS
     ]
 
 
+def bundle_response(fake: InMemoryMarket, request: httpx.Request) -> httpx.Response:
+    """GET /bundles/{id}: no credentials needed, 404 for a bundle the market does not have."""
+    if request.method != "GET":
+        return api_error(405, ErrorCode.INVALID_REQUEST)
+    body = fake.bundles.get(request.url.path.removeprefix("/bundles/"))
+    if body is None:
+        return api_error(404, ErrorCode.NOT_FOUND, "no such bundle")
+    fake.calls.append(("bundle", body["bundle_id"], dict(request.headers)))
+    return httpx.Response(200, json=body)
+
+
 def delegating_transport(
     fake: InMemoryMarket,
     seen: list[httpx.Request] | None = None,
@@ -358,6 +407,8 @@ def delegating_transport(
     async def handle(request: httpx.Request) -> httpx.Response:
         if seen is not None:
             seen.append(request)
+        if request.url.path.startswith("/bundles/"):
+            return bundle_response(fake, request)
         if request.headers.get(APPROVAL_HEADER) != str(approval_id):
             return api_error(403, ErrorCode.EXPERIMENT_NOT_APPROVED)
         if route(request) in CONTROL_ROUTES and request.headers.get(RUNNER_TOKEN_HEADER) != TOKEN:
