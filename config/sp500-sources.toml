@@ -1,0 +1,40 @@
+# Sources for the v2 (S&P 500) demo bundle. config/demo-sources.toml stays the v1 (13-company) config.
+#
+# The universe is the S&P 500 as of 2026-09-25. Its list is not committed (the repository is
+# public): it is data/raw/universe/sp500-2026-09-25.csv, gitignored, built and cited as
+# config/sp500-2026-09-25.md describes; --universe-csv names another path. The trading window is
+# 2026-09-28 to 2026-10-09.
+# Bars start 2025-07-01 so research history and 5-day changes have their lookback; news starts
+# 2026-06-01 (four months of research history before the window).
+
+[period]
+start = 2025-07-01
+end = 2026-10-09
+
+[news]
+start = 2026-06-01
+
+[universe]
+csv = "../data/raw/universe/sp500-2026-09-25.csv"
+# SPY is the benchmark: bars only, no news or filings.
+benchmarks = ["SPY"]
+# Paramount Skydance renamed itself Skydance Corporation inside the window: PSKY until 2026-10-05,
+# SKYD from 2026-10-06. SKYD's bars are fetched and stored as PSKY, the 2026-09-25 symbol, and
+# recorded in data_ticker_changes. Bars-only: news under SKYD is not fetched.
+renames = [{ ticker = "SKYD", symbol = "PSKY", effective = 2026-10-06 }]
+# Alpaca's news tags share classes differently from its bars: Berkshire as BRK/B (and BRK/A, BRK),
+# Brown-Forman as BF. Checked in news-2026-10-11-sp500, where BRK.B and BF.B matched no article and
+# articles carried BRK/B, BRK and BF. These tags are fetched in place of the symbol, and their
+# articles stored under it.
+news_aliases = { "BRK.B" = ["BRK/B", "BRK"], "BF.B" = ["BF"] }
+
+[sp500]
+# The membership history the CSV was reconciled against (it ends 2026-09-07). See the .md.
+commit = "a2430f2af0c79ddf0748e91de11bdeb1616ab5a7"
+
+[edgar]
+forms = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
+# Primary documents of 10-K and 10-Q filings accepted from 2025-10-01: the latest annual report
+# and the recent quarters before the window.
+documents_since = 2025-10-01
+user_agent = "bazaar-market-sources/0.1 anthony@pydantic.dev"

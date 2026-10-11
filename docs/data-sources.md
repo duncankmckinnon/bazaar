@@ -149,7 +149,11 @@ Filings (`edgar-filings-v1`):
   A 10-K also reports prior-year and quarterly durations, and a 10-Q reports year-to-date ones, so the first duration
   found is not used.
   A filing with no such duration, or more than one, is left out, and `import-filings` lists it with the reason.
-- A filing is published, revised and available at its acceptance time.
+- A filing is published, revised and available at its acceptance label when that falls inside EDGAR dissemination:
+  on an EDGAR business day, at or after 06:00 Eastern (`edgar.visible_at`). A label before 06:00 or on a closed day
+  counts from the next dissemination start, 06:00 Eastern on the next business day (the same day for an early-morning
+  label). After-hours labels on a business day are kept. This only ever delays a filing; the stored `accepted_at`
+  holds this time.
 - The archive covers acceptances from `edgar.documents_since` (2024-07-01) to the end of the period, because only those
   filings' documents were fetched.
   A qualifying filing in that window without its document stops the import.
@@ -167,7 +171,8 @@ does not list or whose SHA-256 no longer matches.
 
 `sources.visibility` filters records by a timezone-aware simulated time:
 
-- A filing is visible from `accepted_at`, which is EDGAR's `acceptanceDateTime` read as labelled.
+- A filing is visible from `accepted_at`: EDGAR's `acceptanceDateTime` read as labelled, moved to the next 06:00
+  Eastern dissemination start when it falls outside dissemination.
   See the first known limit.
 - A fact is visible when the filing with its accession number is visible.
   If that filing is not loaded, the fact is visible from midnight Eastern on the day after `filed`.
@@ -189,9 +194,21 @@ They do not authorize anything, and the market server still has to enforce the c
   and 8-K filings since 2005 match EDGAR's 17:30 Eastern filing-date rule only after subtracting the Eastern offset.
   Read as labelled, no filing is dated before its acceptance, so these filings become visible late and never early.
   Correcting the value needs the acceptance time on the filing index page, which is on `www.sec.gov`.
-  `load_filings` checks every 10-K, 10-Q and 8-K, and their amendments, against the 17:30 Eastern rule.
-  It raises `SourceError` when a filing is labelled on a weekday before 17:30 Eastern but dated a later day, because
-  that label is earlier than the real acceptance and would show the filing early.
+  `load_filings` checks 10-K, 10-Q and 8-K filings, and their amendments, against the 17:30 Eastern rule. The filings
+  import checks every such filing accepted inside the document window, served or not: an after-hours 8-K is the best
+  evidence that a filer's labels run early.
+  It raises `SourceError` when a filing is labelled on an EDGAR business day before 17:30 Eastern but dated a later
+  day, because that label is earlier than the real acceptance and would show the filing early.
+  A label on a day EDGAR was closed proves nothing, because the filing date rolls to the next business day whatever
+  the time. Closed days are weekends, federal holidays as observed (the SEC EDGAR calendar,
+  https://www.sec.gov/submit-filings/filer-support-resources/edgar-calendar) and these SEC-announced closures:
+  2018-12-05 (https://www.sec.gov/newsroom/whats-new/edgar-be-closed-wednesday-december-5-2018), 2018-12-24
+  (https://www.sec.gov/oit/announcement/december-24-2018-federal-holiday-edgar-filing-purposes), 2024-12-24
+  (https://www.sec.gov/newsroom/whats-new/edgar-closed-24-25-december-2024), 2025-01-09
+  (https://www.sec.gov/newsroom/whats-new/edgar-closed-january-9-2025), and 2025-12-24 and 2025-12-26
+  (https://www.sec.gov/newsroom/whats-new/edgar-will-be-closed-december-24-2025-through-december-26-2025).
+  An uncited closure is left out, which only makes the check stricter. In the S&P 500 snapshot all 25 labels the old
+  weekday-only rule flagged fell on such closures, and none is flagged now.
   This catches only early labels that cross a filing-date boundary.
   An early label that stays on the filing date, such as 16:30 Eastern stamped as 16:30 UTC, is still undetectable
   without the index page.
@@ -219,8 +236,60 @@ They do not authorize anything, and the market server still has to enforce the c
 
 ## Demo config
 
-`config/demo-sources.toml` names thirteen companies and the period 2025-07-01 to 2026-09-30.
+`config/demo-sources.toml` names thirteen companies and the period 2025-07-01 to 2026-09-30: the v1 data. `config/sp500-sources.toml` describes v2.
 Both are placeholders.
 The period is recent so that its last months are after the training cutoff of current models.
 It contains the FI to FISV rename (2025-11-11) and two cash acquisitions: Kellanova (2025-12-11) and Electronic Arts
 (2026-08-04).
+
+## Building the v2 (S&P 500) database
+
+`demo-bundle-v2` trades the S&P 500 as of 2026-09-25 with SPY as the benchmark, over the window
+2026-09-28 to 2026-10-09. Its config is `config/sp500-sources.toml`. The constituent list is not
+committed, because the repository is public: build it at `data/raw/universe/sp500-2026-09-25.csv`
+(gitignored) as `config/sp500-2026-09-25.md` describes, or pass another path with
+`--universe-csv` to every command below. Run everything from the repository root. The fetches need Alpaca keys, so only the PM runs them; the rest needs none.
+
+```sh
+# Fetch (PM). Both resume: rerun with the same --version.
+uv run --env-file .env python -m bazaar_market.sources bars --config config/sp500-sources.toml --universe-csv data/raw/universe/sp500-2026-09-25.csv --version bars-2026-10-11-sp500
+uv run --env-file .env python -m bazaar_market.sources news --config config/sp500-sources.toml --universe-csv data/raw/universe/sp500-2026-09-25.csv --version news-2026-10-11-sp500
+# Public, no keys.
+uv run python -m bazaar_market.sources edgar --config config/sp500-sources.toml --universe-csv data/raw/universe/sp500-2026-09-25.csv --version edgar-2026-10-11-sp500
+
+# Import into a new database. Every v2 import must name its version.
+DB=data/market-v2.sqlite3
+U=data/raw/universe/sp500-2026-09-25.csv   # not committed; see config/sp500-2026-09-25.md
+uv run python -m bazaar_market.sources import-bars --config config/sp500-sources.toml --universe-csv $U \
+  --snapshot data/raw/alpaca-bars/bars-2026-10-11-sp500 --db $DB --data-version alpaca-bars-v2 \
+  --required-from 2026-09-21 --required-to 2026-10-09 --required-symbols SPY
+uv run python -m bazaar_market.sources import-universe --config config/sp500-sources.toml --universe-csv $U \
+  --db $DB --bundle demo-bundle-v2 --data-version alpaca-bars-v2 \
+  --required-from 2026-09-21 --required-to 2026-10-09
+uv run python -m bazaar_market.sources import-news --config config/sp500-sources.toml --universe-csv $U \
+  --snapshot data/raw/alpaca-news/news-2026-10-11-sp500 --db $DB --data-version alpaca-news-v2
+uv run python -m bazaar_market.sources import-filings --config config/sp500-sources.toml --universe-csv $U \
+  --snapshot data/raw/edgar/edgar-2026-10-11-sp500 --db $DB --data-version edgar-filings-v2
+uv run python -m bazaar_market.coverage --db $DB --bundle demo-bundle-v2
+```
+
+- With `config/sp500-sources.toml`, `import-bars`, `import-news` and `import-filings` refuse to run
+  without `--data-version`, and `import-bars` and `import-universe` without the required window.
+  The defaults are the v1 versions, so a v2 import that forgot them would otherwise land in v1.
+- 2026-09-21 is five sessions before the window, so the first day's 5-day change has its closes.
+  `--required-symbols SPY` makes the benchmark's coverage a hard failure. Constituents are judged
+  by `import-universe`.
+- `import-universe` keeps a constituent only if it has a bar on every session from 2026-09-21 to
+  2026-10-09, and records each other one in `data_universe_exclusions` with the reason and its
+  last bar. The CSV stays the full as-of list.
+- The rename in `[universe] renames` (SKYD from 2026-10-06, stored as PSKY) is applied by
+  `import-bars` and recorded in `data_ticker_changes`.
+- Exchange holidays are not removed from a required window. There are none in this one.
+- Timing on a laptop, offline: `import-bars` and `import-universe` take seconds, `import-news` about 25 s, and
+  `import-filings` about 6.5 minutes for the 503 companies (it reads every company's full filing history,
+  1.85 million filings; not profiled). The EDGAR fetch took 25 minutes for 3,884 requests (7.9 GB).
+- Alpaca's news tags share classes unlike its bars, so `[universe] news_aliases` fetches BRK/B and
+  BRK for BRK.B, and BF for BF.B. Alpaca's news filter matches nothing for the slash tag BRK/B,
+  so BRK.B gets only articles tagged BRK: 100 in `news-2026-10-11-sp500`. 12 articles in that
+  snapshot carry BRK/B without BRK, and BRK.B does not have them. A known gap, not fixed.
+- SPY, the benchmark, has bars only. The coverage report lists it without news or filings by design.

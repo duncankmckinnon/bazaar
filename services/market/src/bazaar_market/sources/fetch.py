@@ -102,11 +102,10 @@ def fetch_bars_range(
     headers: dict[str, str] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, int]:
-    """Freeze unadjusted daily bars for every configured company over the configured period."""
+    """Freeze unadjusted daily bars for every configured ticker over the configured period."""
     snap = Snapshot(root, source="alpaca-bars", version=version)
-    tickers = tuple(c.ticker for c in cfg.companies)
     summary = {}
-    for window in ticker_windows(tickers, cfg.period_start, cfg.period_end):
+    for window in ticker_windows(cfg.bar_tickers, cfg.period_start, cfg.period_end):
         bars = fetch_bars(http, window=window, snap=snap, feed=feed, headers=headers, sleep=sleep)
         summary[window.ticker] = len(bars)
     return summary

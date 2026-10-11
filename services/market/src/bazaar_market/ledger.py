@@ -138,13 +138,16 @@ class ExecutionRule:
 RULES = {"exec-v1": ExecutionRule(version="exec-v1", valuation_rule_version="value-v1")}
 
 
-def latest_session(prices: PriceSource, cutoff: datetime) -> TradingSession | None:
+def latest_session(
+    session_on: Callable[[date], TradingSession | None], cutoff: datetime
+) -> TradingSession | None:
     """The most recent session whose close is at or before `cutoff`, from the data version's own
-    calendar. None if there is none within SESSION_LOOKBACK.
+    calendar (`session_on`, e.g. PriceSource.session). None if there is none within
+    SESSION_LOOKBACK. The fill engine and the market-wide reads both use it.
     """
     day = cutoff.date()
     while day >= (cutoff - SESSION_LOOKBACK).date():
-        session = prices.session(day)
+        session = session_on(day)
         if session is not None and session.close_at <= cutoff:
             return session
         day -= timedelta(days=1)
@@ -518,7 +521,7 @@ class Ledger:
             )
 
         prices = self.prices_for(experiment.data_version)
-        session = latest_session(prices, now)
+        session = latest_session(prices.session, now)
         if session is None:
             return reject(ErrorCode.MARKET_CLOSED, "No trading session has closed by the cutoff")
         try:

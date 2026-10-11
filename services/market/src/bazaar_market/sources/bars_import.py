@@ -9,13 +9,14 @@ By default every ticker in the snapshot is checked and imported, all or nothing.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
 from ..prices import Bar, import_bars
 from .errors import SourceError
 from .read import load_bars, recorded_windows
+from .universe import Rename
 
 ALPACA_BARS_VERSION = "alpaca-bars-v1"
 DEMO_RUN = (date(2026, 1, 30), date(2026, 2, 13))
@@ -42,12 +43,57 @@ class TickerCoverage:
 
 
 @dataclass(frozen=True)
+class RenameApplied:
+    rename: Rename
+    mapped: int
+    dropped_before: int  # bars under `ticker` before `effective`: another listing, never stored
+
+
+@dataclass(frozen=True)
 class ImportReport:
     coverage: list[TickerCoverage]
     left_out: tuple[str, ...]
+    renamed: tuple[RenameApplied, ...] = ()
 
 
-def _weekdays(start: date, end: date) -> set[date]:
+TICKER_CHANGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS data_ticker_changes (
+    data_version TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    effective TEXT NOT NULL,
+    PRIMARY KEY (data_version, ticker)
+);
+"""
+
+
+def _apply_renames(
+    by_ticker: dict[str, list[Bar]], renames: tuple[Rename, ...]
+) -> tuple[RenameApplied, ...]:
+    applied = []
+    for rename in renames:
+        fetched = by_ticker.pop(rename.ticker, None)
+        if fetched is None:
+            continue
+        if rename.symbol not in by_ticker:
+            raise SourceError(f"{rename.ticker} maps to {rename.symbol}, which is not imported")
+        target = by_ticker[rename.symbol]
+        overlap = [b.session for b in target if b.session >= rename.effective]
+        if overlap:
+            raise SourceError(
+                f"{rename.symbol} already has bars from {overlap[0]}, when {rename.ticker} "
+                f"replaces it ({rename.effective}); the rename date is wrong"
+            )
+        mapped = [
+            replace(b, symbol=rename.symbol) for b in fetched if b.session >= rename.effective
+        ]
+        by_ticker[rename.symbol] = sorted([*target, *mapped], key=lambda b: b.session)
+        applied.append(RenameApplied(rename, len(mapped), len(fetched) - len(mapped)))
+    return tuple(applied)
+
+
+def weekdays(start: date, end: date) -> set[date]:
+    """Every Monday to Friday from `start` to `end`. Exchange holidays are not removed."""
     days = (start + timedelta(days=n) for n in range((end - start).days + 1))
     return {d for d in days if d.weekday() < 5}
 
@@ -60,6 +106,7 @@ def import_bars_snapshot(
     required: dict[str, set[date]] | None = None,
     expected: tuple[str, ...] | None = None,
     symbols: tuple[str, ...] | None = None,
+    renames: tuple[Rename, ...] = (),
 ) -> ImportReport:
     """Check coverage, then store every bar under `data_version`. Nothing is stored on a failure.
 
@@ -67,12 +114,14 @@ def import_bars_snapshot(
     have been fetched, so a fetch that stopped between tickers fails here. Without it, the tickers
     the snapshot recorded are used. `symbols`, when given, replaces `expected`: only those tickers
     are checked and imported, and every other ticker in the snapshot is reported as left out.
+    `renames` store a renamed ticker's bars under the universe's symbol before any check runs, so
+    the checks see the joined series. Each applied rename is recorded in data_ticker_changes.
     `required` maps a ticker to sessions that must be present. By default it is every weekday
     of the runner's demo run for AAPL, MSFT and KO.
     """
     snapshot_dir = Path(snapshot_dir)
     if required is None:
-        required = {s: _weekdays(*DEMO_RUN) for s in DEMO_RUN_SYMBOLS}
+        required = {s: weekdays(*DEMO_RUN) for s in DEMO_RUN_SYMBOLS}
     fetched = recorded_windows(snapshot_dir)
     if not fetched:
         raise SourceError(f"{snapshot_dir} records no bar windows")
@@ -96,6 +145,7 @@ def import_bars_snapshot(
                 f"to {window['end']}"
             )
         by_ticker[ticker] = bars
+    renamed = _apply_renames(by_ticker, renames)
 
     sessions = {b.session for bars in by_ticker.values() for b in bars}
     problems = []
@@ -134,8 +184,14 @@ def import_bars_snapshot(
                 ",".join(left_out),
             ),
         )
+        connection.executescript(TICKER_CHANGES_SCHEMA)
+        for r in renamed:
+            connection.execute(
+                "INSERT OR REPLACE INTO data_ticker_changes VALUES (?, ?, ?, ?)",
+                (data_version, r.rename.ticker, r.rename.symbol, r.rename.effective.isoformat()),
+            )
     coverage = [
         TickerCoverage(ticker, len(bars), bars[0].session, bars[-1].session)
         for ticker, bars in sorted(by_ticker.items())
     ]
-    return ImportReport(coverage=coverage, left_out=left_out)
+    return ImportReport(coverage=coverage, left_out=left_out, renamed=renamed)
