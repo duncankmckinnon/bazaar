@@ -31,6 +31,7 @@ from bazaar_runner.run import RunSpec
 
 DATA_VERSION = "synthetic-v1"
 TOKEN = "runner-token-do-not-leak"
+MAX_CYCLE_SYMBOLS = 50
 CONTROL_ROUTES = {"PUT /cutoff", "POST /accounts", "POST /close"}
 
 
@@ -275,6 +276,11 @@ class InMemoryMarket:
 
     async def fiscal_cycles(self, ctx, symbols):
         self.calls.append(("fiscal_cycles", ctx.simulated_at, tuple(symbols)))
+        # Like the market (filings_api MAX_CYCLE_SYMBOLS): more than 50 symbols is a 422.
+        if len(symbols) > MAX_CYCLE_SYMBOLS:
+            raise MarketError(
+                ErrorDetail(code=ErrorCode.INVALID_REQUEST, message="at most 50 symbols")
+            )
         return tuple(c for c in self.cycles if c.symbol in symbols)
 
     async def orders(self, ctx, start_at):
@@ -556,6 +562,8 @@ def delegating_transport(
                     return httpx.Response(200, json=market_read(fake, kind, request.url.params))
                 case "GET", ["fiscal-cycles"]:
                     symbols = request.url.params["symbols"].split(",")
+                    if len(symbols) > MAX_CYCLE_SYMBOLS:
+                        return api_error(422, ErrorCode.INVALID_REQUEST, "at most 50 symbols")
                     found = await fake.fiscal_cycles(view, symbols)
                     return httpx.Response(
                         200, json=[json.loads(c.model_dump_json()) for c in found]

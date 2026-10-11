@@ -5,7 +5,7 @@ imported when a decider is made, not when this module is imported.
 """
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid5
@@ -13,9 +13,8 @@ from uuid import UUID, uuid5
 import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext
 
-from bazaar_runner.agent_step import AgentDecision, DecideWithAgent
+from bazaar_runner.agent_step import AgentDecision, CycleReader, DecideWithAgent
 from bazaar_runner.clock import TradingSession, trading_day
-from bazaar_runner.market import FiscalCycle
 from bazaar_runner.run import AgentUsage
 
 AGENT_FIXTURE_INSTRUCTIONS = "Inspect account and eligible prices; hold or trade once."
@@ -46,7 +45,8 @@ def make_agent_decider(
     sessions: tuple[TradingSession, ...] = (),
     trading_role: str | None = None,
 ) -> DecideWithAgent:
-    """Fiscal cycles arrive per decision from the market (AgentStep), never invented here.
+    """Fiscal cycles are read from the market (AgentStep's reader) only for a symbol whose
+    filings the agent asks for, never invented here.
     With no model_factory the model is the operator's default (env_model_factory), as in
     run_decision; either way its errors are redacted (redacting_model_factory).
     market_summary gives each decision the market's summary (benchmark, sectors, top movers and
@@ -80,9 +80,16 @@ def make_agent_decider(
         account: AccountSnapshot,
         client: httpx.AsyncClient,
         client_order_id: UUID,
-        cycles: Sequence[FiscalCycle] = (),
+        cycles: CycleReader | None = None,
     ) -> AgentDecision:
-        trusted = tuple(ResearchFiscalCycle(symbol=c.symbol, start=c.start) for c in cycles)
+        async def trusted_cycle(symbol: str) -> ResearchFiscalCycle | None:
+            cycle = await cycles(symbol)
+            return (
+                None
+                if cycle is None
+                else ResearchFiscalCycle(symbol=cycle.symbol, start=cycle.start)
+            )
+
         result = await run_decision(
             identity=MarketIdentity(
                 agent_id=ctx.agent_id,
@@ -91,7 +98,8 @@ def make_agent_decider(
                 strategy_version_id=ctx.strategy_version_id,
             ),
             version=version_for(ctx),
-            context=ResearchContext(experiment=ctx, cycles=trusted),
+            context=ResearchContext(experiment=ctx),
+            fiscal_cycles=trusted_cycle if cycles is not None else None,
             client=client,
             client_order_id=client_order_id,
             budget=budget,

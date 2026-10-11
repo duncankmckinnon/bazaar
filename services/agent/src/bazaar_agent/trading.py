@@ -45,6 +45,7 @@ from bazaar_agent.market_view import (
 )
 from bazaar_agent.monty_telemetry import instrument_monty
 from bazaar_agent.research import (
+    FiscalCycleReader,
     PrivateHistoryReader,
     ResearchContext,
     ResearchTools,
@@ -291,6 +292,7 @@ async def run_decision(
     runtime: RuntimeConfig | None = None,
     model_factory: ModelFactory | None = None,
     private_history: PrivateHistoryReader | None = None,
+    fiscal_cycles: FiscalCycleReader | None = None,
     market_summary: bool = False,
     trading_day: tuple[int, int, date] | None = None,
     trading_role: TradingRole | None = None,
@@ -305,6 +307,7 @@ async def run_decision(
     market_summary adds a MARKET SUMMARY block (benchmark, sectors, top movers, positions with
     quotes and max whole shares), read once from the market at the decision time.
     trading_day (N, total, first session date) is stated in the runner decision context.
+    fiscal_cycles (trusted, runner-supplied) resolves a symbol's cycle when filings needs it.
     """
     usage = RunUsage()
     calls = 0
@@ -358,7 +361,7 @@ async def run_decision(
             strategy_instructions = version.definition.instructions
             if model_factory is None:
                 model_factory = env_model_factory()
-            tools = ResearchTools(client, context, private_history)
+            tools = ResearchTools(client, context, private_history, fiscal_cycles)
             # Validate real scoped market state before even invoking a trusted model factory.
             # Bootstrap reads are not model tools and do not consume the tool-call budget.
             async with asyncio.timeout_at(deadline):

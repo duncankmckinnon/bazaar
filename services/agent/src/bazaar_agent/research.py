@@ -118,6 +118,14 @@ class NewsBatch(WireModel):
     results: tuple[SymbolNews, ...]
 
 
+class FiscalCycleReader(Protocol):
+    """Trusted and runner-supplied: the market's fiscal cycle for one symbol as of the decision's
+    cutoff, or None when it has none or the read failed. Called only when a filings read needs
+    the symbol's cycle, so a large universe never means a large cycles request."""
+
+    async def __call__(self, symbol: str) -> FiscalCycle | None: ...
+
+
 class PrivateHistoryReader(Protocol):
     """SDK-bound in #23; implementation must enforce scope server-side too."""
 
@@ -157,10 +165,14 @@ class ResearchTools:
         client: httpx.AsyncClient,
         context: ResearchContext,
         private_history: PrivateHistoryReader | None = None,
+        fiscal_cycles: FiscalCycleReader | None = None,
     ) -> None:
         self._client = client
         self._context = ResearchContext.model_validate_json(context.model_dump_json())
         self._private = private_history or UnavailablePrivateHistory()
+        self._cycle_reader = fiscal_cycles
+        # Symbols whose cycle was asked for this decision, found or not: one read per symbol.
+        self._cycles_asked: set[str] = set()
         self._pages: dict[tuple[str, str, str | None], str] = {}
         self._cursors: dict[tuple[str, str], str] = {}
         self._cursor_sources: dict[tuple[str, str], str] = {}
@@ -485,7 +497,27 @@ class ResearchTools:
         return await self._call(f"{self._root}/news/{request.symbol}", NewsPage, request)
 
     @logfire.instrument("filings tool", extract_args=False)
+    async def _resolve_cycle(self, symbol: str) -> None:
+        """Add the symbol's trusted cycle to this decision's context, read once on demand."""
+        if self._cycle_reader is None or symbol in self._cycles_asked:
+            return
+        self._cycles_asked.add(symbol)
+        if any(c.symbol == symbol for c in self._context.cycles):
+            return
+        try:
+            cycle = await self._cycle_reader(symbol)
+        except Exception:  # noqa: BLE001 - the reader's failure is the runner's to record
+            return
+        if cycle is None:
+            return
+        cycle = FiscalCycle.model_validate_json(cycle.model_dump_json())
+        if cycle.symbol == symbol:
+            self._context = self._context.model_copy(
+                update={"cycles": (*self._context.cycles, cycle)}
+            )
+
     async def filings(self, request: ResearchRequest) -> ToolResult[FilingPage]:
+        await self._resolve_cycle(request.symbol)
         cycles = [c for c in self._context.cycles if c.symbol == request.symbol]
         if len(cycles) != 1 or cycles[0].start > self._ctx.simulated_at.date():
             return ToolResult(

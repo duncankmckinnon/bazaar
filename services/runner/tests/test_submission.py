@@ -11,7 +11,7 @@ import pytest
 from bazaar_agent import trading
 from bazaar_protocol import ApiError, ErrorCode, ErrorDetail
 from bazaar_replay.leaderboard import Run, load_board, load_run
-from bazaar_runner import agent_step, submission
+from bazaar_runner import submission
 from bazaar_runner.agent import fixture_model_factory
 from bazaar_runner.bundle import DEMO_BUNDLE
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER
@@ -433,24 +433,19 @@ def test_keyword_only_value_is_not_passed_positionally():
     assert seen == [(3, None)]
 
 
-def test_a_submission_researches_only_the_bundles_symbols(markets, tmp_path, monkeypatch):
+def test_a_502_symbol_universe_never_asks_for_more_than_50_cycles(markets, tmp_path):
+    """The market caps GET fiscal-cycles at 50 symbols (422 above). Cycles are read lazily, one
+    symbol per filings read, so an S&P 500 sized universe never comes near the cap."""
     market = GrantingMarket()
-    eleven = tuple(s for s in SYMBOLS if s != "EA")
-    market.fake.bundles[DEMO_BUNDLE] = bundle_body(DEMO_BUNDLE, symbols=eleven)
+    universe = (*SYMBOLS, *(f"S{i:03d}" for i in range(502 - len(SYMBOLS))))
+    market.fake.bundles[DEMO_BUNDLE] = bundle_body(DEMO_BUNDLE, symbols=universe)
     markets["http://m1"] = market
-    steps = []
-    real_step = agent_step.AgentStep.__init__
-
-    def step_spy(self, *args, **kwargs):
-        steps.append(kwargs["symbols"])
-        real_step(self, *args, **kwargs)
-
-    monkeypatch.setattr(agent_step.AgentStep, "__init__", step_spy)
     run_dir, _ = submit(tmp_path, "http://m1")
 
     assert record_in(run_dir).status == "completed"
-    # The agent's research symbols (fiscal cycles) are the bundle's; its summary is the market's.
-    assert steps == [eleven]
+    asked = [c[2] for c in market.fake.calls if c[0] == "fiscal_cycles"]
+    # No eager universe read at all; the fixture agent reads no filings, so nothing is asked.
+    assert asked == []
 
 
 def test_an_incomplete_bundle_stops_the_submission_before_the_grant(markets, tmp_path):

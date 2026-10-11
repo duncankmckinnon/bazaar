@@ -224,7 +224,6 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
         return AgentStep(
             decider,
             market_url=market_url,
-            symbols=bundle.symbols,
             read_fiscal_cycles=fiscal_cycles,
         )
 

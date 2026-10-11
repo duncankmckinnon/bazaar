@@ -628,7 +628,8 @@ async def test_an_eleven_symbol_bundle_is_every_policys_universe(monkeypatch, tm
     # The agent's trading day and its research symbols; its market summary reads the market.
     (decider,) = made
     assert decider["sessions"] == ELEVEN.sessions and "quote_symbols" not in decider
-    assert [s["symbols"] for s in steps] == [ELEVEN.symbols]
+    # The agent has no eager universe read: cycles are read per filings request.
+    assert len(steps) == 1 and "symbols" not in steps[0]
     hold = records[2]
     assert sorted(o.request.symbol for o in hold.orders) == sorted(ELEVEN.symbols)
     assert markets[MOMENTUM].read == markets[HOLD].read == set(ELEVEN.symbols)

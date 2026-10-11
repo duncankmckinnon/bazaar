@@ -222,7 +222,6 @@ async def _run(
                     trading_role=trading_role.value,
                 ),
                 market_url=market_url,
-                symbols=bundle.symbols,
                 transport=transport,
             )
             record, evaluation = await record_run(

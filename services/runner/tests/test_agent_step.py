@@ -9,7 +9,7 @@ from uuid import UUID, uuid5
 
 import httpx
 import pytest
-from bazaar_protocol import OrderRequest, OrderSide, order_result_adapter
+from bazaar_protocol import ErrorCode, OrderRequest, OrderSide, order_result_adapter
 from bazaar_runner.agent_step import (
     ACCOUNT_HEADER,
     AgentDecision,
@@ -23,7 +23,7 @@ from bazaar_runner.http_market import (
     parse_fiscal_cycles,
     parse_order_page,
 )
-from bazaar_runner.market import FiscalCycle
+from bazaar_runner.market import FiscalCycle, MarketError
 from bazaar_runner.record import RunRecord, record_run
 from bazaar_runner.run import RunState, run_strategy
 
@@ -51,7 +51,7 @@ async def post_order(client: httpx.AsyncClient, ctx, order: OrderRequest):
 
 
 def buys_at_first_decision(then=None):
-    async def decide(ctx, account, client, client_order_id, cycles=()):
+    async def decide(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         order = buy_order(client_order_id)
@@ -94,7 +94,7 @@ def reserved_for(event_sequence: int) -> UUID:
 
 
 async def test_a_hold_places_nothing_and_the_run_continues():
-    async def hold(ctx, account, client, client_order_id, cycles=()):
+    async def hold(ctx, account, client, client_order_id, cycles=None):
         return AgentDecision(None, None, None)
 
     fake = InMemoryMarket()
@@ -123,7 +123,7 @@ async def test_an_agent_that_raises_after_its_fill_is_reconciled_without_a_secon
 
 
 async def test_an_agent_error_after_its_fill_is_reconciled_too():
-    async def errs_after_filling(ctx, account, client, client_order_id, cycles=()):
+    async def errs_after_filling(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         order = buy_order(client_order_id)
@@ -142,7 +142,7 @@ async def test_an_agent_error_after_its_fill_is_reconciled_too():
 
 
 async def test_an_agent_that_raises_before_ordering_is_reconciled_as_absent():
-    async def raises(ctx, account, client, client_order_id, cycles=()):
+    async def raises(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence == 2:
             raise TimeoutError
         return AgentDecision(None, None, None)
@@ -157,7 +157,7 @@ async def test_an_agent_that_raises_before_ordering_is_reconciled_as_absent():
 
 
 async def test_an_order_under_another_id_is_not_trusted():
-    async def wrong_id(ctx, account, client, client_order_id, cycles=()):
+    async def wrong_id(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         order = buy_order(UUID(int=12345))
@@ -177,7 +177,7 @@ async def test_a_failed_reconcile_fails_the_run():
         async def orders(self, ctx, start_at):
             raise httpx.ConnectError("market went away")
 
-    async def raises(ctx, account, client, client_order_id, cycles=()):
+    async def raises(ctx, account, client, client_order_id, cycles=None):
         raise RuntimeError("boom")
 
     fake = NoOrderList()
@@ -200,7 +200,7 @@ async def test_cancellation_reconciles_then_propagates():
             reconciled.append(ctx.event_sequence)
             return await super().orders(ctx, start_at)
 
-    async def cancelled(ctx, account, client, client_order_id, cycles=()):
+    async def cancelled(ctx, account, client, client_order_id, cycles=None):
         raise asyncio.CancelledError
 
     fake = Watching()
@@ -210,7 +210,7 @@ async def test_cancellation_reconciles_then_propagates():
 
 
 async def test_cancellation_after_a_fill_records_it_then_propagates():
-    async def fills_then_cancelled(ctx, account, client, client_order_id, cycles=()):
+    async def fills_then_cancelled(ctx, account, client, client_order_id, cycles=None):
         await post_order(client, ctx, buy_order(client_order_id))
         raise asyncio.CancelledError
 
@@ -229,7 +229,7 @@ async def test_cancellation_with_a_failed_reconcile_still_propagates():
         async def orders(self, ctx, start_at):
             raise httpx.ConnectError("market went away")
 
-    async def cancelled(ctx, account, client, client_order_id, cycles=()):
+    async def cancelled(ctx, account, client, client_order_id, cycles=None):
         raise asyncio.CancelledError
 
     fake = NoOrderList()
@@ -238,7 +238,7 @@ async def test_cancellation_with_a_failed_reconcile_still_propagates():
 
 
 async def test_an_order_sent_without_a_result_is_reconciled():
-    async def lost_result(ctx, account, client, client_order_id, cycles=()):
+    async def lost_result(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         order = buy_order(client_order_id)
@@ -422,7 +422,7 @@ async def test_real_harness_function_model_buys_once():
 
     decided = []
 
-    async def first_only(ctx, account, client, client_order_id, cycles=()):
+    async def first_only(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         decided.append(client_order_id)
@@ -490,7 +490,7 @@ async def test_real_harness_post_order_read_error_is_feedback_without_retrading(
     real = make_agent_decider("Check orders, buy, check again.", lambda ref: FunctionModel(trader))
     outcomes = []
 
-    async def first_only(ctx, account, client, client_order_id, cycles=()):
+    async def first_only(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         outcomes.append(await real(ctx, account, client, client_order_id, cycles))
@@ -515,61 +515,87 @@ CYCLES = (
 )
 
 
-def capturing(seen: list):
-    async def decide(ctx, account, client, client_order_id, cycles=()):
-        seen.append((ctx.event_sequence, cycles))
+def asking(seen: list, *symbols: str):
+    """A decision that asks the runner's reader for each symbol's cycle, as filings would."""
+
+    async def decide(ctx, account, client, client_order_id, cycles=None):
+        found = None if cycles is None else [await cycles(symbol) for symbol in symbols]
+        seen.append((ctx.event_sequence, found))
         return AgentDecision(None, None, None)
 
     return decide
 
 
-async def test_the_markets_fiscal_cycles_reach_every_agent_decision(capfire):
+def decision_spans(capfire) -> list[dict]:
+    spans = capfire.exporter.exported_spans_as_dict()
+    return [s for s in spans if s["name"] == "runner.decision"]
+
+
+async def test_cycles_are_read_lazily_one_symbol_at_the_decisions_cutoff(capfire):
     fake, seen = InMemoryMarket(), []
     fake.cycles = CYCLES
-    step = AgentStep(
-        capturing(seen),
-        market_url=MARKET_URL,
-        symbols=("AAPL", "MSFT", "KO"),
-        transport=delegating_transport(fake),
-    )
+    step = AgentStep(asking(seen, "AAPL", "KO"), market_url=MARKET_URL)
     result = await run_strategy(SPEC, fake, step)
 
     assert result.state is RunState.COMPLETED
-    assert seen == [(n, CYCLES) for n in range(0, 2 * len(SESSIONS), 2)]
-    # Read per decision, after that decision's cutoff, so the cycles are as of it.
-    for i, call in enumerate(fake.calls):
-        if call[0] == "fiscal_cycles":
-            assert fake.calls[i - 2] == ("set_cutoff", call[1])
-            assert call[2] == ("AAPL", "MSFT", "KO")
-    spans = [s for s in capfire.exporter.exported_spans_as_dict() if s["name"] == "runner.decision"]
+    assert seen == [(n, [CYCLES[0], None]) for n in range(0, 2 * len(SESSIONS), 2)]
+    reads = [(i, c) for i, c in enumerate(fake.calls) if c[0] == "fiscal_cycles"]
+    # One symbol per read, only those asked for, each at that decision's own cutoff.
+    assert {c[2] for _, c in reads} == {("AAPL",), ("KO",)} and len(reads) == 2 * len(SESSIONS)
+    cutoffs = [c for c in fake.calls if c[0] == "set_cutoff"]
+    for i, call in reads:
+        latest = [c for c in fake.calls[:i] if c[0] == "set_cutoff"][-1]
+        assert latest == ("set_cutoff", call[1]) and latest in cutoffs
     assert {
-        (s["attributes"]["fiscal_cycles"], s["attributes"]["fiscal_cycles_read"]) for s in spans
-    } == {(2, "ok")}
+        (
+            s["attributes"]["fiscal_cycles_found"],
+            s["attributes"]["fiscal_cycles_absent"],
+            s["attributes"]["fiscal_cycles_failed"],
+        )
+        for s in decision_spans(capfire)
+    } == {(1, 1, 0)}
 
 
-async def test_a_failed_fiscal_cycle_read_gives_none_and_the_run_continues(capfire):
+async def test_a_decision_that_reads_no_filings_reads_no_cycles(capfire):
+    fake, seen = InMemoryMarket(), []
+    fake.cycles = CYCLES
+    await run_strategy(SPEC, fake, AgentStep(asking(seen), market_url=MARKET_URL))
+    assert "fiscal_cycles" not in [c[0] for c in fake.calls]
+    assert {s["attributes"]["fiscal_cycles_found"] for s in decision_spans(capfire)} == {0}
+
+
+async def test_a_failed_fiscal_cycle_read_is_counted_and_the_run_continues(capfire):
     class NoCycles(InMemoryMarket):
         async def fiscal_cycles(self, ctx, symbols):
             raise httpx.ConnectError("route not deployed")
 
     fake, seen = NoCycles(), []
-    step = AgentStep(capturing(seen), market_url=MARKET_URL, symbols=("AAPL",))
-    result = await run_strategy(SPEC, fake, step)
+    result = await run_strategy(SPEC, fake, AgentStep(asking(seen, "AAPL"), market_url=MARKET_URL))
     assert result.state is RunState.COMPLETED and result.decision_errors == ()
-    assert {cycles for _, cycles in seen} == {()}
-    spans = [s for s in capfire.exporter.exported_spans_as_dict() if s["name"] == "runner.decision"]
-    assert {s["attributes"]["fiscal_cycles_read"] for s in spans} == {"failed"}
+    assert {tuple(found) for _, found in seen} == {(None,)}
+    # Visible on every decision span, not only in a log line.
+    assert {s["attributes"]["fiscal_cycles_failed"] for s in decision_spans(capfire)} == {1}
 
 
-async def test_fiscal_cycles_can_be_switched_off():
+async def test_fiscal_cycles_can_be_switched_off(capfire):
     fake, seen = InMemoryMarket(), []
     fake.cycles = CYCLES
-    step = AgentStep(
-        capturing(seen), market_url=MARKET_URL, symbols=("AAPL",), read_fiscal_cycles=False
-    )
+    step = AgentStep(asking(seen, "AAPL"), market_url=MARKET_URL, read_fiscal_cycles=False)
     await run_strategy(SPEC, fake, step)
-    assert {cycles for _, cycles in seen} == {()}
+    assert {found for _, found in seen} == {None}
     assert "fiscal_cycles" not in [c[0] for c in fake.calls]
+    assert {s["attributes"]["fiscal_cycles"] for s in decision_spans(capfire)} == {"off"}
+
+
+async def test_the_fake_refuses_more_than_50_cycle_symbols_like_the_market():
+    fake = InMemoryMarket()
+    client = httpx.AsyncClient(transport=delegating_transport(fake), base_url=MARKET_URL)
+    port = HttpMarketPort(client, SPEC.experiment_id, SPEC.approval_id, TOKEN)
+    ctx = SimpleNamespace(experiment_id=SPEC.experiment_id, account_id=UUID(int=1))
+    await port.fiscal_cycles(ctx, tuple(f"S{i:03d}" for i in range(50)))
+    with pytest.raises(MarketError) as caught:
+        await port.fiscal_cycles(ctx, tuple(f"S{i:03d}" for i in range(51)))
+    assert caught.value.detail.code is ErrorCode.INVALID_REQUEST
 
 
 @pytest.mark.parametrize("wrap", [False, True])
@@ -618,25 +644,26 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
 
     real = make_agent_decider("Read filings, then hold.", lambda ref: FunctionModel(reader))
 
-    async def first_only(ctx, account, client, client_order_id, cycles=()):
+    async def first_only(ctx, account, client, client_order_id, cycles=None):
         if ctx.event_sequence != 0:
             return AgentDecision(None, None, None)
         return await real(ctx, account, client, client_order_id, cycles)
 
     fake = InMemoryMarket()
     fake.cycles = CYCLES if with_cycle else ()
-    step = AgentStep(
-        first_only,
-        market_url=MARKET_URL,
-        symbols=("AAPL",),
-        transport=delegating_transport(fake),
-    )
+    step = AgentStep(first_only, market_url=MARKET_URL, transport=delegating_transport(fake))
     result = await run_strategy(SPEC, fake, step)
     assert result.state is RunState.COMPLETED
     if with_cycle:
         # Past the "Trusted fiscal cycle unavailable" check: the read reached the market.
         assert result.decision_errors == () and feedback[0].error is None
         assert ("filings", "AAPL") in fake.calls
+    # Resolved on demand: one read, for AAPL alone, before the filings read.
+    names = [c[0] for c in fake.calls]
+    (read,) = [c for c in fake.calls if c[0] == "fiscal_cycles"]
+    assert read[2] == ("AAPL",)
+    if with_cycle:
+        assert names.index("fiscal_cycles") < names.index("filings")
     else:
         assert result.decision_errors == ()
         assert feedback[0].error.code == "unsupported" and feedback[0].data is None
@@ -647,7 +674,7 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
 async def test_agent_usage_is_recorded_per_error_and_in_total():
     from bazaar_runner.run import AgentUsage
 
-    async def spends(ctx, account, client, client_order_id, cycles=()):
+    async def spends(ctx, account, client, client_order_id, cycles=None):
         usage = AgentUsage(model_requests=4, tool_calls=3, total_tokens=1000)
         error = "conflict: Decision budget exhausted; do not advance or retrade"
         return AgentDecision(None, None, error if ctx.event_sequence == 2 else None, usage)
