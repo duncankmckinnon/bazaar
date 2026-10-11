@@ -216,9 +216,15 @@ ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
 
 def post_handle(settings, helpers, handle, headers=None):
     from bazaar_web.app import create_app
+    from bazaar_web.store import OPERATOR_CONTACT_EMAIL
     from fastapi.testclient import TestClient
 
-    body = {"name": "some-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
+    # The house scripts send the operator contact (V7 makes contact details required).
+    operator = {"email": OPERATOR_CONTACT_EMAIL, "company": "Bazaar operators", "role": "house"}
+    body = {
+        "name": "some-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT.",
+        **operator,
+    }  # fmt: skip
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         return client.post("/api/submissions", json=body, headers=headers or {})
 

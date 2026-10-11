@@ -359,3 +359,47 @@ def test_contact_details_reach_no_span_log_response_runner_or_run_file(
             assert sentinel.lower() not in text.lower(), (sentinel, where)
     assert all(set(k) == set(spy.kwargs[0]) for k in spy.kwargs)
     assert not {"email", "company", "role"} & set(spy.kwargs[0])
+
+
+def test_an_admin_house_post_leaks_neither_contacts_nor_the_token(seeded, helpers, capfire, caplog):
+    """The reserved handle with the admin token header and contact sentinels on one POST."""
+    caplog.set_level(logging.DEBUG)
+    token = "ZZ-ADMIN-TOKEN-SENTINEL-77"
+    config = dataclasses.replace(seeded, admin_token=token)
+    spy = Spy(helpers.FakeRunner())
+    with TestClient(create_app(config, spy)) as client:
+        capfire.exporter.clear()
+        refused = client.post(
+            "/api/submissions",
+            json=body("house-bot", handle="house", **SENTINEL_CONTACT),
+            headers={"X-Bazaar-Admin-Token": "ZZ-WRONG-TOKEN-SENTINEL"},
+        )
+        posted = client.post(
+            "/api/submissions",
+            json=body("house-bot", handle=" House ", **SENTINEL_CONTACT),
+            headers={"X-Bazaar-Admin-Token": token},
+        )
+        sid = posted.json()["id"]
+        helpers.wait_for(lambda: status(client, sid)["status"] == "scored")
+        responses = [
+            refused,
+            posted,
+            client.get("/api/board"),
+            client.get(f"/api/submissions/{sid}"),
+        ]
+
+    assert (refused.status_code, posted.status_code) == (422, 201)
+    assert Store(config.web_db).get(sid)["handle"] == "house"
+    texts = {
+        "spans": json.dumps(capfire.exporter.exported_spans_as_dict(), default=str),
+        "logs": "\n".join(f"{r.name} {r.getMessage()} {r.args}" for r in caplog.records),
+        "responses": "\n".join(f"{r.status_code} {r.text} {dict(r.headers)}" for r in responses),
+        "runner kwargs": repr(spy.kwargs),
+        "run files": "\n".join(
+            p.read_text(errors="replace") for p in seeded.runs_dir.rglob("*") if p.is_file()
+        ),
+    }
+    for where, text in texts.items():
+        for sentinel in (*SENTINELS, token, "ZZ-WRONG-TOKEN-SENTINEL"):
+            assert sentinel.lower() not in text.lower(), (sentinel, where)
+    assert "POST /api/submissions" in texts["spans"]  # the request was traced, and checked
