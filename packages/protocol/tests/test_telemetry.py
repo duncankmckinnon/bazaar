@@ -1,9 +1,12 @@
 """Shared Logfire setup: configure once, scrub trading sessions but not secrets, redact values."""
 
+import json
+
 import logfire
 import pytest
 from bazaar_protocol import telemetry
 from bazaar_protocol.telemetry import (
+    EMAIL_SCRUBBED,
     EXTRA_SCRUB_PATTERNS,
     REDACTED,
     RedactedError,
@@ -58,6 +61,40 @@ def test_a_trading_session_survives():
 )
 def test_every_other_pattern_is_still_scrubbed(value):
     assert SENTINEL not in scrub(value) and scrub(value).startswith("[Scrubbed")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "zz-sentinel@example.com",
+        "contact Alice.Smith+bazaar@Mail.Example.CO.uk for the prize",
+        "trading session closed; winner alice@example.com",  # not kept for "session"
+    ],
+)
+def test_an_email_value_is_scrubbed_without_copying_it(value):
+    scrubbed = scrub(value)
+    assert scrubbed.startswith("[Scrubbed")
+    assert "@" not in scrubbed and "example" not in scrubbed.lower()  # no "due to '<email>'"
+    (in_span,) = scrub_attributes({"note": (value,)})["note"]
+    assert "@" not in in_span
+
+
+def test_an_email_scrub_leaves_no_note_with_the_address():
+    scrubber = Scrubber(EXTRA_SCRUB_PATTERNS, keep_trading_sessions)
+    scrubbed, notes = scrubber.scrub_value(("attributes",), {"email": "zz-sentinel@example.com"})
+    assert scrubbed == {"email": EMAIL_SCRUBBED}
+    assert "zz-sentinel" not in repr(notes) and "example.com" not in repr(notes)
+
+
+def test_the_email_pattern_leaves_names_and_ordinary_text_alone():
+    attributes = {
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 80,
+        "strategy": "buy KO @ $60 on dips",
+        "handle": "@alice",
+    }
+    assert scrub_attributes(attributes) == attributes
+    assert scrub("the trading session closed") == "the trading session closed"
 
 
 def test_a_secret_in_the_key_path_is_not_kept_for_a_session_value():
@@ -229,6 +266,32 @@ def test_configure_sets_the_shared_scrubbing(unconfigured):
     assert GLOBAL_CONFIG.scrubbing.callback is keep_trading_sessions
     assert GLOBAL_CONFIG.scrubbing.extra_patterns == list(EXTRA_SCRUB_PATTERNS)
     assert GLOBAL_CONFIG.service_version == "0.1.0"
+
+
+def test_an_exported_span_carries_no_email(unconfigured):
+    """Through a real Logfire configuration with the shared scrubbing, as a process exports."""
+    from logfire.testing import TestExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    exporter = TestExporter()
+    logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        scrubbing=scrubbing_options(),
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+    )
+    try:
+        logfire.info("contact {note}", note="write to zz-sentinel@example.com", email="z@x.io")
+        with logfire.span("probe", winner="ZZ.Sentinel+1@Example.co.uk", usage_tokens=12):
+            pass
+    finally:
+        logfire.configure(send_to_logfire=False, console=False)
+
+    dumped = json.dumps(exporter.exported_spans_as_dict(), default=str).lower()
+    assert "zz-sentinel" not in dumped and "zz.sentinel" not in dumped and "z@x.io" not in dumped
+    assert "example.co" not in dumped
+    assert "[scrubbed email]" in dumped
+    assert '"usage_tokens": 12' in dumped
 
 
 def test_managed_variables_use_a_short_bounded_timeout(unconfigured, monkeypatch):

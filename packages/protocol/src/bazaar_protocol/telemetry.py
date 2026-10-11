@@ -24,10 +24,19 @@ from logfire._internal.scrubbing import DEFAULT_PATTERNS
 # Logfire's defaults have no "token" pattern, so the runner and admin token headers are added; a
 # bare "token" would also scrub gen_ai.usage.*_tokens. The approval header is the market
 # capability, so it is scrubbed too even though the approval id is not a secret.
+EMAIL_PATTERN = r"(?<=[\w.+-])@[\w-]+(?:\.[\w-]+)+"
+EMAIL_SCRUBBED = "[Scrubbed email]"
 EXTRA_SCRUB_PATTERNS = (
     r"runner[._ -]?token",
     r"admin[._ -]?token",
     r"x[._ -]?bazaar[._ -]?approval",
+    # Email addresses (submitters' contact details), as defence in depth: the web app never puts
+    # them in a span. Logfire matches patterns against attribute names AND string values, so any
+    # value holding an email-like string (news text, an agent message) is scrubbed too; that
+    # over-redaction is accepted. It needs an "@" and a dotted domain, so no attribute name such
+    # as gen_ai.usage.input_tokens can match. It matches from the "@" on: Logfire keeps a value
+    # that matches as a WHOLE, so a pattern spanning a bare address would never scrub it.
+    EMAIL_PATTERN,
 )
 
 # Logfire scrubs any value or key matching a pattern. "session" is everyday trading language
@@ -41,6 +50,13 @@ _OTHER_SECRET_PATTERNS = re.compile(
 
 
 def keep_trading_sessions(match: logfire.ScrubMatch) -> Any:
+    """Keep a value whose only match is "session"; replace an email-led one with EMAIL_SCRUBBED.
+
+    Logfire's own replacement, "[Scrubbed due to '<match>']", would copy the address into the
+    span (and its logfire.scrubbed note), so an email match gets a neutral value instead.
+    """
+    if match.pattern_match.group(0).startswith("@"):
+        return EMAIL_SCRUBBED
     if match.pattern_match.group(0).lower() != "session":
         return None
     text = " ".join(map(str, match.path)) + " " + str(match.value)
