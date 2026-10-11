@@ -17,6 +17,14 @@ from collections.abc import Callable, Iterator
 
 import httpx
 
+# The web form requires contact details; operator scripts send this fixed, labelled one. The
+# email must equal bazaar_web.store.OPERATOR_CONTACT_EMAIL, so the contacts CSV leaves it out.
+OPERATOR_CONTACT = {
+    "email": "bazaar-ops@example.com",
+    "company": "Bazaar operators",
+    "role": "house strategy",
+}
+
 BUSY_WAIT = 10.0
 RATE_LIMIT_WAIT = 300.0
 ERROR_WAIT = 30.0
@@ -99,7 +107,7 @@ def feed(
         name, text = next(gen)
         r = client.post(
             f"{base_url}/api/submissions",
-            json={"name": name, "handle": handle, "instructions": text},
+            json={"name": name, "handle": handle, "instructions": text, **OPERATOR_CONTACT},
         )
         if r.status_code in (200, 201, 202):
             sent += 1

@@ -12,7 +12,14 @@ from logfire._internal.config import GLOBAL_CONFIG
 from logfire.testing import TestExporter
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-VALID = {"name": "alice-bot", "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+VALID = {
+    "name": "alice-bot",
+    "handle": None,
+    "instructions": "Buy KO on dips, hold MSFT.",
+    "email": "alice@example.com",
+    "company": "Example Co",
+    "role": "Engineer",
+}
 
 
 def spans(capfire):

@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import bazaar_web.telemetry
+import httpx
 import pytest
 from bazaar_web.settings import Settings
 
@@ -171,6 +172,18 @@ def no_global_telemetry_setup(monkeypatch):
     """The lifespan configures Logfire for real; tests keep capfire's (or no) configuration."""
     monkeypatch.setattr("bazaar_web.telemetry.configure", lambda: None)
     monkeypatch.setenv("LOGFIRE_IGNORE_NO_CONFIG", "1")
+
+
+@pytest.fixture(autouse=True)
+def no_market_bundle(monkeypatch):
+    """Apps built without a bundle source get a market that has no bundle (404), offline."""
+    from bazaar_web.bundle import BundleSource
+
+    def offline(market_url, bundle_id, **kwargs):
+        kwargs.setdefault("transport", httpx.MockTransport(lambda request: httpx.Response(404)))
+        return BundleSource(market_url, bundle_id, **kwargs)
+
+    monkeypatch.setattr("bazaar_web.app.BundleSource", offline)
 
 
 @pytest.fixture

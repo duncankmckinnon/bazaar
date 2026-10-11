@@ -50,11 +50,11 @@ h2 { font: 500 24px/1.1 var(--display); margin: 0 0 8px; }
 .field { margin-bottom: 22px; }
 label { display: block; font-weight: 600; margin-bottom: 6px; }
 label .opt { font-weight: 400; color: var(--dim); }
-input[type="text"], textarea {
+input[type="text"], input[type="email"], textarea {
   display: block; width: 100%; min-height: 50px; padding: 12px 14px; font-size: 16px;
   background: var(--field); border: 1px solid var(--field-line); border-radius: 12px;
 }
-input[type="text"] { font-family: var(--mono); }
+input[type="text"], input[type="email"] { font-family: var(--mono); }
 ::placeholder { color: var(--faint); opacity: 1; }
 textarea { min-height: 180px; resize: vertical; line-height: 1.45; }
 input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--error); }
@@ -117,7 +117,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
       <li class="ticker">MSFT</li><li class="ticker">NVDA</li><li class="ticker">WMT</li><li class="ticker">XOM</li>
     </ul>
 
-    <form id="submit-form" novalidate>
+    <form id="submit-form" method="post" novalidate>
       <p id="form-error" class="form-error" role="alert" hidden></p>
 
       <div class="field">
@@ -131,6 +131,25 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
         <label for="handle">Your handle <span class="opt">(optional)</span></label>
         <input id="handle" name="handle" type="text" autocomplete="nickname" autocapitalize="none" spellcheck="false" maxlength="64" aria-describedby="handle-error">
         <p id="handle-error" class="error" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required aria-describedby="contact-purpose email-error">
+        <p id="email-error" class="error" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="company">Company</label>
+        <input id="company" type="text" autocomplete="organization" maxlength="100" required aria-describedby="contact-purpose company-error">
+        <p id="company-error" class="error" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="role">Role</label>
+        <input id="role" type="text" autocomplete="organization-title" maxlength="100" required aria-describedby="contact-purpose role-error">
+        <p id="role-error" class="error" hidden></p>
+        <p id="contact-purpose" class="hint">We'll use your email only to contact you if your strategy wins. Your company and role are used the same way and are never shown publicly.</p>
       </div>
 
       <div class="field">
@@ -203,12 +222,23 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   var nameInput = byId("name");
   var handleInput = byId("handle");
   var instructionsInput = byId("instructions");
+  var emailInput = byId("email");
+  var companyInput = byId("company");
+  var roleInput = byId("role");
   var submitButton = byId("submit");
   var formError = byId("form-error");
   var nameHint = byId("name-hint");
   var counter = byId("counter");
   var instructionsHint = byId("instructions-hint");
-  var fields = { name: nameInput, handle: handleInput, instructions: instructionsInput };
+  var fields = {
+    name: nameInput,
+    handle: handleInput,
+    instructions: instructionsInput,
+    email: emailInput,
+    company: companyInput,
+    role: roleInput
+  };
+  var CONTACT = ["email", "company", "role"];
 
   // Storage can throw (private mode, blocked site data); the page works without it.
   var store = {
@@ -296,6 +326,51 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   nameInput.addEventListener("input", updateName);
   instructionsInput.addEventListener("input", updateInstructions);
 
+  // contactErrors:start
+  // Plain messages for the contact fields, after trimming; "" means the value is fine.
+  function contactErrors(values) {
+    var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    function trimmed(value) { return typeof value === "string" ? value.trim() : ""; }
+    function text(value, what) {
+      if (!value) { return "Enter your " + what + "."; }
+      return value.length > 100 ? "Use at most 100 characters." : "";
+    }
+    var email = trimmed(values && values.email);
+    var emailError = "";
+    if (!email) {
+      emailError = "Enter your email address.";
+    } else if (email.length > 254) {
+      emailError = "Use at most 254 characters.";
+    } else if (!EMAIL.test(email)) {
+      emailError = "Enter a valid email address, like name@example.com.";
+    }
+    return {
+      email: emailError,
+      company: text(trimmed(values && values.company), "company"),
+      role: text(trimmed(values && values.role), "role")
+    };
+  }
+  // contactErrors:end
+
+  function contactValues() {
+    return { email: emailInput.value, company: companyInput.value, role: roleInput.value };
+  }
+
+  // Like the name field: a message after leaving a field, cleared as soon as the value is fine.
+  CONTACT.forEach(function (field) {
+    fields[field].addEventListener("blur", function () {
+      if (fields[field].value) { setFieldError(field, contactErrors(contactValues())[field]); }
+    });
+    fields[field].addEventListener("input", function () {
+      if (!contactErrors(contactValues())[field]) { setFieldError(field, ""); }
+    });
+  });
+
+  // Contact details live only in these inputs until they are sent; never stored or shown.
+  function clearContact() {
+    CONTACT.forEach(function (field) { fields[field].value = ""; });
+  }
+
   function validate() {
     var ok = true;
     if (!SLUG.test(nameInput.value)) {
@@ -307,10 +382,18 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
       setFieldError("instructions", "Describe your strategy in 20 to 4000 characters.");
       ok = false;
     }
+    var errors = contactErrors(contactValues());
+    CONTACT.forEach(function (field) {
+      if (errors[field]) {
+        setFieldError(field, errors[field]);
+        ok = false;
+      }
+    });
     return ok;
   }
 
-  // An error `detail` is a plain string or FastAPI's list of {loc, msg}.
+  // An error `detail` is a plain string or FastAPI's list of {loc, msg}. Only msg is shown:
+  // FastAPI also echoes the submitted `input`, which can hold contact details.
   function showDetail(detail, fallback) {
     if (typeof detail === "string" && detail.trim()) {
       setText(formError, detail);
@@ -350,7 +433,10 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     var payload = {
       name: nameInput.value,
       handle: handle ? handle : null,
-      instructions: instructionsInput.value.trim()
+      instructions: instructionsInput.value.trim(),
+      email: emailInput.value.trim(),
+      company: companyInput.value.trim(),
+      role: roleInput.value.trim()
     };
     submitButton.disabled = true;
     submitButton.textContent = "Sending";
@@ -363,6 +449,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
         if (response.ok && body && typeof body.id === "string") {
           var saved = { id: body.id, name: payload.name, position: body.position };
           store.set(saved);
+          clearContact();
           showStatus(saved);
           return;
         }
@@ -550,6 +637,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     current = null;
     store.clear();
     form.reset();
+    clearContact();
     clearErrors();
     updateName();
     updateInstructions();

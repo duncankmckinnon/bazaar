@@ -13,6 +13,7 @@ EXCLUDED_URLS = (
     r"/api/board(\?|$)",
     r"/api/tickers(\?|$)",
     r"/api/admin/stats(\?|$)",
+    r"/api/admin/contacts(\?|$)",
     r"/api/submissions/[^/?]+(\?|$)",
     r"/fonts/",
     r"/static/",

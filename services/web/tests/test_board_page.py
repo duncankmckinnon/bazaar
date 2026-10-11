@@ -136,7 +136,8 @@ def test_board_escapes_server_text():
 
 def test_board_uses_the_arcade_design_on_the_podium_background():
     assert "HIGH SCORES" in BOARD
-    assert "TRADING AGENT FACTORY DASHBOARD" in BOARD
+    assert "<h1>TRADING AGENT FACTORY</h1>" in BOARD and "DASHBOARD" not in BOARD
+    assert ".hd h1 { margin: 0; white-space: nowrap;" in BOARD  # one line at any width
     assert "PORTFOLIO VALUE BY TRADING DAY" in BOARD
     assert "MARKET WIRE" in BOARD and "INSERT POLICY" in BOARD
     assert (
@@ -206,8 +207,50 @@ def test_chart_and_tape_build_data_with_dom_apis_not_html():
 def test_chart_draws_the_start_reference_and_replay_label():
     assert 'rt.textContent = money(start) + " START";' in BOARD
     assert "stroke-dasharray: 6 6" in BOARD  # dashed $10,000 reference
-    assert "REPLAY FEB 2-13 2026" in BOARD
+    assert "FEB 2-13" not in BOARD.replace('"FEB 2-13 2026" within a month', "")  # derived
     assert 'fetch("/api/tickers"' in BOARD
+
+
+def run_js(function, call):
+    """Run one board.html function under node; there is no JS toolchain, only the function."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    pattern = rf"^function {function}\(.*?^}}$"
+    source = re.search(pattern, BOARD, re.DOTALL | re.MULTILINE).group(0)
+    script = f"{source}\nconsole.log(JSON.stringify({call}));"
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "label"),
+    [
+        ("2026-02-02", "2026-02-13", "FEB 2-13 2026"),
+        ("2026-09-28", "2026-10-09", "SEP 28 - OCT 9 2026"),
+        ("2025-12-29", "2026-01-09", "DEC 29 2025 - JAN 9 2026"),
+        (None, None, None),
+        ("2026-02-02", None, None),
+        ("2026-13-01", "2026-13-05", None),
+        ("<img src=x>", "2026-02-13", None),
+    ],
+)
+def test_the_window_label_is_derived_from_the_dates(start, end, label):
+    assert run_js("windowLabel", f"windowLabel({json.dumps(start)}, {json.dumps(end)})") == label
+
+
+def test_the_header_and_tape_take_the_window_from_the_data():
+    script = BOARD.split("<script>", 1)[1]
+    assert "const label = windowLabel(w.start, w.end);" in script  # header, from /api/board
+    assert "tapeWindow = data.window ? windowLabel(data.window.start, data.window.end)" in script
+    assert "if (!tapeWindow) tapeDays = [];" in script  # no window, no tape
+    assert '$("sub-a").textContent' in script and '$("sub-b").textContent' in script
+
+
+def test_the_conference_layout_puts_the_qr_bottom_right_and_the_wire_under_the_chart():
+    assert '"hd hd hd" "board chart chart" "board wire side" "tape tape tape"' in BOARD
+    body = BOARD.split("<main", 1)[1]
+    assert body.index('class="chart"') < body.index('class="wire"') < body.index('class="side"')
 
 
 def select_rows(rows, capacity):
