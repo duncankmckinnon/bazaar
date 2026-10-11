@@ -35,6 +35,7 @@ from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness import CodeMode
 from pydantic_evals import set_eval_attribute
 
+from bazaar_agent.monty_telemetry import instrument_monty
 from bazaar_agent.research import PrivateHistoryReader, ResearchContext, ResearchTools, ToolError
 from bazaar_agent.strategy_evaluation import EVIDENCE_ATTRIBUTE, evaluate_strategy
 
@@ -463,6 +464,9 @@ async def run_decision(
                 if runtime.instrument
                 else logfire.suppress_instrumentation()
             )
+            if runtime.code_mode:
+                # Monty's session and run spans join the decision's trace (installed once).
+                instrument_monty()
             with tracing:
                 async with asyncio.timeout_at(deadline):
                     try:

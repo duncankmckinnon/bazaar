@@ -621,3 +621,59 @@ def test_the_baggage_allow_list_is_exactly_the_strategy_attributes():
         "bazaar.policy_kind",
     }
     assert INSTRUCTIONS not in "".join(full.values())
+
+
+class RecordingTransport(httpx.AsyncBaseTransport):
+    """The market, recording each request's path and traceparent as the market would see them."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self.inner = inner
+        self.seen: list[tuple[str, str | None]] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.seen.append((request.url.path, request.headers.get("traceparent")))
+        return await self.inner.handle_async_request(request)
+
+
+def test_market_requests_carry_the_run_trace(monkeypatch, capfire, tmp_path):
+    """The runner's and the agent's market clients send traceparent, so the market's request spans
+    nest under runner.decision and trading.decision; never a header value in a span."""
+    for name, value in SENTINELS.items():
+        monkeypatch.setenv(name, value)
+    recording = RecordingTransport(GrantingMarket().transport())
+    monkeypatch.setattr(submission, "_transport_for", lambda url: recording)
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: None)
+    monkeypatch.setattr(submission, "_model_factory", lambda model: fixture_model_factory())
+    run_submission(
+        submission_id="trace-1",
+        name="traced",
+        instructions=INSTRUCTIONS,
+        market_url="http://market",
+        runner_token=TOKEN,
+        runs_dir=tmp_path,
+    )
+    spans = capfire.exporter.exported_spans_as_dict()
+    by_id = {s["context"]["span_id"]: s for s in spans}
+    (run,) = named(spans, "runner.run")
+    assert recording.seen and all(traceparent for _, traceparent in recording.seen)
+    under = set()
+    for path, traceparent in recording.seen:
+        _, trace_id, parent_id, _ = traceparent.split("-")
+        parent = by_id[int(parent_id, 16)]
+        # The parent is the exported HTTP client span of this very request.
+        assert parent["attributes"].get("http.method") or parent["attributes"].get(
+            "http.request.method"
+        )
+        if path == "/control/grants":
+            continue  # bound before the run starts, so in a trace of its own
+        assert int(trace_id, 16) == run["context"]["trace_id"]
+        under |= {a["name"] for a in ancestors(parent, by_id)} & {
+            "runner.decision",
+            "trading.decision",
+            "runner.mark",
+        }
+    # The runner's own calls and the agent's tool calls both join the run's trace.
+    assert under == {"runner.decision", "trading.decision", "runner.mark"}
+    assert not [k for s in spans for k in s["attributes"] if k.startswith(HEADER_KEYS)]
+    exported = json.dumps(spans, default=str)
+    assert not [secret for secret in (*SENTINELS.values(), TOKEN) if secret in exported]
