@@ -151,3 +151,16 @@ becomes visible at 16:00 New York time. A cutoff during a session sees the previ
 ## Known limits
 
 - Orders fill only at the latest session's close, so a symbol with no bar there (delisted or acquired, such as K or EA) is rejected. Valuation still marks a held position at its last close: an acquired holding stays a holding valued at its final close, not converted to cash at the deal price.
+
+## Load test
+
+Concurrent runs against one market database, through the real app (offline, temp DB, synthetic
+bars). Skipped by default; run it on demand:
+
+```sh
+BAZAAR_STRESS=1 uv run pytest services/market/tests/test_stress.py -s
+BAZAAR_STRESS=1 BAZAAR_STRESS_RUNS=30 uv run pytest services/market/tests/test_stress.py -s
+```
+
+It prints the market's `GET /control/stats` (write-lock wait, order latency, locked errors) at the
+end. The same figures are served live at `/control/stats`, guarded by `X-Bazaar-Runner-Token`.

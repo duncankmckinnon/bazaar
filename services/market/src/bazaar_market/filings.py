@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+from . import db
 from .archive import FutureDataError, MissingCoverage, stored_time
 
 FILINGS_VERSION = "edgar-filings-v1"
@@ -172,9 +173,7 @@ class SqliteFilingArchive:
         self.source = FILINGS_SOURCE
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(f"file:{self.database_path}?mode=ro", uri=True)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return db.connect(self.database_path, read_only=True)
 
     def visible(
         self, symbol: str, start_at: datetime, end_at: datetime, cutoff: datetime

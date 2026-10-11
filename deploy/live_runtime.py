@@ -8,6 +8,7 @@ timer and after each scored run.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -17,6 +18,7 @@ import threading
 import time
 import urllib.request
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +26,88 @@ logger = logging.getLogger("bazaar.live")
 
 MARKET_PORT = 8000
 COMMIT_INTERVAL = 10.0
+LIVE_PREFIX = "bazaar-live"
+DEFAULT_CPU = 2.0
+DEFAULT_MEMORY_MIB = 4096
+
+
+@dataclass(frozen=True)
+class ModalTarget:
+    """The Modal app, volume and secret one deploy uses, its Logfire environment and extra env."""
+
+    name: str
+    app: str
+    volume: str
+    secret: str
+    environment: str
+    # Container env only this target sets; live keeps its caps from its secret or the web defaults.
+    extra_env: Mapping[str, str] = field(default_factory=dict)
+
+
+# Load tests submit far more than the conference caps allow.
+STAGING_CAPS = {
+    "BAZAAR_MAX_QUEUE": "100",
+    "BAZAAR_MAX_SUBMISSIONS_PER_DAY": "1000",
+    # One load-test IP submits everything, so a low per-IP cap would read as a throughput limit.
+    "BAZAAR_MAX_PER_IP_PER_HOUR": "1000",
+}
+TARGETS = {
+    "live": ModalTarget("live", "bazaar-live", "bazaar-live-data", "bazaar-live", "production"),
+    "staging": ModalTarget(
+        "staging",
+        "bazaar-staging",
+        "bazaar-staging-data",
+        "bazaar-staging",
+        "staging",
+        STAGING_CAPS,
+    ),
+}
+
+
+def resolve_target(env: Mapping[str, str] = os.environ) -> ModalTarget:
+    """The deploy target from BAZAAR_MODAL_TARGET: "live" or "staging", with no default.
+
+    Unset, blank or any other value raises, so a staging deploy that loses the variable cannot
+    land on the conference app. Only the live target may touch a bazaar-live app, volume or secret,
+    so a load test on staging can never write to the conference board or use its secret.
+    """
+    name = env.get("BAZAAR_MODAL_TARGET", "").strip()
+    if not name:
+        raise ValueError(f"set BAZAAR_MODAL_TARGET={' or '.join(TARGETS)}; there is no default")
+    target = TARGETS.get(name)
+    if target is None:
+        raise ValueError(f"BAZAAR_MODAL_TARGET must be one of {', '.join(TARGETS)}, not {name!r}")
+    if target.name != "live" and any(
+        value.startswith(LIVE_PREFIX) for value in (target.app, target.volume, target.secret)
+    ):
+        raise ValueError(
+            f"the {target.name} target must not use a {LIVE_PREFIX} app, volume or secret"
+        )
+    return target
+
+
+def resolve_resources(env: Mapping[str, str] = os.environ) -> tuple[float, int]:
+    """CPU cores and memory in MiB from BAZAAR_MODAL_CPU and BAZAAR_MODAL_MEMORY.
+
+    Defaults are 2.0 cores and 4096 MiB. A value that is not a positive number raises rather than
+    deploy something unasked; Modal itself enforces its own upper limits.
+    """
+    raw_cpu = env.get("BAZAAR_MODAL_CPU", "").strip()
+    raw_memory = env.get("BAZAAR_MODAL_MEMORY", "").strip()
+    try:
+        cpu = float(raw_cpu) if raw_cpu else DEFAULT_CPU
+    except ValueError:
+        raise ValueError(f"BAZAAR_MODAL_CPU must be a number of cores, not {raw_cpu!r}") from None
+    if not (math.isfinite(cpu) and cpu > 0):
+        raise ValueError(f"BAZAAR_MODAL_CPU must be a positive number of cores, not {raw_cpu!r}")
+    if raw_memory and not raw_memory.isdigit():
+        raise ValueError(f"BAZAAR_MODAL_MEMORY must be whole MiB, not {raw_memory!r}")
+    memory = int(raw_memory) if raw_memory else DEFAULT_MEMORY_MIB
+    if memory <= 0:
+        raise ValueError(
+            f"BAZAAR_MODAL_MEMORY must be a positive number of MiB, not {raw_memory!r}"
+        )
+    return cpu, memory
 
 
 class MissingRunnerToken(RuntimeError):
