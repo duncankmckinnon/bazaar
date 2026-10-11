@@ -194,3 +194,30 @@ def test_an_explicit_bundle_id_that_is_a_path_step_is_refused(bad):
     with pytest.raises(BundleError, match="starts with a letter or digit"):
         check_bundle_id(bad)
     assert check_bundle_id("demo-bundle-v2.1") == "demo-bundle-v2.1"
+
+
+async def test_a_dropped_bundle_read_is_retried_once():
+    fake = InMemoryMarket()
+    fake.bundles = {DEMO_BUNDLE: body(DEMO_BUNDLE, *V2)}
+    served = delegating_transport(fake)
+    attempts = []
+
+    async def drop_first(request):
+        attempts.append(request.url.path)
+        if len(attempts) == 1:
+            raise httpx.ReadError(
+                "Server disconnected without sending a response.", request=request
+            )
+        return await served.handle_async_request(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(drop_first), base_url="http://m")
+    bundle = await read_bundle(client, DEMO_BUNDLE)
+    assert bundle.bundle_id == DEMO_BUNDLE and attempts == [f"/bundles/{DEMO_BUNDLE}"] * 2
+
+    attempts.clear()
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ReadError("x"))),
+        base_url="http://m",
+    )
+    with pytest.raises(BundleError, match=r"\(ReadError\)"):
+        await read_bundle(client, DEMO_BUNDLE)

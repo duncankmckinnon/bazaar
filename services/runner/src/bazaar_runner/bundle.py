@@ -19,6 +19,7 @@ from bazaar_protocol import Version
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bazaar_runner.clock import ClockScript, TradingSession
+from bazaar_runner.http_market import send
 
 # The one bundle every demo launch and submission runs on. Nothing else names a bundle.
 DEMO_BUNDLE = "demo-bundle-v2"
@@ -173,7 +174,8 @@ def bundle_from(info: BundleInfo) -> Bundle:
 async def read_bundle(client: httpx.AsyncClient, bundle_id: str) -> Bundle:
     """GET /bundles/{bundle_id} once, at launch. The route needs no credentials, so none are sent."""
     try:
-        response = await client.get(f"/bundles/{quote(bundle_id, safe='')}")
+        # A GET: a dropped connection is retried once, like every runner market read.
+        response = await send(client, "GET", f"/bundles/{quote(bundle_id, safe='')}")
     except httpx.TransportError as exc:
         raise BundleError(
             f"could not read bundle {bundle_id} from the market ({type(exc).__name__})"
