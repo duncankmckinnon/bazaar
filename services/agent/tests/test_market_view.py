@@ -258,8 +258,8 @@ async def test_news_batch_reads_each_symbol_once_and_reports_per_symbol():
     )
     assert seen == [("S001", "2"), ("S002", "2")]
     first, second = result.data.results
-    assert first.page.items[0].symbol == "S001" and first.error is None
-    assert second.page is None and second.error.code == "server_error"
+    assert first.articles[0].symbol == "S001" and first.error is None
+    assert second.articles == () and second.error.code == "server_error"
 
 
 # The decision: summary in the prompt, no per-symbol quote block.
@@ -439,3 +439,45 @@ async def test_the_screen_tool_says_sector_names_are_exact():
     await invoke(model)
     (tool,) = [t for t in calls[0][1].function_tools if t.name == "screen"]
     assert "spelled exactly" in tool.description and "case-sensitive" in tool.description
+
+
+def test_clip_cuts_on_a_word_boundary_with_an_explicit_marker():
+    from bazaar_agent.research import TRUNCATED, clip
+
+    assert clip("short text", 400) == "short text"
+    text = "word " * 200
+    clipped = clip(text, 400)
+    assert len(clipped) <= 400 and clipped.endswith("word" + TRUNCATED)
+    assert TRUNCATED == "…[truncated; call news(symbol) for the full text]"
+    # One unbroken token longer than the room is cut mid-token rather than emptied.
+    assert clip("x" * 1000, 400) == "x" * (400 - len(TRUNCATED)) + TRUNCATED
+
+
+async def test_a_full_news_batch_stays_small():
+    """10 symbols x 5 articles at the archive's maximum text length: the batch carries each
+    article's start, and the clamped news tool still serves any one in full."""
+    symbols = tuple(f"S{i:03d}" for i in range(10))
+    body = ("Shares moved as analysts weighed guidance. " * 3000)[:100_000]
+
+    def news_route(request):
+        symbol = request.url.path.rsplit("/", 1)[-1]
+        items = [
+            news(
+                symbol=symbol,
+                record_id=f"{symbol}-{n}",
+                headline=f"{symbol} Fixture Co shares move after quarterly guidance update {n}",
+                text=body,
+            )
+            for n in range(5)
+        ]
+        return httpx.Response(200, json=page(items, source="archive"))
+
+    tools = await tools_for(FakeMarket(11, news_route))
+    result = await tools.news_batch(
+        NewsBatchRequest(symbols=symbols, start_at=EARLY, end_at=NOW, limit=5)
+    )
+    size = len(result.model_dump_json())
+    assert sum(len(r.articles) for r in result.data.results) == 50
+    assert all(len(a.text) <= 400 for r in result.data.results for a in r.articles)
+    # Measured 27,475 characters: 50 x (400 text + a 70-character headline + keys and times).
+    assert size < 28_000, size
