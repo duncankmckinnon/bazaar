@@ -211,28 +211,55 @@ def test_a_bundle_without_new_fields_keeps_its_symbols():
 
 # ---------- the reserved handle ----------
 
+ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
+
+
+def post_handle(settings, helpers, handle, headers=None):
+    from bazaar_web.app import create_app
+    from fastapi.testclient import TestClient
+
+    body = {"name": "some-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        return client.post("/api/submissions", json=body, headers=headers or {})
+
+
+def reserved(response):
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": [
+            {"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}
+        ]
+    }
+    return True
+
 
 @pytest.mark.parametrize("handle", ["house", "House", "HOUSE", " house ", "\thoUSe\n"])
 def test_attendees_cannot_take_the_house_handle(settings, helpers, handle):
-    from bazaar_web.app import create_app
-    from fastapi.testclient import TestClient
+    assert reserved(post_handle(settings, helpers, handle))
 
-    body = {"name": "spoof-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
-    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        response = client.post("/api/submissions", json=body)
 
-    assert response.status_code == 422
-    [error] = response.json()["detail"]
-    assert (error["loc"], error["msg"]) == (["body", "handle"], "That handle is reserved")
+@pytest.mark.parametrize("token", ["wrong", "", "admin-secret ", "ADMIN-SECRET"])
+def test_a_wrong_token_gets_the_same_422(settings, helpers, token):
+    assert reserved(post_handle(settings, helpers, "house", {"X-Bazaar-Admin-Token": token}))
+
+
+def test_with_the_admin_token_the_house_handle_is_allowed(settings, helpers):
+    from bazaar_web.store import Store
+
+    response = post_handle(settings, helpers, " House ", ADMIN)
+
+    assert response.status_code == 201, response.text
+    assert Store(settings.web_db).get(response.json()["id"])["handle"] == "House"
+
+
+def test_with_no_admin_token_configured_even_a_header_gets_the_422(settings, helpers):
+    import dataclasses
+
+    unset = dataclasses.replace(settings, admin_token=None)
+    assert reserved(post_handle(unset, helpers, "house", ADMIN))
 
 
 @pytest.mark.parametrize("handle", ["@alice", "household", "the-house", None, "   "])
-def test_other_handles_are_still_accepted(settings, helpers, handle):
-    from bazaar_web.app import create_app
-    from fastapi.testclient import TestClient
-
-    body = {"name": "real-bot", "handle": handle, "instructions": "Buy KO on dips, hold MSFT."}
-    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        response = client.post("/api/submissions", json=body)
-
+def test_other_handles_need_no_token(settings, helpers, handle):
+    response = post_handle(settings, helpers, handle)
     assert response.status_code == 201, response.text

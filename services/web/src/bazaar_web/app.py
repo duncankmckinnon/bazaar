@@ -57,7 +57,12 @@ def contact_text(value: str, *, limit: int, message: str) -> str:
     return value
 
 
+# The board tags rows with this handle "AI": only the operators' house scripts (with the admin
+# token) and the house lane's own server-made rows may carry it.
 RESERVED_HANDLE = "house"
+RESERVED = HTTPException(
+    422, [{"type": "value_error", "loc": ["body", "handle"], "msg": "That handle is reserved"}]
+)
 
 
 class SubmissionIn(BaseModel):
@@ -104,10 +109,6 @@ class SubmissionIn(BaseModel):
         value = value.strip()
         if len(value) > 40:
             raise ValueError("handle must be at most 40 characters")
-        # "house" marks the house lane's own rows (made server-side, never posted here), and the
-        # board tags them "AI"; an attendee must not be able to claim it.
-        if value.lower() == RESERVED_HANDLE:
-            raise PydanticCustomError("value_error", "That handle is reserved")
         return value or None
 
     @field_validator("instructions")
@@ -215,8 +216,31 @@ def create_app(
     def submit_page() -> Response:
         return static_page("submit.html", "The submission form")
 
+    def is_admin(token: str | None) -> bool:
+        """The admin check every admin route uses: a constant-time compare with the token."""
+        return (
+            settings.admin_token is not None
+            and token is not None
+            and hmac.compare_digest(token.encode(), settings.admin_token.encode())
+        )
+
+    def require_admin(token: str | None) -> None:
+        if settings.admin_token is None:
+            raise HTTPException(404, "not found")
+        if not is_admin(token):
+            raise HTTPException(403, "forbidden")
+
+    AdminToken = Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")]
+
     @app.post("/api/submissions", status_code=201)
-    def submit(body: SubmissionIn, request: Request) -> dict[str, Any]:
+    def submit(body: SubmissionIn, request: Request, token: AdminToken = None) -> dict[str, Any]:
+        # The same 422 whether the token is missing, wrong or unset: no token oracle.
+        if (
+            body.handle is not None
+            and body.handle.lower() == RESERVED_HANDLE
+            and not is_admin(token)
+        ):
+            raise RESERVED
         store: Store = request.app.state.store
         ip_hash = hashlib.sha256(client_ip(request).encode()).hexdigest()
         # The run joins this request's trace: the worker re-attaches this context.
@@ -277,14 +301,6 @@ def create_app(
     def board(request: Request) -> dict[str, Any]:
         with logfire.suppress_instrumentation():  # polled; see submission_status
             return board_payload(request)
-
-    def require_admin(token: str | None) -> None:
-        if settings.admin_token is None:
-            raise HTTPException(404, "not found")
-        if token is None or not hmac.compare_digest(token.encode(), settings.admin_token.encode()):
-            raise HTTPException(403, "forbidden")
-
-    AdminToken = Annotated[str | None, Header(alias="X-Bazaar-Admin-Token")]
 
     @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
     def hide(submission_id: str, request: Request, token: AdminToken = None) -> Response:

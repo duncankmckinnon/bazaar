@@ -162,6 +162,13 @@ def test_no_secret_reaches_any_span(seeded, helpers, capfire, monkeypatch):
         client.get("/api/admin/whoami", headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
         stats = client.get("/api/admin/stats", headers={"X-Bazaar-Admin-Token": "SENTINEL123"})
         assert stats.status_code == 200 and "SENTINEL" not in stats.text
+        # The reserved handle is allowed with the token; the header must not reach a span.
+        house = client.post(
+            "/api/submissions",
+            json=VALID | {"name": "house-bot", "handle": "house"},
+            headers={"X-Bazaar-Admin-Token": "SENTINEL123", "X-Forwarded-For": "7.7.7.7"},
+        )
+        assert house.status_code == 201
 
     dumped = json.dumps(spans(capfire), default=str)
     assert "SENTINEL" not in dumped
