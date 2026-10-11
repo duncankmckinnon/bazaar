@@ -42,6 +42,9 @@ from bazaar_protocol.research import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 T = TypeVar("T")
+# The connection dropped under the request (a keep-alive race, say): the server may never have
+# seen it. Only a GET is retried, once; never an order.
+RETRYABLE_TRANSPORT_ERRORS = (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError)
 
 
 class ToolError(WireModel):
@@ -274,7 +277,7 @@ class ResearchTools:
         request: HistoryRequest | PriceHistoryRequest | OrderRequest | None = None,
     ) -> ToolResult[T]:
         # Catch INSIDE span: exceptions/validation payloads must never enter telemetry.
-        with logfire.span("research tool", _tags=["research"], _span_name="research.tool"):
+        with logfire.span("research tool", _tags=["research"], _span_name="research.tool") as span:
             prepared = False
             try:
                 if request is not None:
@@ -285,15 +288,25 @@ class ResearchTools:
                 else:
                     params = None
                 prepared = True
-                response = await self._client.request(
-                    "POST" if isinstance(request, OrderRequest) else "GET",
-                    route,
-                    params=params,
-                    json=request.model_dump(mode="json")
-                    if isinstance(request, OrderRequest)
-                    else None,
-                    follow_redirects=False,
-                )
+                method = "POST" if isinstance(request, OrderRequest) else "GET"
+                for attempt in range(2):
+                    try:
+                        response = await self._client.request(
+                            method,
+                            route,
+                            params=params,
+                            json=request.model_dump(mode="json")
+                            if isinstance(request, OrderRequest)
+                            else None,
+                            follow_redirects=False,
+                        )
+                        break
+                    except RETRYABLE_TRANSPORT_ERRORS as exc:
+                        # An order is never resent: the runner reconciles it from the market.
+                        if method != "GET" or attempt:
+                            raise
+                        span.set_attribute("retried", 1)
+                        span.set_attribute("retry_error", type(exc).__name__)
                 if response.status_code != 200:
                     code, message = {
                         401: ("unauthorized", "Authentication required"),

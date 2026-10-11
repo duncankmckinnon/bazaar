@@ -17,7 +17,14 @@ ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
 
 
 def body(name):
-    return {"name": name, "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+    return {
+        "name": name,
+        "handle": None,
+        "instructions": "Buy KO on dips, hold MSFT.",
+        "email": "human@example.com",
+        "company": "Example Co",
+        "role": "Engineer",
+    }
 
 
 class LaneRunner:
@@ -503,3 +510,18 @@ def test_a_human_row_still_reruns(seeded, helpers):
 
     assert response.status_code == 201
     assert Store(seeded.web_db).get(new_id)["lane"] == "human"
+
+
+def test_house_rows_keep_contact_fields_null(tmp_path):
+    import sqlite3
+
+    from bazaar_web.store import Store
+
+    path = tmp_path / "web.sqlite3"
+    created = Store(path).create_house([("house-null-contact", "Buy KO on dips.")], None)
+    assert created is not None
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT lane, email, company, role FROM submissions WHERE id = ?", (created[0],)
+        ).fetchone()
+    assert row == ("house", None, None, None)

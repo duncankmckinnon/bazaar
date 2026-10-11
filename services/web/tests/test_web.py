@@ -9,7 +9,14 @@ from bazaar_web.store import Store
 from bazaar_web.worker import expected_run_dir
 from fastapi.testclient import TestClient
 
-VALID = {"name": "alice-bot", "handle": "@alice", "instructions": "Buy KO on dips, hold MSFT."}
+VALID = {
+    "name": "alice-bot",
+    "handle": "@alice",
+    "instructions": "Buy KO on dips, hold MSFT.",
+    "email": "alice@example.com",
+    "company": "Example Co",
+    "role": "Engineer",
+}
 
 
 def submit(client, ip="10.0.0.1", **body):
@@ -426,7 +433,8 @@ def test_pages_fall_back_to_placeholders(settings, helpers, tmp_path, monkeypatc
     assert "The submission form is coming soon." in form.text
 
 
-def test_empty_runs_dir_gives_default_window(settings, helpers):
+def test_empty_runs_dir_and_no_bundle_route_give_the_v1_fallback_window(settings, helpers):
+    # The default bundle is demo-bundle-v1 and conftest's market has no bundle route.
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         payload = client.get("/api/board").json()
 

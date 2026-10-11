@@ -10,6 +10,8 @@ this is decided before the request body is read, so a refused call writes nothin
 import hashlib
 import hmac
 import logging
+import sqlite3
+import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
@@ -37,6 +39,7 @@ from pydantic import AwareDatetime
 from bazaar_market.db import MarketError
 from bazaar_market.history import PageScope, build_page, parse_history_request
 from bazaar_market.ledger import Ledger
+from bazaar_market.stats import STATS, is_locked
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +215,11 @@ def build_routers(
     def submit_order(
         experiment_id: UUID, account_id: UUID, body: OrderRequest
     ) -> FilledOrder | RejectedOrder:
-        return ledger.submit(experiment_id, account_id, body)
+        started = time.perf_counter()
+        try:
+            return ledger.submit(experiment_id, account_id, body)
+        finally:
+            STATS.order((time.perf_counter() - started) * 1000)
 
     @router.get("/experiments/{experiment_id}/accounts/{account_id}/orders")
     def order_history(
@@ -301,3 +308,12 @@ def install(app: FastAPI, ledger: Ledger, grants: GrantChecker, runner_token: st
     @app.exception_handler(MarketError)
     async def market_error(request: Request, error: MarketError) -> JSONResponse:
         return _error(error.status_code, error.code, error.message)
+
+    @app.exception_handler(sqlite3.OperationalError)
+    async def storage_error(request: Request, error: sqlite3.OperationalError) -> JSONResponse:
+        """Count lock failures for /control/stats, then fail exactly as before (a 500)."""
+        # Starlette runs handlers at the route and the app level, so a re-raised error comes back.
+        if is_locked(error) and not getattr(error, "bazaar_counted", False):
+            error.bazaar_counted = True
+            STATS.locked_error()
+        raise error

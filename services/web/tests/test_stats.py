@@ -17,7 +17,14 @@ ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
 
 
 def body(name):
-    return {"name": name, "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+    return {
+        "name": name,
+        "handle": None,
+        "instructions": "Buy KO on dips, hold MSFT.",
+        "email": "bot@example.com",
+        "company": "Example Co",
+        "role": "Engineer",
+    }
 
 
 def status(client, submission_id):

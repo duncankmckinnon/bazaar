@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 
 from bazaar_protocol import PriceObservation
 
+from bazaar_market import db
+
 EASTERN = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
@@ -227,9 +229,7 @@ class SqliteMarketData:
         self.data_version = data_version
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return db.connect(self.database_path)
 
     @property
     def price_source(self) -> str:

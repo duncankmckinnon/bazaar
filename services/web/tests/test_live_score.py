@@ -31,7 +31,14 @@ CREATE TABLE events (
 
 
 def submit(client, name, ip="10.0.0.1"):
-    body = {"name": name, "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+    body = {
+        "name": name,
+        "handle": None,
+        "instructions": "Buy KO on dips, hold MSFT.",
+        "email": "alice@example.com",
+        "company": "Example Co",
+        "role": "Engineer",
+    }
     return client.post("/api/submissions", json=body, headers={"X-Forwarded-For": ip}).json()["id"]
 
 

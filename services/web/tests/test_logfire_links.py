@@ -6,7 +6,14 @@ from bazaar_web.settings import Settings
 from fastapi.testclient import TestClient
 
 TEMPLATE = "https://logfire.example/bazaar/dash?var-strategy={strategy}"
-VALID = {"name": "alice-bot", "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+VALID = {
+    "name": "alice-bot",
+    "handle": None,
+    "instructions": "Buy KO on dips, hold MSFT.",
+    "email": "alice@example.com",
+    "company": "Example Co",
+    "role": "Engineer",
+}
 
 
 def board_and_status(settings, helpers):

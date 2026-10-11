@@ -68,6 +68,7 @@ def run_page_function(name, calls):
         r"^  function (?:toNumber|percent|rankLabel)\(.*?^  }$", page(), re.MULTILINE | re.DOTALL
     )
     sources += re.findall(r"// safeLogfireUrl:start(.*?)// safeLogfireUrl:end", page(), re.DOTALL)
+    sources += re.findall(r"// contactErrors:start(.*?)// contactErrors:end", page(), re.DOTALL)
     script = (
         "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
     )
@@ -195,7 +196,8 @@ def test_input_border_meets_non_text_contrast_against_page_and_field():
     for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
         assert contrast(tokens["field-line"], background) >= 3, background
     assert re.search(
-        r"input\[type=\"text\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)", page()
+        r"input\[type=\"text\"\], input\[type=\"email\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)",
+        page(),
     )
 
 
@@ -233,3 +235,96 @@ def test_examples_name_only_tickers_in_the_universe():
     assert words, "the examples should name some tickers"
     assert set(words) <= set(UNIVERSE), set(words) - set(UNIVERSE)
     assert len([s for s in example_strings() if len(s) > 40]) >= 3
+
+
+def input_tag(field_id):
+    return re.search(rf'<input id="{field_id}"[^>]*>', page()).group(0)
+
+
+def test_contact_inputs_are_required_with_autocomplete_and_limits():
+    email, company, role = input_tag("email"), input_tag("company"), input_tag("role")
+
+    for tag in (email, company, role):
+        assert " required" in tag
+    assert 'type="email"' in email and 'inputmode="email"' in email
+    assert 'autocomplete="email"' in email and 'maxlength="254"' in email
+    assert 'autocomplete="organization"' in company and 'maxlength="100"' in company
+    assert 'autocomplete="organization-title"' in role and 'maxlength="100"' in role
+    for field_id in ("email", "company", "role"):
+        assert f'<label for="{field_id}">' in page()
+        assert f'aria-describedby="contact-purpose {field_id}-error"' in input_tag(field_id)
+
+
+def test_contact_purpose_line_is_shown():
+    assert (
+        "We'll use your email only to contact you if your strategy wins. Your company and role "
+        "are used the same way and are never shown publicly."
+    ) in " ".join(page().split())
+
+
+def test_contact_errors_accepts_valid_contact_details():
+    calls = [
+        json.dumps({"email": "  ada@example.com ", "company": " Pydantic ", "role": "Engineer"}),
+        json.dumps({"email": "a@b.co", "company": "x" * 100, "role": "y" * 100}),
+        json.dumps({"email": "x" * 240 + "@example.com", "company": "C", "role": "R"}),
+    ]
+
+    assert (
+        run_page_function("contactErrors", calls) == [{"email": "", "company": "", "role": ""}] * 3
+    )
+
+
+def test_contact_errors_rejects_invalid_contact_details():
+    long_email = "x" * 243 + "@example.com"  # 255 characters
+    calls = [
+        json.dumps({"email": "ada.example.com", "company": "C", "role": "R"}),
+        json.dumps({"email": "ada @example.com", "company": "C", "role": "R"}),
+        json.dumps({"email": "ada@example", "company": "C", "role": "R"}),
+        json.dumps({"email": long_email, "company": "C", "role": "R"}),
+        json.dumps({"email": "", "company": "   ", "role": ""}),
+        json.dumps({"email": "a@b.co", "company": "x" * 101, "role": "y" * 101}),
+        "{}",
+    ]
+    results = run_page_function("contactErrors", calls)
+
+    for result in results[:4]:
+        assert result["email"] and not result["company"] and not result["role"]
+    assert all(results[4].values())
+    assert not results[5]["email"] and results[5]["company"] and results[5]["role"]
+    assert all(results[6].values())
+
+
+def test_local_storage_keeps_only_id_name_and_position():
+    html = page()
+    saved = re.findall(r"var saved = \{([^}]*)\}", html)
+    store = re.search(r"var store = \{(.*?)\n  \};", html, re.DOTALL).group(1)
+
+    assert saved, "the page should save its submission"
+    for literal in saved:
+        assert re.findall(r"(\w+):", literal) == ["id", "name", "position"]
+    assert re.findall(r"store\.set\(([^)]*)\)", html) == ["saved"]
+    assert (
+        html.count("localStorage")
+        == html.count("window.localStorage")
+        == store.count("localStorage")
+    )
+    assert not re.search(r"email|company|role", store)
+    assert "console." not in html
+
+
+def test_contact_details_never_reach_the_url_and_422_input_is_never_shown():
+    html = page()
+
+    assert '<form id="submit-form" method="post"' in html
+    for field_id in ("email", "company", "role"):
+        assert " name=" not in input_tag(field_id), field_id
+    show_detail = re.search(r"function showDetail\(.*?\n  \}\n", html, re.DOTALL).group(0)
+    assert set(re.findall(r"\bitem\.(\w+)", show_detail)) == {"msg", "loc"}
+    assert not re.search(r"\.input\b", html)
+
+
+def test_server_field_errors_map_to_the_contact_fields():
+    fields = re.search(r"var fields = \{([^}]*)\}", page()).group(1)
+
+    for name in ("name", "handle", "instructions", "email", "company", "role"):
+        assert re.search(rf"\b{name}: ", fields), name

@@ -887,3 +887,62 @@ async def test_bypassed_request_validation_revalidated_before_http():
     result, calls = await invoke(page(), req=malformed)
     assert result.error is not None
     assert not calls
+
+
+def dropping(payload, *, drop, times=1, error=httpx.ReadError):
+    """Drops the matching requests (a keep-alive race: the server closed the pooled
+    connection), then serves `payload`."""
+    seen = []
+    left = times
+
+    def handler(request):
+        nonlocal left
+        dropped = left > 0 and drop(request)
+        seen.append((request.method, dropped))
+        if dropped:
+            left -= 1
+            raise error("Server disconnected without sending a response.", request=request)
+        return httpx.Response(200, json=payload)
+
+    return handler, seen
+
+
+@pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError])
+async def test_a_dropped_read_is_retried_once(capfire, error):
+    handler, seen = dropping(account(), drop=lambda r: r.method == "GET", error=error)
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await ResearchTools(client, context()).account()
+    assert result.error is None and seen == [("GET", True), ("GET", False)]
+    (span,) = [s for s in capfire.exporter.exported_spans_as_dict() if s["name"] == "research.tool"]
+    assert span["attributes"]["retried"] == 1
+    assert span["attributes"]["retry_error"] == error.__name__
+
+
+async def test_a_read_dropped_twice_is_network_feedback():
+    handler, seen = dropping(account(), drop=lambda r: True, times=2)
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await ResearchTools(client, context()).account()
+    assert result.error.code == "network" and seen == [("GET", True), ("GET", True)]
+
+
+async def test_a_read_timeout_is_not_retried():
+    handler, seen = dropping(account(), drop=lambda r: True, error=httpx.ReadTimeout)
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await ResearchTools(client, context()).account()
+    assert result.error.code == "network" and seen == [("GET", True)]
+
+
+async def test_a_dropped_order_is_never_resent():
+    handler, seen = dropping(order(), drop=lambda r: r.method == "POST")
+    async with httpx.AsyncClient(
+        base_url="https://market.invalid", transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await ResearchTools(client, context()).place_order(order_request())
+    assert result.error.code == "network" and result.error.retryable
+    assert seen == [("POST", True)]

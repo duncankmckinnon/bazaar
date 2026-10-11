@@ -5,6 +5,7 @@ approval id in X-Bazaar-Approval; the market decides on it before writing anythi
 """
 
 import json
+import logging
 import os
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from decimal import Decimal
 from uuid import UUID
 
 import httpx
+import logfire
 from bazaar_protocol import (
     AccountSnapshot,
     ApiError,
@@ -41,6 +43,8 @@ from bazaar_runner.market import (
     RunnerUnauthorized,
 )
 
+logger = logging.getLogger(__name__)
+
 APPROVAL_HEADER = "X-Bazaar-Approval"
 # Sent only on the control routes (cutoff, create account, close); never logged or echoed.
 RUNNER_TOKEN_HEADER = "X-Bazaar-Runner-Token"
@@ -51,6 +55,44 @@ DEFAULT_BASE_URL = "http://localhost:8000"
 PRICE_LOOKBACK = timedelta(days=10)
 # The market does not page today; this bounds a server that keeps returning a cursor.
 MAX_PRICE_PAGES = 10
+# uvicorn closes an idle keep-alive connection after 5 s (timeout_keep_alive). A request that
+# follows a multi-second LLM decision must not reuse a connection the server is closing, so the
+# runner's clients expire idle connections first.
+KEEPALIVE_EXPIRY_SECONDS = 2.0
+# The connection dropped under the request: the server may never have seen it.
+RETRYABLE_TRANSPORT_ERRORS = (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError)
+
+
+def market_client(
+    base_url: str,
+    *,
+    timeout: float,
+    headers: dict[str, str] | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> httpx.AsyncClient:
+    """Every runner client to the market is built here, so the keep-alive limit cannot drift.
+
+    (An explicit transport, as tests pass, brings its own pool and ignores the limits.)"""
+    return httpx.AsyncClient(
+        base_url=base_url,
+        timeout=timeout,
+        headers=headers,
+        transport=transport,
+        limits=httpx.Limits(keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
+    )
+
+
+def note_retry(method: str, path: str, exc: Exception) -> None:
+    """Record, inside the current span (a mark, say), that a read was retried. The path and the
+    error type only: never the query string, headers or the error's text."""
+    logfire.warn(
+        "market read retried after {error_type}",
+        retried=1,
+        error_type=type(exc).__name__,
+        method=method,
+        path=path,
+    )
+    logger.warning("retried %s %s once after %s", method, path, type(exc).__name__)
 
 
 def parse_order_page(content: bytes) -> tuple[tuple[OrderResult, ...], str | None]:
@@ -145,14 +187,23 @@ class HttpMarketPort:
     ) -> bytes:
         headers = self._headers | {RUNNER_TOKEN_HEADER: self._token} if control else self._headers
         url = (self._root if root is None else root) + path
-        # One attempt only: never resend a POST after an ambiguous failure (market-agent API docs).
-        try:
-            response = await self._client.request(method, url, headers=headers, **kwargs)
-        except httpx.TransportError as exc:
-            detail = ErrorDetail(
-                code=ErrorCode.INTERNAL_ERROR, message=f"{type(exc).__name__}: {exc}"
-            )
-            raise self._redact(MarketError(detail)) from None
+        # A GET is idempotent, so a dropped connection gets exactly one more attempt. POST and PUT
+        # (orders, accounts, the cutoff, grants, close) get one attempt only: an ambiguous order
+        # is never resent (market-agent API docs), and the decision's reconciliation, which
+        # reads the account's orders, settles what happened. Timeouts and HTTP error statuses
+        # are never retried.
+        for attempt in range(2):
+            try:
+                response = await self._client.request(method, url, headers=headers, **kwargs)
+                break
+            except httpx.TransportError as exc:
+                if method == "GET" and not attempt and isinstance(exc, RETRYABLE_TRANSPORT_ERRORS):
+                    note_retry(method, url, exc)
+                    continue
+                detail = ErrorDetail(
+                    code=ErrorCode.INTERNAL_ERROR, message=f"{type(exc).__name__}: {exc}"
+                )
+                raise self._redact(MarketError(detail)) from None
         if response.is_error:
             raise self._redact(_market_error(response, control=control))
         return response.content

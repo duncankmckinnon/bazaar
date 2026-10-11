@@ -1,7 +1,8 @@
-# Live deploy on Modal
+# Live and staging deploys on Modal
 
-`deploy/modal_app.py` defines the Modal app `bazaar-live`. One container, with min and max 1, runs the market on
-`127.0.0.1:8000` as a subprocess and serves the web app (`bazaar_web.app:app`) on the public Modal URL.
+`deploy/modal_app.py` defines the Modal app `bazaar-live`, or `bazaar-staging` for load tests (see Staging). One
+container, with min and max 1, runs the market on `127.0.0.1:8000` as a subprocess and serves the web app
+(`bazaar_web.app:app`) on the public Modal URL.
 `deploy/live_runtime.py` holds the container logic and has no Modal import, so its tests run offline
 (`services/market/tests/test_live_runtime.py`).
 
@@ -32,9 +33,41 @@ The Modal secret `bazaar-live`, which Anthony creates. Nobody prints its values.
 The caps (`BAZAAR_MAX_QUEUE`, `BAZAAR_MAX_SUBMISSIONS_PER_DAY`, `BAZAAR_MAX_PER_IP_PER_HOUR`) can go in the same secret.
 Without them the web app uses its defaults.
 
+## The market data bundle
+
+The market DB that `BAZAAR_DEPLOY_MARKET_DB` points at holds `demo-bundle-v1`. It maps three imports
+(`services/market/src/bazaar_market/bundles.py`): bars `alpaca-bars-v1`, news `alpaca-news-v1` and filings
+`edgar-filings-v1`, which are the import commands' defaults.
+
+- **Bars are required.** Fetch and import them with `services/market/README.md` section 1.
+- **News is needed for the agent's news reads.** Without it the market answers `news` with 404 `data_unavailable`.
+- **Filings are optional.** Without them `GET /fiscal-cycles` returns `[]` and the agent's `filings()` tool returns
+  `unsupported`.
+
+After the bars, import news and filings into the same DB:
+
+```sh
+# News (reads ALPACA_API_KEY and ALPACA_SECRET_KEY)
+uv run --env-file .env python -m bazaar_market.sources news --version news-2026-10-06
+uv run python -m bazaar_market.sources import-news \
+    --snapshot data/raw/alpaca-news/news-2026-10-06 --db data/market.sqlite3
+
+# Filings (no API key; EDGAR needs a contact user agent, see below)
+uv run --env-file .env python -m bazaar_market.sources edgar --version edgar-2026-10-06
+uv run python -m bazaar_market.sources import-filings \
+    --snapshot data/raw/edgar/edgar-2026-10-06 --db data/market.sqlite3
+```
+
+Bars are unadjusted on purpose: adjusted history rewrites old prices with later corporate actions, which would leak
+the future into the past (`sources/alpaca_bars.py`). Raw snapshots under `data/raw/` and the market DB
+(`data/*.sqlite3*`) are gitignored. The provider terms have not been reviewed, so never commit downloaded data. The
+keys are `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` for Alpaca. EDGAR needs a user agent with a contact address;
+`config/demo-sources.toml` sets one, and `SEC_USER_AGENT` overrides it. Never print the keys' values.
+
 ## Deploy (PM only)
 
 ```sh
+BAZAAR_MODAL_TARGET=live \
 BAZAAR_DEPLOY_MARKET_DB=/path/to/market-seed.sqlite3 \
 BAZAAR_DEPLOY_RUNS=/path/to/seed-runs \
 BAZAAR_DEPLOY_FONT=~/Work/pydantic/brand/fonts/DwightMedium.woff2 \
@@ -97,7 +130,8 @@ uvx modal app stop bazaar-live
 uvx modal volume rm bazaar-live-data /market.sqlite3
 uvx modal volume rm bazaar-live-data /market.sqlite3-wal   # if listed by: uvx modal volume ls bazaar-live-data
 uvx modal volume rm bazaar-live-data /market.sqlite3-shm   # likewise
-BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZAAR_DEPLOY_FONT=... uvx modal deploy deploy/modal_app.py
+BAZAAR_MODAL_TARGET=live BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZAAR_DEPLOY_FONT=... \
+  uvx modal deploy deploy/modal_app.py
 ```
 
 The startup log then says `freshly seeded from /app/seed/market.sqlite3`. For a new set of seed runs, use the
@@ -118,6 +152,7 @@ For the v2 switch: replace the board's runs with a new seed set, keeping the old
 4. Deploy with a new reseed id:
 
    ```sh
+   BAZAAR_MODAL_TARGET=live \
    BAZAAR_RESEED_RUNS=v2-2026-10-08 \
    BAZAAR_DEPLOY_RUNS=/path/to/new-seed-runs \
    BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_FONT=... \
@@ -158,6 +193,164 @@ back up:
 
    Then redeploy without `BAZAAR_RESEED_RUNS`. The `reseeded-<id>` marker stays, so that id never runs again.
 
+## Filling the board
+
+Two scripts submit house strategies to a running deploy, so the board has something on it before
+and between attendees. Both submit under the handle `house` (change it with `--handle`), take the
+deploy URL as an argument or the `BASE_URL` environment variable, and need no token.
+
+- `scripts/house_strategies.py` submits a fixed batch of 30 varied strategies once. Use it to seed
+  an empty board.
+
+  ```bash
+  uv run python scripts/house_strategies.py BASE_URL [--handle house] [--only N]
+  ```
+
+- `scripts/house_feeder.py` keeps the board busy without crowding out attendees. It submits a new
+  generated strategy whenever fewer than `--depth` submissions are queued or running, and stops
+  after `--max` have been queued. Use it while the board is on screen.
+
+  ```bash
+  uv run python scripts/house_feeder.py BASE_URL [--depth 4] [--max 80] [--handle house]
+  ```
+
+Each run cost about $0.26 to $1.28 in model calls on the live deploy (observed in October 2026). House runs count
+against the same caps as attendees: the queue cap, the daily cap and the per-IP hourly cap all answer 429. With the
+default per-IP cap of 5 an hour, 30 strategies from one address take about 6 hours. On 429 or 503,
+`house_strategies.py` waits 60 seconds and retries the same name. On 429, `house_feeder.py` waits 5 minutes and then
+moves on to the next generated name; the rate-limited name is dropped. A name that is already taken is skipped. Stop
+either script with Ctrl-C; submissions already queued still run. The submit page's link to a strategy's Logfire
+dashboard comes from `BAZAAR_LOGFIRE_DASHBOARD_URL`.
+
+## Logfire
+
+Runs export to the `bazaar-demo` Logfire project when `LOGFIRE_TOKEN`, a project write token, is set. On Modal it
+comes from the `bazaar-live` secret above. Every process configures Logfire with `send_to_logfire="if-token-present"`,
+so nothing is sent without it. `docs/telemetry.md` lists the spans and attributes.
+
+## Trust boundaries
+
+The boundaries are the point of the demo:
+
+- **The agent never moves the clock.** Only the runner holds `X-Bazaar-Runner-Token`, which the market requires on
+  its control routes (`ledger_api.py`, `grants.py`). The agent's market client carries only `X-Bazaar-Approval` and
+  `X-Bazaar-Account` (`runner/agent_step.py`).
+- **The agent never sees prices after the cutoff.** The market answers 403 for prices, news or filings past the
+  experiment's current time (`prices_api.py`, `news_api.py`, `filings_api.py`).
+- **The agent never changes a balance except by placing an order.** Cash changes only when an order fills; opening
+  and closing accounts are runner-only control routes.
+- **The agent never sees its scores.** None of its tools returns a score, and the strategy judge runs after the
+  decision and writes only to spans (`agent/strategy_evaluation.py`, applied in `agent/trading.py`).
+
+## Open questions for Duncan
+
+1. Account on news and filings: the research routes take the account from the `X-Bazaar-Account` header. Keep the
+   header, or add the account to the route?
+2. Fiscal cycles: a cycle starts the day after the latest 10-K/10-Q period end accepted by the cutoff, so in effect a
+   filing is visible from its acceptance. "Prior fiscal year only" would be a stricter rule that you would define.
+   Which do you want?
+3. `ResearchTools` pins identical queries, and nothing clears the pins after an order, so `orders()` after
+   `market_order()` in one decision fails with `invalid_response` (the history legitimately changed). The runner
+   reconciles it, but should the pins be cleared after an order?
+4. Market approvals are bound to the experiment, not the account (`grants.py`), so they are safe only with one
+   agent per experiment. #18 should issue account-scoped credentials.
+
+## Staging (load tests)
+
+`BAZAAR_MODAL_TARGET` picks what a deploy writes to. It is read by `modal_app.py` at deploy time and passed into the
+container, which resolves the same target again:
+
+| `BAZAAR_MODAL_TARGET` | App | Volume | Secret | `BAZAAR_ENVIRONMENT` |
+| --- | --- | --- | --- | --- |
+| `live` | `bazaar-live` | `bazaar-live-data` | `bazaar-live` | `production` |
+| `staging` | `bazaar-staging` | `bazaar-staging-data` | `bazaar-staging` | `staging` |
+
+There is no default: unset, blank or any other value stops the deploy with
+`set BAZAAR_MODAL_TARGET=live or staging`, so every deploy command names its target. The deploy prints
+`deploying target=... app=... volume=... secret=...` before Modal starts; check it says what you meant. The staging target can never resolve to a `bazaar-live` app, volume or secret
+(`live_runtime.resolve_target`). Staging also sets raised caps for load tests: `BAZAAR_MAX_QUEUE=100`,
+`BAZAAR_MAX_SUBMISSIONS_PER_DAY=1000`, `BAZAAR_MAX_PER_IP_PER_HOUR=1000`. A load test submits from one IP, so the
+per-IP cap must not be what limits it. Live sets no caps here and keeps the
+ones from its secret, or the web defaults.
+
+**Never point a load test at `bazaar-live`.**
+
+Both targets take the same deploy-time knobs:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BAZAAR_MODAL_CPU` | `2.0` | CPU cores requested for the container (Modal `cpu=`) |
+| `BAZAAR_MODAL_MEMORY` | `4096` | memory requested in MiB (Modal `memory=`) |
+| `BAZAAR_MAX_CONCURRENT` | unset | runs the web worker executes at once; unset, the web app keeps its default of 3 |
+
+A value that is not a positive number stops the deploy.
+
+### The `bazaar-staging` secret (Anthony)
+
+Only Anthony runs this; no seat does. It holds the same key names as `bazaar-live`:
+
+- `BAZAAR_RUNNER_TOKEN` and `BAZAAR_ADMIN_TOKEN`: fresh tokens, never the live ones
+- `PYDANTIC_AI_GATEWAY_API_KEY`, `LOGFIRE_API_KEY` and `LOGFIRE_TOKEN`: the same keys as live
+- `PUBLIC_URL`: the staging URL, added after the first staging deploy prints it
+
+The admin token goes to the load-test team only as a file with mode 600. These commands print no values:
+
+```sh
+mkdir -p ~/.config/bazaar
+env_file=~/.config/bazaar/staging-secret.env
+install -m 600 /dev/null "$env_file"
+install -m 600 /dev/null ~/.config/bazaar/staging-admin-token
+grep -E '^(export )?(PYDANTIC_AI_GATEWAY_API_KEY|LOGFIRE_API_KEY|LOGFIRE_TOKEN)=' \
+  ~/Work/pydantic/bazaar/.env > "$env_file"
+grep -cE '=' "$env_file"   # must print 3
+python3 - "$env_file" ~/.config/bazaar/staging-admin-token <<'PY'
+import secrets, sys
+env_file, admin_file = sys.argv[1:]
+admin = secrets.token_urlsafe(32)
+with open(env_file, "a") as f:
+    f.write(f"BAZAAR_RUNNER_TOKEN={secrets.token_urlsafe(32)}\nBAZAAR_ADMIN_TOKEN={admin}\n")
+with open(admin_file, "w") as f:
+    f.write(admin + "\n")
+PY
+uvx --with python-dotenv modal secret create bazaar-staging --from-dotenv "$env_file"
+```
+
+`modal secret create` prints only the key names. `--from-dotenv` needs `python-dotenv`, which plain `uvx modal`
+does not have, hence `--with`. Share `~/.config/bazaar/staging-admin-token` with the load-test team as a mode-600
+file, never in chat. After the first staging deploy prints its URL, add it and recreate the secret:
+
+```sh
+printf 'PUBLIC_URL=%s\n' "https://...modal.run" >> ~/.config/bazaar/staging-secret.env
+uvx --with python-dotenv modal secret create --force bazaar-staging --from-dotenv ~/.config/bazaar/staging-secret.env
+```
+
+Then redeploy staging.
+
+### Deploy staging (PM only)
+
+Use staging's own seed copies, made the same way as live's. The staging volume starts empty and is seeded on first
+start exactly as live was (see What the container does):
+
+```sh
+BAZAAR_MODAL_TARGET=staging \
+BAZAAR_MAX_CONCURRENT=6 \
+BAZAAR_DEPLOY_MARKET_DB=/path/to/staging-market-seed.sqlite3 \
+BAZAAR_DEPLOY_RUNS=/path/to/staging-seed-runs \
+BAZAAR_DEPLOY_FONT=~/Work/pydantic/brand/fonts/DwightMedium.woff2 \
+  uvx modal deploy deploy/modal_app.py
+```
+
+Before each run, check that the printed URL and app name say `bazaar-staging`. To change `BAZAAR_MAX_CONCURRENT`
+between load-test levels, redeploy with the new value while staging's queue is empty.
+
+### Tear down
+
+```sh
+uvx modal app stop -y bazaar-staging
+uvx modal volume delete -y bazaar-staging-data   # optional: drops the staging runs and databases
+uvx modal secret delete -y bazaar-staging        # optional
+```
+
 ## Modal APIs used, checked against modal 1.6.1
 
 Signatures printed from the installed package with `inspect.signature`:
@@ -171,11 +364,16 @@ Signatures printed from the installed package with `inspect.signature`:
 - `Volume.from_name(name, *, environment_name=None, create_if_missing=False, ...)` and `Volume.commit()`
 - `Secret.from_name(name, *, environment_name=None, required_keys=[], ...)`
 - `App(name=None, *, tags=None, image=None, secrets=[], volumes={}, include_source=True)`
-- `App.cls(*, image, env, secrets, volumes, min_containers, max_containers, timeout=300, ...)`
+- `App.cls(*, image, env, secrets, volumes, cpu, memory, min_containers, max_containers, timeout=300, ...)`.
+  `cpu: float | tuple[float, float] | None` is fractional cores, and `memory: int | tuple[int, int] | None` is MiB.
+  The tuple form is (request, limit) with a hard limit; we pass the plain request. `env` is added as a secret, so
+  it is in the container's environment when `modal_app.py` is imported there.
 - `modal.enter(*, snap=False)`, `modal.exit()`, `modal.asgi_app(*, label=None, ...)`, `modal.concurrent(*, max_inputs=None, target_inputs=None)`
 - `modal.is_local()`: False only inside a running Modal Function, so the deploy-time paths are read only locally.
 - CLI, from `uvx modal ... --help`: `modal app stop [-y] APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
-  `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`.
+  `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`,
+  `modal volume delete [-y] NAME`, `modal secret create [--from-dotenv PATH] [--force] SECRET_NAME [KEYVALUES]...`,
+  `modal secret delete [-y] NAME`.
 
 `Image.uv_sync` is not used: modal 1.6.1 raises `uv workspaces are not supported` for a `pyproject.toml` with
 `[tool.uv.workspace]`, which ours has. The `run_commands` sync above does the same job.
