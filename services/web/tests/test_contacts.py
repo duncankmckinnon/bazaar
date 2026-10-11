@@ -231,7 +231,7 @@ def test_the_operator_scripts_send_the_operator_address():
 @pytest.mark.parametrize("start", ["=", "+", "-", "@", "\t", "\r"])
 def test_contacts_csv_defuses_formulas(settings, helpers, start):
     store = Store(settings.web_db)
-    store.create(
+    sid = store.create(
         name="-formula-bot" if start == "-" else "formula-bot",
         handle=f"{start}cmd|' /C calc'!A0",
         instructions="Buy KO on dips, hold MSFT.",
@@ -245,6 +245,9 @@ def test_contacts_csv_defuses_formulas(settings, helpers, start):
     )
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         [row] = contacts_csv(client)
+        # Let the queued row's run finish here: the run pool does not wait at shutdown, and a
+        # run still writing would add spans to the next test's capfire.
+        helpers.wait_for(lambda: Store(settings.web_db).get(sid)["status"] == "scored")
 
     for column in ("handle", "email", "company", "role"):
         assert row[column].startswith("'" + start), (column, row[column])
