@@ -16,6 +16,8 @@ from uuid import uuid4
 
 import logfire
 
+from bazaar_web.house import house_name
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
     id TEXT PRIMARY KEY,
@@ -34,13 +36,23 @@ CREATE TABLE IF NOT EXISTS submissions (
     latest_value TEXT,
     trace_context TEXT,
     rerun_of TEXT,
-    error_class TEXT
+    error_class TEXT,
+    lane TEXT DEFAULT 'human'
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
     text TEXT NOT NULL,
     submission_id TEXT
 );
+-- The house lane's place in the house strategy list, and whether an admin paused it.
+CREATE TABLE IF NOT EXISTS house_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cursor INTEGER NOT NULL,
+    cycle INTEGER NOT NULL,
+    paused INTEGER NOT NULL,
+    total_started INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO house_state (id, cursor, cycle, paused, total_started) VALUES (1, 0, 1, 0, 0);
 -- Marked portfolio value after each session of a running submission, for the live chart.
 CREATE TABLE IF NOT EXISTS submission_progress (
     submission_id TEXT NOT NULL,
@@ -154,6 +166,8 @@ class Store:
             for column in ("latest_value", "trace_context", "rerun_of", "error_class"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
+            if "lane" not in columns:  # existing rows are all human submissions
+                conn.execute("ALTER TABLE submissions ADD COLUMN lane TEXT DEFAULT 'human'")
 
     def _connect(self) -> "TracedConnection":
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -193,20 +207,23 @@ class Store:
             if conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
                 raise NameTaken
             # Admin reruns occupy the queue, so they count here, but not in the daily or per-IP caps.
+            # House runs have their own slots and count toward no cap.
             (in_flight,) = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE status IN ('queued', 'running')"
+                "SELECT COUNT(*) FROM submissions WHERE status IN ('queued', 'running') "
+                "AND lane = 'human'"
             ).fetchone()
             if in_flight >= max_queue:
                 raise CapReached("The queue is full right now. Please try again in a few minutes.")
             (today,) = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE created_at >= ? AND rerun_of IS NULL",
+                "SELECT COUNT(*) FROM submissions "
+                "WHERE created_at >= ? AND rerun_of IS NULL AND lane = 'human'",
                 (midnight.isoformat(),),
             ).fetchone()
             if today >= max_per_day:
                 raise CapReached("Today's submission limit has been reached. Thanks for playing!")
             (recent,) = conn.execute(
                 "SELECT COUNT(*) FROM submissions "
-                "WHERE ip_hash = ? AND created_at >= ? AND rerun_of IS NULL",
+                "WHERE ip_hash = ? AND created_at >= ? AND rerun_of IS NULL AND lane = 'human'",
                 (ip_hash, (now - timedelta(hours=1)).isoformat()),
             ).fetchone()
             if recent >= max_per_ip_hour:
@@ -216,7 +233,7 @@ class Store:
             submission_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, trace_context) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "created_at, trace_context, lane) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 'human')",
                 (
                     submission_id,
                     name,
@@ -229,6 +246,81 @@ class Store:
             )
             self._event(conn, f"{name} joined the queue", submission_id)
         return submission_id
+
+    def create_house(
+        self, catalog: Sequence[tuple[str, str]], max_per_hour: int | None
+    ) -> tuple[str, str] | None:
+        """Insert the next house strategy as a queued house-lane row; (id, name), or None when
+        the lane is paused or has started max_per_hour runs in the last hour.
+
+        The cursor walks the catalog; past its end the cycle goes up, so names never repeat. A
+        name already taken (say, by an attendee) is skipped.
+        """
+        now = self.now()
+        with self._tx() as conn:
+            state = conn.execute("SELECT * FROM house_state WHERE id = 1").fetchone()
+            if state["paused"]:
+                return None
+            if max_per_hour is not None:
+                (recent,) = conn.execute(
+                    "SELECT COUNT(*) FROM submissions WHERE lane = 'house' AND created_at >= ?",
+                    ((now - timedelta(hours=1)).isoformat(),),
+                ).fetchone()
+                if recent >= max_per_hour:
+                    return None
+            cursor, cycle = state["cursor"], state["cycle"]
+            while True:
+                slug, instructions = catalog[cursor]
+                name = house_name(slug, cycle)
+                cursor += 1
+                if cursor == len(catalog):
+                    cursor, cycle = 0, cycle + 1
+                taken = conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,))
+                if not taken.fetchone():
+                    break
+            submission_id = uuid4().hex
+            conn.execute(
+                "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
+                "created_at, lane) VALUES (?, ?, 'house', ?, 'house', 'queued', ?, 'house')",
+                (submission_id, name, instructions, now.isoformat()),
+            )
+            conn.execute(
+                "UPDATE house_state SET cursor = ?, cycle = ?, total_started = total_started + 1 "
+                "WHERE id = 1",
+                (cursor, cycle),
+            )
+        return submission_id, name
+
+    def house_state(self) -> dict[str, Any]:
+        """The lane's cursor, cycle, pause flag and counts (running, started in the last hour)."""
+        hour_ago = (self.now() - timedelta(hours=1)).isoformat()
+        with closing(self._connect()) as conn:
+            state = dict(conn.execute("SELECT * FROM house_state WHERE id = 1").fetchone())
+            (running,) = conn.execute(
+                "SELECT COUNT(*) FROM submissions WHERE lane = 'house' AND status = 'running'"
+            ).fetchone()
+            (recent,) = conn.execute(
+                "SELECT COUNT(*) FROM submissions WHERE lane = 'house' AND created_at >= ?",
+                (hour_ago,),
+            ).fetchone()
+        del state["id"]
+        return {**state, "paused": bool(state["paused"]), "running": running, "last_hour": recent}
+
+    def set_house_paused(self, paused: bool) -> None:
+        with self._tx() as conn:
+            conn.execute("UPDATE house_state SET paused = ? WHERE id = 1", (int(paused),))
+
+    def lane_counts(self) -> dict[str, dict[str, int]]:
+        """{lane: {status: n}} for in-flight rows."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT lane, status, COUNT(*) AS n FROM submissions "
+                "WHERE status IN ('queued', 'running') GROUP BY lane, status"
+            ).fetchall()
+        counts: dict[str, dict[str, int]] = {"human": {}, "house": {}}
+        for row in rows:
+            counts.setdefault(row["lane"] or "human", {})[row["status"]] = row["n"]
+        return counts
 
     def rerun(self, old_id: str, *, trace_context: str | None = None) -> str:
         """Queue a finished submission again under the same name; return the new id.
@@ -294,7 +386,7 @@ class Store:
             row = conn.execute(
                 "SELECT COUNT(*) FROM submissions AS q, submissions AS me "
                 "WHERE me.id = ? AND me.status = 'queued' AND q.status = 'queued' "
-                "AND q.rowid <= me.rowid",
+                "AND q.lane = 'human' AND me.lane = 'human' AND q.rowid <= me.rowid",
                 (submission_id,),
             ).fetchone()
         return row[0] or None
@@ -363,10 +455,11 @@ class Store:
                 ).rowcount
             )
 
-    def ids_with_status(self, status: str) -> list[str]:
+    def ids_with_status(self, status: str, lane: str = "human") -> list[str]:
         with closing(self._connect()) as conn:
             rows = conn.execute(
-                "SELECT id FROM submissions WHERE status = ? ORDER BY rowid", (status,)
+                "SELECT id FROM submissions WHERE status = ? AND lane = ? ORDER BY rowid",
+                (status, lane),
             ).fetchall()
         return [row["id"] for row in rows]
 
@@ -388,7 +481,7 @@ class Store:
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, name, status, created_at, started_at, finished_at, error_class, "
-                "rerun_of FROM submissions ORDER BY rowid"
+                "rerun_of, lane FROM submissions ORDER BY rowid"
             ).fetchall()
         return [dict(row) for row in rows]
 

@@ -35,7 +35,12 @@ def in_window(row: dict[str, Any], since: datetime) -> bool:
 
 
 def summarize(
-    rows: list[dict[str, Any]], *, since: datetime, max_concurrent: int, lock_errors: int
+    rows: list[dict[str, Any]],
+    *,
+    since: datetime,
+    max_concurrent: int,
+    lock_errors: int,
+    lanes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The /api/admin/stats payload. rows come from Store.timings (no instructions or ip hash).
 
@@ -56,6 +61,7 @@ def summarize(
             "run_s": seconds(row["started_at"], row["finished_at"]),
             "error_class": row["error_class"],
             "rerun_of": row["rerun_of"],
+            "lane": row.get("lane") or "human",
         }
         for row in window
     ]
@@ -78,6 +84,7 @@ def summarize(
             "in_flight": sum(row["status"] == "running" for row in rows),
             "max_concurrent": max_concurrent,
             "sqlite_locked_errors": lock_errors,
+            "lanes": lanes,
         },
     }
 

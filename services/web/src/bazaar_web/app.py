@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, build_board
+from bazaar_web.house import catalog
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     LOCK_ERRORS,
@@ -177,6 +178,7 @@ def create_app(
             return {
                 "id": submission_id,
                 "name": submission["name"],
+                "lane": submission["lane"] or "human",
                 "status": submission["status"],
                 "day": submission["day"],
                 "error": submission["error"],
@@ -261,12 +263,59 @@ def create_app(
             raise HTTPException(422, "since must be an ISO 8601 timestamp") from None
         with logfire.suppress_instrumentation():
             rows = store.timings()
+            counts = store.lane_counts()
+            house = house_status(store)
+        lanes = {
+            "human": {
+                "slots": settings.max_concurrent,
+                "running": counts["human"].get("running", 0),
+                "queued": counts["human"].get("queued", 0),
+            },
+            "house": house,
+        }
         return stats.summarize(
             rows,
             since=start,
             max_concurrent=settings.max_concurrent,
             lock_errors=LOCK_ERRORS.count,
+            lanes=lanes,
         )
+
+    def house_status(store: Store) -> dict[str, Any]:
+        state = store.house_state()
+        cap = settings.house_max_per_hour
+        return {
+            "enabled": settings.house_enabled and settings.house_concurrent > 0,
+            "paused": state["paused"],
+            "slots": settings.house_concurrent if settings.house_enabled else 0,
+            "running": state["running"],
+            "cursor": state["cursor"],
+            "cycle": state["cycle"],
+            "catalog_size": len(catalog()),
+            "total_started": state["total_started"],
+            "started_last_hour": state["last_hour"],
+            "max_per_hour": cap,
+            "rate_limited": cap is not None and state["last_hour"] >= cap,
+        }
+
+    @app.get("/api/admin/house")
+    def house(request: Request, token: AdminToken = None) -> dict[str, Any]:
+        require_admin(token)
+        return house_status(request.app.state.store)
+
+    @app.post("/api/admin/house/pause")
+    def house_pause(request: Request, token: AdminToken = None) -> dict[str, Any]:
+        """Stop starting house runs (running ones finish). Kept across restarts."""
+        require_admin(token)
+        request.app.state.store.set_house_paused(True)
+        return house_status(request.app.state.store)
+
+    @app.post("/api/admin/house/resume")
+    def house_resume(request: Request, token: AdminToken = None) -> dict[str, Any]:
+        require_admin(token)
+        request.app.state.store.set_house_paused(False)
+        request.app.state.worker.wake_house()
+        return house_status(request.app.state.store)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     logfire.instrument_fastapi(

@@ -145,7 +145,7 @@ def test_stats_math_on_known_timestamps(tmp_path):
     assert "old" not in by_name
     assert set(by_name["a"]) == {
         "id", "name", "status", "created_at", "started_at", "finished_at",
-        "queue_wait_s", "run_s", "error_class", "rerun_of",
+        "queue_wait_s", "run_s", "error_class", "rerun_of", "lane",
     }  # fmt: skip
     assert "secret" not in json.dumps(payload)
     assert (by_name["d"]["queue_wait_s"], by_name["d"]["run_s"]) == (120.0, 1080.0)
