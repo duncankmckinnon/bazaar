@@ -147,9 +147,9 @@ def test_a_window_in_a_year_without_a_holiday_list_fails():
 
 async def test_a_malformed_or_mismatched_answer_fails():
     broken = body(DEMO_BUNDLE, *V2)
-    del broken["symbols"]
+    del broken["universe"]
     client, _ = market(broken)
-    with pytest.raises(BundleError, match=r"malformed \(symbols\)"):
+    with pytest.raises(BundleError, match=r"malformed \(universe\)"):
         await read_bundle(client, DEMO_BUNDLE)
 
     client, fake = market(body("demo-bundle-v1", *V1))
@@ -221,3 +221,11 @@ async def test_a_dropped_bundle_read_is_retried_once():
     )
     with pytest.raises(BundleError, match=r"\(ReadError\)"):
         await read_bundle(client, DEMO_BUNDLE)
+
+
+def test_the_universe_and_benchmark_come_from_the_bundle():
+    v2 = check(body(DEMO_BUNDLE, *V2, symbols=("AAPL", "BRK.B", "KO"), benchmark="SPY"))
+    assert v2.symbols == ("AAPL", "BRK.B", "KO") and v2.benchmark == "SPY"
+    # The benchmark is not a universe member; v1 has none.
+    assert "SPY" not in v2.symbols
+    assert check(body("demo-bundle-v1", *V1)).benchmark is None

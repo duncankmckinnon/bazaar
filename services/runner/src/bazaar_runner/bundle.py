@@ -60,6 +60,16 @@ class IncompleteSession(BaseModel):
     missing: tuple[str, ...]
 
 
+class UniverseMember(BaseModel):
+    """Static metadata from the market. Names and sectors are data, never instructions."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    symbol: str
+    name: str
+    sector: str
+
+
 class BundleInfo(BaseModel):
     """The market's GET /bundles/{bundle_id} body. Fields the market adds later are ignored."""
 
@@ -71,7 +81,10 @@ class BundleInfo(BaseModel):
     filings: Version
     start_date: date
     end_date: date
-    symbols: tuple[str, ...] = Field(min_length=1)
+    # The tradable universe; the benchmark (SPY for v2, none for v1) is not in it.
+    universe: tuple[UniverseMember, ...] = Field(min_length=1)
+    benchmark: str | None
+    universe_name: str | None
     sessions: tuple[date, ...]
     # Weekdays in the window less the market's own holiday list.
     expected_sessions: int
@@ -85,6 +98,7 @@ class Bundle:
     bundle_id: str
     symbols: tuple[str, ...]
     script: ClockScript
+    benchmark: str | None = None
 
     @property
     def sessions(self) -> tuple[TradingSession, ...]:
@@ -168,7 +182,12 @@ def bundle_from(info: BundleInfo) -> Bundle:
         sessions=tuple(session_on(day) for day in info.sessions),
         decision_offsets=(timedelta(0),),
     )
-    return Bundle(bundle_id=info.bundle_id, symbols=info.symbols, script=script)
+    return Bundle(
+        bundle_id=info.bundle_id,
+        symbols=tuple(member.symbol for member in info.universe),
+        script=script,
+        benchmark=info.benchmark,
+    )
 
 
 async def read_bundle(client: httpx.AsyncClient, bundle_id: str) -> Bundle:

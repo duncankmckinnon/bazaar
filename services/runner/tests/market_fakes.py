@@ -63,6 +63,12 @@ BASE = {
 
 # The fixture universe: every symbol the fake market has prices for.
 SYMBOLS = tuple(BASE)
+# Invented fixture sectors: three groups, so the sector table has more than one row.
+FIXTURE_SECTORS = ("Fixture Tech", "Fixture Health", "Fixture Energy")
+
+
+def sector_of(symbol: str) -> str:
+    return FIXTURE_SECTORS[sum(map(ord, symbol)) % len(FIXTURE_SECTORS)]
 
 
 def bundle_body(
@@ -73,6 +79,7 @@ def bundle_body(
     end: date = SESSIONS[-1].date,
     incomplete=(),
     expected: int | None = None,
+    benchmark: str | None = None,
 ) -> dict:
     """A GET /bundles/{id} body in the market's shape (with a field the runner must ignore)."""
     return {
@@ -82,7 +89,11 @@ def bundle_body(
         "filings": "synthetic-filings",
         "start_date": str(start),
         "end_date": str(end),
-        "symbols": list(symbols),
+        "universe": [
+            {"symbol": s, "name": f"{s} Fixture Corp", "sector": sector_of(s)} for s in symbols
+        ],
+        "benchmark": benchmark,
+        "universe_name": "fixture universe",
         "sessions": [str(d) for d in sessions],
         "expected_sessions": len(sessions) if expected is None else expected,
         "incomplete_sessions": [{"date": str(d), "missing": list(m)} for d, m in incomplete],
