@@ -8,6 +8,7 @@ from bazaar_runner.bundle import (
     BundleError,
     BundleInfo,
     bundle_from,
+    check_bundle_id,
     exchange_days,
     read_bundle,
     run_bundle_id,
@@ -179,8 +180,17 @@ def test_the_operator_env_picks_the_bundle(environ, expected):
     assert run_bundle_id(environ) == expected
 
 
-@pytest.mark.parametrize("bad", ["../market", "demo bundle", "v2?x=1", "v2/../v1", "ünï"])
+@pytest.mark.parametrize(
+    "bad", ["../market", "demo bundle", "v2?x=1", "v2/../v1", "ünï", ".", "..", "-v2"]
+)
 def test_a_malformed_operator_bundle_is_refused_unechoed(bad):
     with pytest.raises(BundleError, match="BAZAAR_DATA_BUNDLE is not a bundle id") as caught:
         run_bundle_id({BUNDLE_ENV: bad})
     assert bad not in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", [".", "..", "-v2", ".v2"])
+def test_an_explicit_bundle_id_that_is_a_path_step_is_refused(bad):
+    with pytest.raises(BundleError, match="starts with a letter or digit"):
+        check_bundle_id(bad)
+    assert check_bundle_id("demo-bundle-v2.1") == "demo-bundle-v2.1"

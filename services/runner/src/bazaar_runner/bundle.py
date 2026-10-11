@@ -24,7 +24,8 @@ from bazaar_runner.clock import ClockScript, TradingSession
 DEMO_BUNDLE = "demo-bundle-v2"
 # Operator override, shared with the web app; never taken from strategy text or a request.
 BUNDLE_ENV = "BAZAAR_DATA_BUNDLE"
-BUNDLE_ID = re.compile(r"[A-Za-z0-9.-]{1,128}")
+# A leading letter or digit: "." and ".." would resolve to other market paths.
+BUNDLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,127}")
 NEW_YORK = ZoneInfo("America/New_York")
 # Decide at the open (seeing the previous close), mark at the close; zoneinfo picks EST or EDT.
 OPEN_AT, CLOSE_AT = time(9, 30), time(16, 0)
@@ -90,9 +91,13 @@ class Bundle:
 
 
 def check_bundle_id(value: str) -> str:
-    """A bundle id is letters, digits, dots and dashes; anything else is refused unechoed."""
+    """A bundle id starts with a letter or digit, then letters, digits, dots and dashes;
+    anything else is refused unechoed."""
     if not BUNDLE_ID.fullmatch(value):
-        raise BundleError("a bundle id may hold only letters, digits, dots and dashes")
+        raise BundleError(
+            "a bundle id starts with a letter or digit and holds only letters, digits, dots"
+            " and dashes"
+        )
     return value
 
 
@@ -104,7 +109,10 @@ def run_bundle_id(environ: Mapping[str, str] = os.environ) -> str:
     try:
         return check_bundle_id(value)
     except BundleError:
-        raise BundleError(f"${BUNDLE_ENV} is not a bundle id: {BUNDLE_ID.pattern}") from None
+        raise BundleError(
+            f"${BUNDLE_ENV} is not a bundle id (a letter or digit, then letters, digits, dots"
+            " and dashes)"
+        ) from None
 
 
 def session_on(day: date) -> TradingSession:
