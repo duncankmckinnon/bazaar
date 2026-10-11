@@ -294,9 +294,14 @@ class Store:
         """Insert the next house strategy as a queued house-lane row; (id, name), or None when
         the lane is paused or has started max_per_hour runs in the last hour.
 
-        The cursor walks the catalog; past its end the cycle goes up, so names never repeat. A
-        name already taken (say, by an attendee) is skipped.
+        The cursor walks the catalog; past its end the cycle goes up. The catalog follows the
+        deploy's bundle, so its length can change between runs: the stored cursor is taken
+        modulo the current length. A name already taken (an attendee's, or the same slug from
+        an earlier catalog) gets the next free cycle number instead, so the lane never stops on
+        a UNIQUE name.
         """
+        if not catalog:
+            return None
         now = self.now()
         with self._tx() as conn:
             state = conn.execute("SELECT * FROM house_state WHERE id = 1").fetchone()
@@ -309,16 +314,16 @@ class Store:
                 ).fetchone()
                 if recent >= max_per_hour:
                     return None
-            cursor, cycle = state["cursor"], state["cycle"]
-            while True:
-                slug, instructions = catalog[cursor]
-                name = house_name(slug, cycle)
-                cursor += 1
-                if cursor == len(catalog):
-                    cursor, cycle = 0, cycle + 1
-                taken = conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,))
-                if not taken.fetchone():
-                    break
+            cursor, cycle = state["cursor"] % len(catalog), state["cycle"]
+            slug, instructions = catalog[cursor]
+            bump = cycle
+            name = house_name(slug, bump)
+            while conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
+                bump += 1
+                name = house_name(slug, bump)
+            cursor += 1
+            if cursor == len(catalog):
+                cursor, cycle = 0, cycle + 1
             submission_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
