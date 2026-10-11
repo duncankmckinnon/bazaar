@@ -72,6 +72,11 @@ class Hidden(Exception):
     """Already rerun (its replacement is the live row) or hidden by moderation."""
 
 
+# The fixed contact the operator scripts (smoke test, house strategies) send. example.com is
+# reserved, never a real inbox; the contacts CSV leaves these rows out.
+OPERATOR_CONTACT_EMAIL = "bazaar-ops@example.com"
+
+
 @dataclass(frozen=True)
 class Contact:
     """A submitter's contact details. Personal data: see the email column."""
@@ -372,11 +377,16 @@ class Store:
         return [dict(row) for row in rows]
 
     def contacts(self) -> list[dict[str, Any]]:
-        """Visible submissions that left contact details, oldest first (for the admin CSV)."""
+        """Visible submissions that left contact details, oldest first (for the admin CSV).
+
+        Operator rows are left out. House runs never carry contact details, so the NOT NULL test
+        already leaves them out too.
+        """
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, name, handle, email, company, role, created_at FROM submissions "
-                "WHERE email IS NOT NULL AND hidden = 0 ORDER BY rowid"
+                "WHERE email IS NOT NULL AND lower(email) != ? AND hidden = 0 ORDER BY rowid",
+                (OPERATOR_CONTACT_EMAIL,),
             ).fetchall()
         return [dict(row) for row in rows]
 

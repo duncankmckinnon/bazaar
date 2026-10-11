@@ -17,7 +17,8 @@ from collections.abc import Callable, Iterator
 
 import httpx
 
-# The web form requires contact details; operator scripts send this fixed, labelled one.
+# The web form requires contact details; operator scripts send this fixed, labelled one. The
+# email must equal bazaar_web.store.OPERATOR_CONTACT_EMAIL, so the contacts CSV leaves it out.
 OPERATOR_CONTACT = {
     "email": "bazaar-ops@example.com",
     "company": "Bazaar operators",

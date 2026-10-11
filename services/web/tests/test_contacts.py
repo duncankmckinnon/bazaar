@@ -7,7 +7,7 @@ import sqlite3
 
 import pytest
 from bazaar_web.app import create_app
-from bazaar_web.store import Contact, Store
+from bazaar_web.store import OPERATOR_CONTACT_EMAIL, Contact, Store
 from fastapi.testclient import TestClient
 
 ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
@@ -198,6 +198,33 @@ def test_contacts_csv_rows_match_the_board_and_leave_out_hidden_and_contactless(
         assert int(row["rank"]) == on_board["rank"]
     assert (rows[2]["return_pct"], rows[2]["rank"]) == ("", "")  # not scored yet
     assert rows[0]["email"] == "alice@example.com" and waiting in board
+
+
+def test_contacts_csv_leaves_out_operator_and_contactless_rows(settings, helpers):
+    store = Store(settings.web_db)
+    rows = [
+        ("real-bot", Contact(**CONTACT)),
+        ("smoke-bot", Contact(email=OPERATOR_CONTACT_EMAIL, company="Bazaar operators", role="x")),
+        ("shouty-ops", Contact(email=OPERATOR_CONTACT_EMAIL.upper(), company="Ops", role="x")),
+        ("no-contact", None),
+    ]
+    for name, contact in rows:
+        store.create(
+            name=name, handle=None, instructions="Buy KO on dips, hold MSFT.", ip_hash="h",
+            max_queue=30, max_per_day=150, max_per_ip_hour=5, contact=contact,
+        )  # fmt: skip
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        listed = [row["name"] for row in contacts_csv(client)]
+
+    assert listed == ["real-bot"]
+
+
+def test_the_operator_scripts_send_the_operator_address():
+    from pathlib import Path
+
+    scripts = Path(__file__).parents[3] / "scripts"
+    for name in ("live_smoke.py", "house_feeder.py", "house_strategies.py"):
+        assert f'"email": "{OPERATOR_CONTACT_EMAIL}"' in (scripts / name).read_text(), name
 
 
 @pytest.mark.parametrize("start", ["=", "+", "-", "@", "\t", "\r"])
