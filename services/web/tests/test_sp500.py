@@ -263,3 +263,13 @@ def test_with_no_admin_token_configured_even_a_header_gets_the_422(settings, hel
 def test_other_handles_need_no_token(settings, helpers, handle):
     response = post_handle(settings, helpers, handle)
     assert response.status_code == 201, response.text
+
+
+def test_the_reserved_422_is_byte_identical_with_and_without_a_wrong_token(settings, helpers):
+    bare = post_handle(settings, helpers, "house")
+    wrong = post_handle(settings, helpers, "house", {"X-Bazaar-Admin-Token": "wrong"})
+    assert (bare.status_code, wrong.status_code) == (422, 422)
+    assert bare.content == wrong.content
+    assert {k: v for k, v in bare.headers.items() if k != "date"} == {
+        k: v for k, v in wrong.headers.items() if k != "date"
+    }
