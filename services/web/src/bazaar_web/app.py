@@ -178,7 +178,7 @@ def create_app(
 
     app.state.on_scored = on_scored
     tickers = TickerSource(settings.market_db)
-    bundles = bundle_source or BundleSource(settings.market_url, settings.ticker_data_version)
+    bundles = bundle_source or BundleSource(settings.market_url, settings.data_bundle)
 
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(

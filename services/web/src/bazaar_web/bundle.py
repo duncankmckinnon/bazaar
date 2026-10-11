@@ -41,6 +41,15 @@ class Bundle:
     sessions: tuple[date, ...]  # empty: every trading day from start to end (the fallback)
     symbols: tuple[str, ...]
     days: int
+    universe_name: str | None = None  # e.g. "S&P 500"; null on demo-bundle-v1
+    benchmark: str | None = None  # e.g. "SPY": tradable, but not part of the universe
+
+    @property
+    def universe(self) -> str:
+        """The header's label: the bundle's display name, else the count of its stocks."""
+        if self.universe_name:
+            return self.universe_name
+        return f"{sum(s != self.benchmark for s in self.symbols)} STOCKS"
 
 
 def fallback_for(bundle_id: str) -> Bundle | None:
@@ -81,6 +90,9 @@ def parse(body: Any) -> Bundle:
     symbols = universe_symbols(body)
     if not isinstance(body["bars"], str) or not body["bars"]:
         raise ValueError("bars must name a bars version")
+    name, benchmark = body.get("universe_name"), body.get("benchmark")
+    if not all(v is None or isinstance(v, str) for v in (name, benchmark)):
+        raise ValueError("universe_name and benchmark must be strings or null")
     return Bundle(
         bundle_id=str(body["bundle_id"]),
         bars=body["bars"],
@@ -89,6 +101,8 @@ def parse(body: Any) -> Bundle:
         sessions=sessions,
         symbols=symbols,
         days=len(sessions),
+        universe_name=(name or "").strip() or None,
+        benchmark=(benchmark or "").strip() or None,
     )
 
 

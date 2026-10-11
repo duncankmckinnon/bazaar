@@ -1,7 +1,23 @@
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit
+
+log = logging.getLogger("bazaar_web.settings")
+DEFAULT_BUNDLE = "demo-bundle-v1"
+
+
+def data_bundle(env: "os._Environ[str] | dict[str, str]") -> str:
+    """BAZAAR_DATA_BUNDLE, the one bundle id (the runner reads the same). The old
+    BAZAAR_TICKER_DATA_VERSION still works, with a warning, until deploys move over."""
+    if env.get("BAZAAR_DATA_BUNDLE"):
+        return env["BAZAAR_DATA_BUNDLE"]
+    if env.get("BAZAAR_TICKER_DATA_VERSION"):
+        log.warning("BAZAAR_TICKER_DATA_VERSION is deprecated; set BAZAAR_DATA_BUNDLE instead")
+        return env["BAZAAR_TICKER_DATA_VERSION"]
+    return DEFAULT_BUNDLE
+
 
 # Env vars whose values must never reach a log line; redacted by value.
 SECRET_ENV_VARS = (
@@ -39,7 +55,7 @@ class Settings:
     fonts_dir: Path | None = None
     logfire_dashboard_url: str | None = None  # template with "{strategy}"
     market_db: Path | None = None  # read-only, for the ticker bar
-    ticker_data_version: str = "demo-bundle-v1"
+    data_bundle: str = DEFAULT_BUNDLE  # the bundle whose window, universe and bars are shown
     max_concurrent: int = 3
 
     def __post_init__(self) -> None:
@@ -87,6 +103,6 @@ class Settings:
             fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
             logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
             market_db=Path(env["BAZAAR_MARKET_DB"]) if env.get("BAZAAR_MARKET_DB") else None,
-            ticker_data_version=env.get("BAZAAR_TICKER_DATA_VERSION") or "demo-bundle-v1",
+            data_bundle=data_bundle(env),
             max_concurrent=parse_max_concurrent(env.get("BAZAAR_MAX_CONCURRENT")),
         )

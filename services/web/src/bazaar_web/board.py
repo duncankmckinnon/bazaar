@@ -9,7 +9,7 @@ from typing import Any
 
 from bazaar_replay.leaderboard import Entry, Leaderboard, load_board
 
-from bazaar_web.bundle import SYMBOLS, Bundle
+from bazaar_web.bundle import Bundle
 from bazaar_web.store import Store
 
 DEFAULT_STARTING_CASH = Decimal(10000)
@@ -166,12 +166,13 @@ def build_board(
         else:
             row["rank"] = None
 
-    # The window is the data bundle's; without one the board shows no dates.
+    # The window and universe are the data bundle's; without one the board shows neither.
     window = {
         "start": bundle.start.isoformat() if bundle else None,
         "end": bundle.end.isoformat() if bundle else None,
         "starting_cash": float(starting_cash),
-        "symbols": list(bundle.symbols if bundle else SYMBOLS),
+        "universe": bundle.universe if bundle else None,
+        "symbols": list(bundle.symbols) if bundle else None,
         "days": bundle.days if bundle else None,
     }
     return {
