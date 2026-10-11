@@ -48,8 +48,10 @@ the submitter's strategy text, tool arguments and results, and outputs. Other ca
 
 ## Distributed traces
 
-The runner's market clients (the run's own client and each decision's agent client) are
-instrumented per client with `bazaar_protocol.telemetry.instrument_market_client`. Each market
+The runner's market clients (the run's own client and each decision's agent client) are all
+built by `bazaar_runner.http_market.market_client`: a 2 s keep-alive expiry (below the market's
+5 s), then a redacting transport, then per-client instrumentation with
+`bazaar_protocol.telemetry.instrument_market_client`. Each market
 request gets an HTTP client span and sends `traceparent`, so the market's request spans nest under
 `runner.decision`, `runner.mark` and `trading.decision` in the run's trace. Headers and bodies are
 never captured. Transport errors are redacted inside that HTTP span (they keep their httpx type).
