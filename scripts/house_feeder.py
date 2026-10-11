@@ -12,6 +12,7 @@ import argparse
 import itertools
 import os
 import random
+import sys
 import time
 from collections.abc import Callable, Iterator
 
@@ -25,6 +26,9 @@ OPERATOR_CONTACT = {
     "role": "house strategy",
 }
 
+ADMIN_TOKEN_ENV = "BAZAAR_ADMIN_TOKEN"
+ADMIN_TOKEN_HEADER = "X-Bazaar-Admin-Token"
+RESERVED_HANDLE = "house"
 BUSY_WAIT = 10.0
 RATE_LIMIT_WAIT = 300.0
 ERROR_WAIT = 30.0
@@ -82,6 +86,32 @@ def strategies() -> Iterator[tuple[str, str]]:
         yield name, text_t.format(**names)
 
 
+def admin_headers(handle: str) -> dict[str, str]:
+    """The admin header for POSTs, read once per run. The token is never printed.
+
+    The reserved house handle needs it; stop before any request when it is missing.
+    """
+    token = os.environ.get(ADMIN_TOKEN_ENV) or ""
+    if handle.strip().lower() == RESERVED_HANDLE and not token:
+        print(f"{ADMIN_TOKEN_ENV} is required to submit as the house handle", file=sys.stderr)
+        raise SystemExit(1)
+    return {ADMIN_TOKEN_HEADER: token} if token else {}
+
+
+def handle_rejected(r: httpx.Response) -> str | None:
+    """The server's message when a 422 is about the handle: the house token is missing or wrong."""
+    if r.status_code != 422:
+        return None
+    try:
+        detail = r.json().get("detail")
+    except (ValueError, AttributeError):
+        return None
+    for item in detail if isinstance(detail, list) else []:
+        if isinstance(item, dict) and "handle" in (item.get("loc") or []):
+            return str(item.get("msg") or "handle rejected")
+    return None
+
+
 def busy_count(client: httpx.Client, base_url: str) -> int:
     rows = client.get(f"{base_url}/api/board").json()["rows"]
     return sum(r["status"] in ("queued", "running") for r in rows)
@@ -98,6 +128,7 @@ def feed(
 ) -> int:
     """Submit until `limit` are queued, never with `depth` or more already busy."""
     base_url = base_url.rstrip("/")
+    headers = admin_headers(handle)
     sent = 0
     gen = strategies()
     while sent < limit:
@@ -108,6 +139,7 @@ def feed(
         r = client.post(
             f"{base_url}/api/submissions",
             json={"name": name, "handle": handle, "instructions": text, **OPERATOR_CONTACT},
+            headers=headers,
         )
         if r.status_code in (200, 201, 202):
             sent += 1
@@ -115,6 +147,13 @@ def feed(
         elif r.status_code == 409 or "name is taken" in r.text:
             print(f"skip {name}: taken", flush=True)
             continue
+        elif (reason := handle_rejected(r)) is not None:
+            print(f"FAIL {name}: {reason} (check {ADMIN_TOKEN_ENV})", flush=True)
+            raise SystemExit(1)
+        elif r.status_code == 422:
+            # A 422 never fixes itself, and generated names would only repeat it.
+            print(f"FAIL {name}: 422 {r.text[:200]}; stopping", flush=True)
+            raise SystemExit(1)
         elif r.status_code == 429:
             print(
                 f"{time.strftime('%H:%M:%S')} rate limited: {r.text[:120]}; waiting 5 min",

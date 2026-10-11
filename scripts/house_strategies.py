@@ -10,6 +10,7 @@ Submissions are 2 seconds apart.
 
 import argparse
 import os
+import sys
 import time
 from collections.abc import Callable
 
@@ -23,6 +24,9 @@ OPERATOR_CONTACT = {
     "role": "house strategy",
 }
 
+ADMIN_TOKEN_ENV = "BAZAAR_ADMIN_TOKEN"
+ADMIN_TOKEN_HEADER = "X-Bazaar-Admin-Token"
+RESERVED_HANDLE = "house"
 RETRY_WAIT = 60.0
 PACING = 2.0
 
@@ -60,6 +64,32 @@ STRATEGIES = {
 }
 
 
+def admin_headers(handle: str) -> dict[str, str]:
+    """The admin header for POSTs, read once per run. The token is never printed.
+
+    The reserved house handle needs it; stop before any request when it is missing.
+    """
+    token = os.environ.get(ADMIN_TOKEN_ENV) or ""
+    if handle.strip().lower() == RESERVED_HANDLE and not token:
+        print(f"{ADMIN_TOKEN_ENV} is required to submit as the house handle", file=sys.stderr)
+        raise SystemExit(1)
+    return {ADMIN_TOKEN_HEADER: token} if token else {}
+
+
+def handle_rejected(r: httpx.Response) -> str | None:
+    """The server's message when a 422 is about the handle: the house token is missing or wrong."""
+    if r.status_code != 422:
+        return None
+    try:
+        detail = r.json().get("detail")
+    except (ValueError, AttributeError):
+        return None
+    for item in detail if isinstance(detail, list) else []:
+        if isinstance(item, dict) and "handle" in (item.get("loc") or []):
+            return str(item.get("msg") or "handle rejected")
+    return None
+
+
 def submit_all(
     client: httpx.Client,
     base_url: str,
@@ -70,6 +100,7 @@ def submit_all(
 ) -> int:
     """Submit the strategies in order; return how many were queued."""
     base_url = base_url.rstrip("/")
+    headers = admin_headers(handle)
     items = list(STRATEGIES.items())
     if only is not None:
         items = items[:only]
@@ -84,6 +115,7 @@ def submit_all(
                     "instructions": instructions,
                     **OPERATOR_CONTACT,
                 },
+                headers=headers,
             )
             if r.status_code in (200, 201, 202):
                 print(f"queued {name} {r.json().get('id')}", flush=True)
@@ -92,6 +124,9 @@ def submit_all(
             if r.status_code == 409 or "name is taken" in r.text:  # the web app answers 422
                 print(f"skip {name}: name taken", flush=True)
                 break
+            if (reason := handle_rejected(r)) is not None:
+                print(f"FAIL {name}: {reason} (check {ADMIN_TOKEN_ENV})", flush=True)
+                raise SystemExit(1)
             if r.status_code in (429, 503):
                 print(f"wait {name}: {r.status_code} {r.text[:120]}", flush=True)
                 sleep(RETRY_WAIT)
