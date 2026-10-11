@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 import httpx
+import logfire
 import pytest
 from bazaar_protocol import ErrorCode, OrderRequest, OrderSide
 from bazaar_runner import http_market
@@ -156,11 +157,56 @@ async def test_a_control_put_is_never_resent():
     assert len(transport.seen) == 1
 
 
-async def test_market_clients_expire_idle_connections_before_the_server_does():
+async def test_the_market_client_has_keepalive_redaction_and_tracing_in_that_order(capfire):
+    from bazaar_protocol.telemetry import _RedactingTransport
+
     assert KEEPALIVE_EXPIRY_SECONDS < SERVER_KEEPALIVE_SECONDS
     async with market_client("http://market", timeout=30) as client:
-        # httpx keeps the limit on its connection pool; there is no public accessor.
-        assert client._transport._pool._keepalive_expiry == KEEPALIVE_EXPIRY_SECONDS
+        # The redacting transport wraps httpx's own; httpx keeps the limit on its connection
+        # pool, which has no public accessor.
+        assert isinstance(client._transport, _RedactingTransport)
+        assert client._transport.inner._pool._keepalive_expiry == KEEPALIVE_EXPIRY_SECONDS
+
+    seen = []
+
+    def market(request):
+        seen.append(request.headers.get("traceparent"))
+        return httpx.Response(204)
+
+    async with market_client(
+        "http://market", timeout=30, transport=httpx.MockTransport(market)
+    ) as client:
+        with logfire.span("runner.mark"):
+            await client.get("/health")
+    # Instrumented: an HTTP client span under the caller's span, and traceparent on the wire.
+    spans = capfire.exporter.exported_spans_as_dict()
+    (http,) = [s for s in spans if s["attributes"].get("http.method") == "GET"]
+    (mark,) = [s for s in spans if s["name"] == "runner.mark"]
+    assert http["parent"]["span_id"] == mark["context"]["span_id"]
+    assert seen[0] and seen[0].split("-")[1] == f"{mark['context']['trace_id']:032x}"
+
+
+async def test_a_dropped_read_holding_a_secret_is_redacted_and_still_retried(monkeypatch, capfire):
+    """The redacting transport keeps httpx's type, so the GET retry still matches it."""
+    from bazaar_protocol import telemetry
+
+    secret = "sk-gateway-SENTINEL-do-not-leak"
+    # The configured secrets, as redact() reads them from the environment once per process.
+    monkeypatch.setattr(telemetry, "_secrets", (secret,))
+    inner = DroppingTransport(lambda r: r.method == "GET")
+    inner.error = lambda message, request: httpx.ReadError(f"{message} {secret}", request=request)
+    client = market_client("http://market", timeout=30, transport=inner)
+    port = HttpMarketPort(client, SPEC.experiment_id, SPEC.approval_id, TOKEN)
+    at = SPEC.script.sessions[0].open_at
+    await port.set_cutoff(SPEC.experiment_id, at, "synthetic-v1", "exec-v1")
+    with logfire.span("runner.mark"):
+        observation = await port.price_at("AAPL", at)
+    assert observation.price == Decimal(200)
+    assert [d for *_, d in inner.seen] == [False, True, False]
+    spans = capfire.exporter.exported_spans_as_dict()
+    assert any(s["attributes"].get("retried") == 1 for s in spans)
+    assert secret not in json.dumps(spans, default=str)
+    await client.aclose()
 
 
 def test_every_runner_market_client_is_built_by_market_client():

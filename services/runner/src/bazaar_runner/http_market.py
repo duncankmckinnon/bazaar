@@ -30,7 +30,7 @@ from bazaar_protocol import (
     RejectedOrder,
     order_result_adapter,
 )
-from bazaar_protocol.telemetry import redact
+from bazaar_protocol.telemetry import instrument_market_client, redact
 from pydantic import ValidationError
 
 from bazaar_runner.clock import utc_z
@@ -70,16 +70,23 @@ def market_client(
     headers: dict[str, str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
-    """Every runner client to the market is built here, so the keep-alive limit cannot drift.
+    """Every runner client to the market (the CLI's, a submission's, each agent decision's) is
+    built here, in one layering, so none can drift:
 
-    (An explicit transport, as tests pass, brings its own pool and ignores the limits.)"""
-    return httpx.AsyncClient(
+    1. the connection pool expires idle connections after KEEPALIVE_EXPIRY_SECONDS;
+    2. the transport is wrapped to redact a transport error before any span records it;
+    3. the client is instrumented, so each request has an HTTP span and sends traceparent.
+
+    (An explicit transport, as tests pass, brings its own pool and ignores the limits.) The
+    redacting transport keeps the httpx error type, so _request's GET retry still applies."""
+    client = httpx.AsyncClient(
         base_url=base_url,
         timeout=timeout,
         headers=headers,
         transport=transport,
         limits=httpx.Limits(keepalive_expiry=KEEPALIVE_EXPIRY_SECONDS),
     )
+    return instrument_market_client(client)
 
 
 def note_retry(method: str, path: str, exc: Exception) -> None:
