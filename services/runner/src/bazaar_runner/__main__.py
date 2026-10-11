@@ -218,7 +218,6 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
             AGENT_FIXTURE_INSTRUCTIONS,
             fixture_model_factory(),
             runtime=RuntimeConfig(instrument=True),
-            quote_symbols=bundle.symbols,
             # demo_spec gives every launch the bundle's script, so this is the run's own schedule.
             sessions=bundle.sessions,
         )

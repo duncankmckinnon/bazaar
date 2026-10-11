@@ -218,7 +218,6 @@ async def _run(
                     _model_factory(model),
                     budget=SUBMISSION_BUDGET,
                     runtime=SUBMISSION_RUNTIME,
-                    quote_symbols=bundle.symbols,
                     sessions=spec.script.sessions,
                     trading_role=trading_role.value,
                 ),

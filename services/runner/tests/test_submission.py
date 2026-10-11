@@ -214,12 +214,12 @@ def test_the_runner_token_never_reaches_the_files(markets, tmp_path):
 
 def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, monkeypatch):
     markets["http://m1"] = GrantingMarket()
-    seen, quoted, days = [], [], []
+    seen, summarized, days = [], [], []
     real = trading.run_decision
 
     async def spy(**kwargs):
         seen.append((kwargs["budget"], kwargs["runtime"]))
-        quoted.append(kwargs["quote_symbols"])
+        summarized.append(kwargs["market_summary"] and "quote_symbols" not in kwargs)
         days.append(kwargs["trading_day"])
         return await real(**kwargs)
 
@@ -235,8 +235,12 @@ def test_submissions_get_their_budget_and_never_code_mode(markets, tmp_path, mon
         (8, 48_000, 20, False)
     }
     assert all(b == SUBMISSION_BUDGET and r == SUBMISSION_RUNTIME for b, r in seen)
-    # Every decision is told the bundle's symbols' prices and affordable whole shares.
-    assert quoted == [SYMBOLS] * 10
+    # Every decision gets the market summary, never a per-symbol quote block.
+    assert summarized == [True] * 10
+    reads = [c[1] for c in markets["http://m1"].fake.calls if c[0] == "market"]
+    # Each decision: sectors, top gainers, top losers, plus one quotes read once it holds AAPL.
+    assert reads.count("sectors") == 10 and reads.count("screen") == 20
+    assert reads.count("quotes") == 9
     # ...and which trading day of the run it is.
     assert days == [(n, 10, date(2026, 2, 2)) for n in range(1, 11)]
     # Only those two limits differ; the default every other launch uses is unchanged.
@@ -429,28 +433,24 @@ def test_keyword_only_value_is_not_passed_positionally():
     assert seen == [(3, None)]
 
 
-def test_a_submission_quotes_and_trades_only_the_bundles_symbols(markets, tmp_path, monkeypatch):
+def test_a_submission_researches_only_the_bundles_symbols(markets, tmp_path, monkeypatch):
     market = GrantingMarket()
     eleven = tuple(s for s in SYMBOLS if s != "EA")
     market.fake.bundles[DEMO_BUNDLE] = bundle_body(DEMO_BUNDLE, symbols=eleven)
     markets["http://m1"] = market
-    quoted, steps = [], []
-    real_decision, real_step = trading.run_decision, agent_step.AgentStep.__init__
-
-    async def spy(**kwargs):
-        quoted.append(kwargs["quote_symbols"])
-        return await real_decision(**kwargs)
+    steps = []
+    real_step = agent_step.AgentStep.__init__
 
     def step_spy(self, *args, **kwargs):
         steps.append(kwargs["symbols"])
         real_step(self, *args, **kwargs)
 
-    monkeypatch.setattr(trading, "run_decision", spy)
     monkeypatch.setattr(agent_step.AgentStep, "__init__", step_spy)
     run_dir, _ = submit(tmp_path, "http://m1")
 
     assert record_in(run_dir).status == "completed"
-    assert quoted == [eleven] * 10 and steps == [eleven]
+    # The agent's research symbols (fiscal cycles) are the bundle's; its summary is the market's.
+    assert steps == [eleven]
 
 
 def test_an_incomplete_bundle_stops_the_submission_before_the_grant(markets, tmp_path):

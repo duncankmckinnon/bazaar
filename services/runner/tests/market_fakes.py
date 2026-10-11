@@ -395,6 +395,74 @@ def news_page(symbol: str, available: int, params, data_version: str = DATA_VERS
     ]
 
 
+def _pct(now: int, then: int) -> str:
+    return f"{(Decimal(now) / Decimal(then) - 1) * 100:.2f}"
+
+
+def market_read(fake: "InMemoryMarket", kind: str, params) -> dict:
+    """The S2 contract's /market/* reads over the fixture closes, at the fake's cutoff.
+
+    Closes rise by 1 a day, so every 1d move is positive and the cheapest stock moves most."""
+    day = max(i for i, at in enumerate(CLOSES) if at <= fake.cutoff)
+    envelope = {
+        "cutoff_at": utc_z(fake.cutoff),
+        "as_of_session": str(CLOSES[day].date()),
+        "data_version": fake.data_version,
+    }
+
+    def row(symbol: str) -> dict:
+        close = BASE[symbol] + day
+        return {
+            "symbol": symbol,
+            "name": f"{symbol} Fixture Corp",
+            "sector": sector_of(symbol),
+            "close": str(close),
+            "pct_change_1d": _pct(close, close - 1) if day >= 1 else None,
+            "pct_change_5d": _pct(close, close - 5) if day >= 5 else None,
+            "volume": "1000",
+            "observed_at": utc_z(CLOSES[day]),
+        }
+
+    fake.calls.append(("market", kind, dict(params)))
+    if kind == "quotes":
+        asked = params["symbols"].split(",")
+        return envelope | {
+            "quotes": [row(s) | {"available_at": utc_z(CLOSES[day])} for s in asked if s in BASE],
+            "missing": [{"symbol": s, "reason": "unknown_symbol"} for s in asked if s not in BASE],
+        }
+    if kind == "screen":
+        sort, direction = params.get("sort", "pct_change_1d"), params.get("direction", "desc")
+        rows = [row(s) for s in sorted(BASE)]
+        ranked = [r for r in rows if r[sort] is not None]
+        ranked.sort(key=lambda r: Decimal(r[sort]), reverse=direction == "desc")
+        return envelope | {
+            "sort": sort,
+            "direction": direction,
+            "sector": params.get("sector"),
+            "excluded": len(rows) - len(ranked),
+            "rows": ranked[: int(params.get("limit", 20))],
+        }
+    if kind == "sectors":
+        return envelope | {
+            "sectors": [
+                {
+                    "sector": sector,
+                    "symbols": len(members),
+                    "with_bars": len(members),
+                    "avg_pct_change_1d": None,
+                    "avg_pct_change_5d": None,
+                    "advancers": len(members) if day >= 1 else 0,
+                    "decliners": 0,
+                    "unchanged": 0,
+                }
+                for sector in sorted(FIXTURE_SECTORS)
+                if (members := [s for s in BASE if sector_of(s) == sector])
+            ],
+            "benchmark": None,
+        }
+    raise AssertionError(f"the fixture market has no /market/{kind}")
+
+
 def bundle_response(fake: InMemoryMarket, request: httpx.Request) -> httpx.Response:
     """GET /bundles/{id}: no credentials needed, 404 for a bundle the market does not have."""
     if request.method != "GET":
@@ -484,6 +552,8 @@ def delegating_transport(
                         "next_cursor": None,
                     }
                     return httpx.Response(200, json=page)
+                case "GET", ["market", kind]:
+                    return httpx.Response(200, json=market_read(fake, kind, request.url.params))
                 case "GET", ["fiscal-cycles"]:
                     symbols = request.url.params["symbols"].split(",")
                     found = await fake.fiscal_cycles(view, symbols)

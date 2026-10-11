@@ -625,9 +625,9 @@ async def test_an_eleven_symbol_bundle_is_every_policys_universe(monkeypatch, tm
     assert all(
         r.status == "completed" and r.manifest.data_version == ELEVEN.bundle_id for r in records
     )
-    # The agent's MARKET QUOTES block, its trading day and its research symbols.
+    # The agent's trading day and its research symbols; its market summary reads the market.
     (decider,) = made
-    assert decider["quote_symbols"] == ELEVEN.symbols and decider["sessions"] == ELEVEN.sessions
+    assert decider["sessions"] == ELEVEN.sessions and "quote_symbols" not in decider
     assert [s["symbols"] for s in steps] == [ELEVEN.symbols]
     hold = records[2]
     assert sorted(o.request.symbol for o in hold.orders) == sorted(ELEVEN.symbols)
