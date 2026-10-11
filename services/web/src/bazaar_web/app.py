@@ -24,7 +24,6 @@ from pydantic_core import PydanticCustomError
 from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, build_board
 from bazaar_web.bundle import BundleSource
-from bazaar_web.house import catalog
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     LOCK_ERRORS,
@@ -173,7 +172,12 @@ def create_app(
             store = Store(settings.web_db, now) if now else Store(settings.web_db)
         board = BoardSource(settings.runs_dir)
         worker = Worker(
-            store, settings, board, run_submission, on_scored=lambda: app.state.on_scored
+            store,
+            settings,
+            board,
+            run_submission,
+            on_scored=lambda: app.state.on_scored,
+            bundles=bundles,
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
         await worker.start()
@@ -429,7 +433,9 @@ def create_app(
             "running": state["running"],
             "cursor": state["cursor"],
             "cycle": state["cycle"],
-            "catalog_size": len(catalog()),
+            "catalog_size": worker.house_catalog_size,
+            "waiting_for_bundle": worker.house_waiting,
+            "state": "waiting for bundle" if worker.house_waiting else None,
             "total_started": state["total_started"],
             "started_last_hour": state["last_hour"],
             "max_per_hour": cap,

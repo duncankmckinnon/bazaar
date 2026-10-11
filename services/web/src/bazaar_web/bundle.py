@@ -43,6 +43,8 @@ class Bundle:
     days: int
     universe_name: str | None = None  # e.g. "S&P 500"; null on demo-bundle-v1
     benchmark: str | None = None  # e.g. "SPY": tradable, but not part of the universe
+    # (symbol, sector) for each universe entry; empty when the bundle has no universe field.
+    sectors: tuple[tuple[str, str | None], ...] = ()
 
     @property
     def universe(self) -> str:
@@ -103,6 +105,15 @@ def parse(body: Any) -> Bundle:
         days=len(sessions),
         universe_name=(name or "").strip() or None,
         benchmark=(benchmark or "").strip() or None,
+        sectors=universe_sectors(body),
+    )
+
+
+def universe_sectors(body: dict[str, Any]) -> tuple[tuple[str, str | None], ...]:
+    """(symbol, sector) from the universe [{symbol, name, sector}]; () without a universe."""
+    rows = body.get("universe") or ()
+    return tuple(
+        (u["symbol"], u.get("sector") if isinstance(u.get("sector"), str) else None) for u in rows
     )
 
 
@@ -123,19 +134,24 @@ class BundleSource:
         self._bundle: Bundle | None = None
         self._failed_at: float | None = None
 
-    def get(self) -> Bundle | None:
-        """The route's bundle; while the market cannot give one, the fallback (v1) or None."""
+    def get(self, *, fallback: bool = True) -> Bundle | None:
+        """The route's bundle; while the market cannot give one, the fallback (v1) or None.
+
+        fallback=False gives only a bundle the route answered with (the house lane waits for
+        one rather than guess a universe).
+        """
+        spare = self.fallback if fallback else None
         with self._lock:
             if self._bundle is not None:
                 return self._bundle
             if self._failed_at is not None and self.clock() - self._failed_at < RETRY_S:
-                return self.fallback
+                return spare
             try:
                 self._bundle = self._fetch()
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
                 self._failed_at = self.clock()
                 log.warning("no trading window from %s: %s", self.url, type(exc).__name__)
-            return self._bundle or self.fallback
+            return self._bundle or spare
 
     def _fetch(self) -> Bundle:
         # Called from the polled routes, which emit no spans; the cache keeps calls rare anyway.

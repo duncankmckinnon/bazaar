@@ -5,6 +5,7 @@ import time
 from datetime import timedelta
 
 import bazaar_web.worker
+import httpx
 import pytest
 from bazaar_web.app import create_app
 from bazaar_web.house import catalog, house_name
@@ -75,6 +76,34 @@ class LaneRunner:
         finally:
             with self.lock:
                 self.active.discard(name)
+
+
+V1_BUNDLE = {
+    "bundle_id": "demo-bundle-v1", "bars": "alpaca-bars-v1", "news": "n", "filings": "f",
+    "start_date": "2026-02-02", "end_date": "2026-02-13",
+    "sessions": ["2026-02-02", "2026-02-13"], "incomplete_sessions": [],
+}  # fmt: skip
+
+
+def market_with(body):
+    """Apps built in these tests get a market whose bundle route answers body (or 404)."""
+    from bazaar_web.bundle import BundleSource
+
+    def source(market_url, bundle_id, **kwargs):
+        if body is None:
+            transport = httpx.MockTransport(lambda request: httpx.Response(404))
+        else:
+            transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+        kwargs.setdefault("transport", transport)
+        return BundleSource(market_url, bundle_id, **kwargs)
+
+    return source
+
+
+@pytest.fixture(autouse=True)
+def v1_market(monkeypatch):
+    """A v1 bundle (no universe field): the lane runs the original 12-stock catalog()."""
+    monkeypatch.setattr("bazaar_web.app.BundleSource", market_with(V1_BUNDLE))
 
 
 @pytest.fixture(autouse=True)
@@ -226,7 +255,7 @@ def test_the_cursor_survives_a_restart_and_names_never_repeat(settings, helpers)
     assert set(names) == {house_name(s, 1) for s, _ in catalog()[: len(names)]}
 
 
-def test_the_cycle_goes_up_after_the_catalog_and_taken_names_are_skipped(tmp_path):
+def test_the_cycle_goes_up_after_the_catalog_and_taken_names_get_the_next_cycle(tmp_path):
     store = Store(tmp_path / "web.sqlite3")
     tiny = [("a", "Buy KO on day 1 and hold it."), ("b", "Buy XOM on day 1 and hold it.")]
     store.create(
@@ -236,9 +265,10 @@ def test_the_cycle_goes_up_after_the_catalog_and_taken_names_are_skipped(tmp_pat
 
     made = [store.create_house(tiny, None)[1] for _ in range(4)]
 
-    assert made == ["house-a-1", "house-a-2", "house-b-2", "house-a-3"]
+    # A taken name gets the next free cycle number for that slug, never a skip or an error.
+    assert made == ["house-a-1", "house-b-2", "house-a-2", "house-b-3"]
     state = store.house_state()
-    assert (state["cursor"], state["cycle"], state["total_started"]) == (1, 3, 4)
+    assert (state["cursor"], state["cycle"], state["total_started"]) == (0, 3, 4)
 
 
 def test_house_rows_count_toward_no_cap(settings, helpers):
