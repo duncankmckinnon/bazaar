@@ -1,10 +1,11 @@
-"""The ticker bar: the bundle window's daily closes replayed from the market database, read-only.
+"""The ticker bar: each replay day's top movers, from the market database, read-only.
 
 The web process shares a container with the market, so it reads BAZAAR_MARKET_DB directly with
 a read-only connection for the closes, rather than adding a market route. The window, its
 sessions, its symbols and its bars version come from the bundle (bazaar_web.bundle); without a
-bundle there are no days. These are historical closes, not live quotes, and they never change,
-so the first good read for a bundle is kept.
+bundle there are no days. A day shows its TOP_MOVERS universe symbols (never the benchmark) by
+the size of their change from the previous close. These are historical closes, not live quotes,
+and they never change, so the first good read for a bundle is kept.
 """
 
 import sqlite3
@@ -15,9 +16,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from bazaar_web.bundle import SYMBOLS, Bundle
+from bazaar_web.bundle import Bundle
 
 EASTERN = ZoneInfo("America/New_York")
+TOP_MOVERS = 20
+# Under SQLite's historical limit of 999 bound variables, with room for the other parameters.
+CHUNK = 900
+# How far before the window to look for each symbol's previous close (covers long holidays).
+LOOKBACK = timedelta(days=14)
 
 
 def session_date(observed_at: str) -> date:
@@ -46,24 +52,41 @@ def pct_change(close: Decimal, previous: Decimal | None) -> float | None:
     return float(round((close / previous - 1) * 100, 2))
 
 
-def read_days(path: Path, bundle: Bundle) -> list[dict[str, Any]]:
-    """Each bundle session's closes, with the change from the previous bar (even pre-window)."""
-    symbols = bundle.symbols
+def read_bars(path: Path, bundle: Bundle, symbols: list[str]) -> list[tuple[str, str, str]]:
+    """(symbol, observed_at, close) from LOOKBACK before the window to its end, ordered by
+    symbol and time; the symbol list is sent in chunks under SQLite's variable limit."""
+    since = datetime.combine(bundle.start - LOOKBACK, datetime.min.time(), UTC)
+    before = datetime.combine(bundle.end + timedelta(days=1), datetime.min.time(), UTC)
     uri = f"{path.resolve().as_uri()}?mode=ro"
+    rows: list[tuple[str, str, str]] = []
     # closing(): a bare "with connect()" commits but never closes, even on success.
     with closing(sqlite3.connect(uri, uri=True, timeout=30)) as conn:
         bars = bundle.bars or bars_version(conn, bundle.bundle_id)
-        marks = ", ".join("?" * len(symbols))
-        before = datetime.combine(bundle.end + timedelta(days=1), datetime.min.time(), UTC)
-        rows = conn.execute(
-            f"SELECT symbol, observed_at, close FROM data_bars WHERE data_version = ? "
-            f"AND symbol IN ({marks}) AND observed_at < ? ORDER BY symbol, observed_at",
-            (bars, *symbols, before.isoformat()),
-        ).fetchall()
+        for i in range(0, len(symbols), CHUNK):
+            chunk = symbols[i : i + CHUNK]
+            rows += conn.execute(
+                "SELECT symbol, observed_at, close FROM data_bars WHERE data_version = ? "
+                f"AND symbol IN ({', '.join('?' * len(chunk))}) "
+                "AND observed_at >= ? AND observed_at < ?",
+                (bars, *chunk, since.isoformat(), before.isoformat()),
+            ).fetchall()
+    rows.sort(key=lambda row: (row[0], row[1]))
+    return rows
 
+
+def movers(quotes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The TOP_MOVERS quotes by |change_pct|, largest first; ties keep universe order."""
+    changed = [q for q in quotes if q["change_pct"] is not None]
+    return sorted(changed, key=lambda q: -abs(q["change_pct"]))[:TOP_MOVERS]
+
+
+def read_days(path: Path, bundle: Bundle) -> list[dict[str, Any]]:
+    """Each session's top movers against the previous close (even a pre-window one). Days
+    without any change to show are left out."""
+    symbols = [s for s in bundle.symbols if s != bundle.benchmark]
     by_day: dict[date, dict[str, dict[str, Any]]] = {}
     previous: dict[str, Decimal] = {}
-    for symbol, observed_at, close_text in rows:
+    for symbol, observed_at, close_text in read_bars(path, bundle, symbols):
         day, close = session_date(observed_at), Decimal(close_text)
         in_window = day in bundle.sessions if bundle.sessions else bundle.start <= day <= bundle.end
         if in_window:
@@ -73,10 +96,12 @@ def read_days(path: Path, bundle: Bundle) -> list[dict[str, Any]]:
                 "change_pct": pct_change(close, previous.get(symbol)),
             }
         previous[symbol] = close
-    return [
-        {"date": day.isoformat(), "quotes": [q[s] for s in symbols if s in (q := by_day[day])]}
-        for day in sorted(by_day)
-    ]
+    days = []
+    for day in sorted(by_day):
+        quotes = movers([q[s] for s in symbols if s in (q := by_day[day])])
+        if quotes:
+            days.append({"date": day.isoformat(), "quotes": quotes})
+    return days
 
 
 class TickerSource:
@@ -91,7 +116,7 @@ class TickerSource:
             "window": {
                 "start": bundle.start.isoformat() if bundle else None,
                 "end": bundle.end.isoformat() if bundle else None,
-                "symbols": list(bundle.symbols if bundle else SYMBOLS),
+                "symbols": list(bundle.symbols) if bundle else None,
             },
             "data_version": bundle.bundle_id if bundle and days else None,
             "days": days,

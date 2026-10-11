@@ -442,6 +442,7 @@ def test_empty_runs_dir_and_no_bundle_route_give_the_v1_fallback_window(settings
         "start": "2026-02-02",
         "end": "2026-02-13",
         "starting_cash": 10000.0,
+        "universe": "12 STOCKS",
         "symbols": [
             "AAPL",
             "AMZN",

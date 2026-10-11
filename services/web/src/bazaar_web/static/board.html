@@ -55,6 +55,8 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .ar-row.hl { background: rgba(251,255,234,.08); }
 .ar-row .nm { font: 700 calc(var(--u)*1.05)/1.2 var(--mono); text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ar-row .nm a { color: inherit; text-decoration: none; cursor: pointer; }
+/* House (AI-generated) strategies carry a dim tag; attendee rows have none. */
+.ar-row .nm .ai { font: 400 calc(var(--u)*.55)/1 var(--pixel); color: var(--muted); border: 1px solid currentColor; border-radius: 2px; padding: .2em .35em; margin-right: .6em; vertical-align: .15em; opacity: .8; }
 .ar-row .rt { text-align: right; font-size: calc(var(--u)*.8); white-space: nowrap; }
 .ar-row.st-running, .ar-row.st-queued { --c: #d9c4d3; }
 .ar-row.st-running .rt { color: var(--pyai-cyan); animation: blink 1s steps(1) infinite; }
@@ -105,7 +107,7 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .wire li { font: 400 calc(var(--u)*.78)/1.35 var(--sans); color: #e6cfe0; display: grid; grid-template-columns: calc(var(--u)*4.2) 1fr; gap: .5em; }
 .wire li time { font: 400 calc(var(--u)*.68)/1.7 var(--mono); color: var(--muted); }
 
-/* Bottom: the 12-stock replay tape. */
+/* Bottom: the replay tape of each day's top movers. */
 .tape { grid-area: tape; margin: 0 calc(var(--u)*-2); display: flex; align-items: center; border-top: 2px solid rgba(251,255,234,.18); background: rgba(6,19,20,.55); overflow: hidden; white-space: nowrap; }
 .tape[hidden] { display: none; }
 .tape .label { flex: 0 0 auto; padding: calc(var(--u)*.75) calc(var(--u)*1.2); font: 400 calc(var(--u)*.62)/1.3 var(--pixel); color: var(--blackbean); background: var(--pyai-yellow); z-index: 1; }
@@ -359,7 +361,17 @@ function renderBoard(data) {
     sc.className = "sc num" + (live ? " prov" : "");
     if ((scored || live) && typeof r.return_pct === "number") countTo(sc, start * (1 + r.return_pct / 100), money);
     else { sc._v = undefined; sc.textContent = ""; }
-    setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));
+    const nm = li.querySelector(".nm");
+    nm.querySelector(".ai")?.remove();  // first, so setName finds its link as before
+    setName(nm, r.name, safeUrl(r.logfire_url));
+    // Only server-made house rows carry handle "house" (attendees can't claim it). Once
+    // perf/house-lane merges, the handle check can go in favour of lane alone.
+    if (r.lane === "house" || r.handle === "house") {
+      const tag = document.createElement("i");
+      tag.className = "ai";
+      tag.textContent = "AI";
+      nm.prepend(tag);
+    }
     li.querySelector(".rt").textContent = scored
       ? (typeof r.return_pct === "number" ? pct(r.return_pct) : "")
       : r.status === "running" ? `DAY ${Number(r.day) || 0}/${DAYS}` : "READY";
@@ -498,7 +510,7 @@ function renderWire(data) {
   }));
 }
 
-/* ---------- 12-stock replay tape (bottom) ---------- */
+/* ---------- the replay tape: each day's top movers (bottom) ---------- */
 const tape = $("tape"), track = $("track"), tapeLabel = $("tape-label");
 let tapeDays = [], tapeIndex = 0, tapeWindow = null;
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
@@ -544,10 +556,10 @@ loadTickers();
 function renderHeader(data) {
   const w = data.window || {};
   const label = windowLabel(w.start, w.end);
-  const stocks = Array.isArray(w.symbols) ? w.symbols.length : 0;
+  const universe = typeof w.universe === "string" ? w.universe : "";
   const cash = typeof w.starting_cash === "number" ? w.starting_cash : 10000;
   const days = Number.isInteger(w.days) && w.days > 0 ? w.days : null;
-  $("sub-a").textContent = [stocks ? `${stocks} STOCKS` : "", label || ""].filter(Boolean).join(" · ");
+  $("sub-a").textContent = [universe, label || ""].filter(Boolean).join(" · ");
   $("sub-b").textContent = [`${money(cash)} EACH`, days ? `${days} TRADING DAYS` : ""].filter(Boolean).join(" · ");
 }
 

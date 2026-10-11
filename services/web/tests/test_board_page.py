@@ -124,7 +124,7 @@ def test_board_formats_percent_without_scaling():
 
 def test_board_escapes_server_text():
     script = BOARD.split("<script>", 1)[1]
-    assert 'setName(li.querySelector(".nm"), r.name, safeUrl(r.logfire_url));' in script
+    assert "setName(nm, r.name, safeUrl(r.logfire_url));" in script
     assert "text.textContent = String(ev.text);" in script  # market wire
     # Server strings never reach an HTML string.
     for field in ("r.name", "r.handle", "r.status", "r.day", "ev.text", "r.logfire_url",
@@ -292,3 +292,21 @@ def test_pinned_rows_beyond_capacity_are_counted_not_dropped():
     )
     assert select_rows(rows_of(("running", 4)), 2) == (["running0"], "+3 MORE")
     assert select_rows(rows, 0) == ([], "+8 MORE")  # capacity is at least 1
+
+
+def test_house_rows_get_a_dim_ai_tag_by_text_only():
+    script = BOARD.split("<script>", 1)[1]
+    assert 'if (r.lane === "house" || r.handle === "house") {' in script
+    assert 'tag.textContent = "AI";' in script and 'tag.className = "ai";' in script
+    # Removed before setName runs, so the name link is found and kept as before.
+    assert script.index('nm.querySelector(".ai")?.remove();') < script.index(
+        "setName(nm, r.name, safeUrl(r.logfire_url));"
+    )
+    assert ".ar-row .nm .ai {" in BOARD and "color: var(--muted)" in BOARD
+
+
+def test_the_header_names_the_universe_from_the_board_data():
+    script = BOARD.split("<script>", 1)[1]
+    assert 'const universe = typeof w.universe === "string" ? w.universe : "";' in script
+    assert "S&P" not in BOARD  # never hardcoded
+    assert "STOCKS" not in script  # the count label comes from the server too
