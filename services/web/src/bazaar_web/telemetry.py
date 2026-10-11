@@ -12,6 +12,7 @@ SERVICE_NAME = "bazaar-web"
 EXCLUDED_URLS = (
     r"/api/board(\?|$)",
     r"/api/tickers(\?|$)",
+    r"/api/admin/contacts(\?|$)",
     r"/api/submissions/[^/?]+(\?|$)",
     r"/fonts/",
     r"/static/",

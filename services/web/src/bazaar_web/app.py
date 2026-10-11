@@ -1,7 +1,9 @@
 """Conference web service: submit a strategy, queue its run, and serve the live board."""
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import re
 from collections.abc import AsyncIterator, Callable
@@ -11,9 +13,12 @@ from typing import Annotated, Any
 
 import logfire
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
@@ -21,6 +26,7 @@ from bazaar_web.bundle import BundleSource
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     CapReached,
+    Contact,
     Hidden,
     NameTaken,
     NotFound,
@@ -36,12 +42,54 @@ PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
 FONT_NAME = re.compile(r"^[A-Za-z0-9_-]+\.woff2$")
 
 
+# A conservative check, not RFC 5322 (no email-validator dependency): one "@", no whitespace, a
+# local part, and a dotted domain with no empty label.
+EMAIL = re.compile(r"^[^@\s]+@(?!\.)[^@\s]*[^@\s.]\.[^@\s]*(?<!\.)$")
+
+
+def contact_text(value: str, *, limit: int, message: str) -> str:
+    """Strip; a 422 with exactly `message` (no "Value error, " prefix) when empty or too long."""
+    value = value.strip()
+    if not 1 <= len(value) <= limit:
+        raise PydanticCustomError("value_error", message)
+    return value
+
+
 class SubmissionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Annotated[str, Field(pattern=r"^[a-z0-9-]{3,40}$")]
     handle: str | None = None
     instructions: str
+    # Personal data, stored in the web DB only: see Store's email column.
+    email: str
+    company: str
+    role: str
+
+    def __repr_args__(self):  # keep contact details out of any repr, log or traceback
+        hidden = {"email", "company", "role"}
+        return [(k, "..." if k in hidden else v) for k, v in super().__repr_args__()]
+
+    @field_validator("email")
+    @classmethod
+    def clean_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if len(value) > 254 or not EMAIL.match(value) or ".." in value.split("@")[-1]:
+            raise PydanticCustomError("value_error", "Enter a valid email address")
+        return value
+
+    @field_validator("company")
+    @classmethod
+    def clean_company(cls, value: str) -> str:
+        return contact_text(value, limit=100, message="Enter your company (up to 100 characters)")
+
+    @field_validator("role")
+    @classmethod
+    def clean_role(cls, value: str) -> str:
+        return contact_text(value, limit=100, message="Enter your role (up to 100 characters)")
+
+    def contact(self) -> Contact:
+        return Contact(email=self.email, company=self.company, role=self.role)
 
     @field_validator("handle")
     @classmethod
@@ -60,6 +108,17 @@ class SubmissionIn(BaseModel):
         if not 20 <= len(value) <= 4000:
             raise ValueError("instructions must be 20 to 4000 characters")
         return value
+
+
+CONTACT_COLUMNS = ["name", "handle", "email", "company", "role", "created_at", "return_pct", "rank"]
+# A spreadsheet runs a cell starting with these as a formula (CSV injection).
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_cell(value: str | None) -> str:
+    """A user-supplied value made safe for a spreadsheet: a leading quote defuses a formula."""
+    text = value or ""
+    return "'" + text if text.startswith(FORMULA_START) else text
 
 
 def client_ip(request: Request) -> str:
@@ -107,6 +166,14 @@ def create_app(
             await worker.stop()
 
     app = FastAPI(title="Bazaar web", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """FastAPI's 422 shape without the "input" echo (and "ctx"): for a missing field the
+        input is the whole body, contact details included, and the form shows details as is."""
+        detail = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detail)})
+
     app.state.on_scored = on_scored
     tickers = TickerSource(settings.market_db)
     bundles = bundle_source or BundleSource(settings.market_url, settings.ticker_data_version)
@@ -155,6 +222,7 @@ def create_app(
                 max_per_day=settings.max_per_day,
                 max_per_ip_hour=settings.max_per_ip_hour,
                 trace_context=json.dumps(carrier) if carrier else None,
+                contact=body.contact(),
             )
         except NameTaken:
             raise HTTPException(422, "that name is taken") from None
@@ -236,6 +304,39 @@ def create_app(
         request.app.state.worker.enqueue(new_id)
         request.app.state.board.invalidate()
         return {"id": new_id, "status": "queued", "position": position}
+
+    @app.get("/api/admin/contacts")
+    def contacts(request: Request, token: AdminToken = None) -> Response:
+        """CSV of the submitters who left contact details, to reach winners. Admin only and
+        untraced: it is the one place personal data leaves the web DB."""
+        require_admin(token)
+        with logfire.suppress_instrumentation():
+            store: Store = request.app.state.store
+            rows = {r["id"]: r for r in board_payload(request)["rows"]}
+            people = store.contacts()
+            stamp = store.now().strftime("%Y%m%dT%H%M%SZ")
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        writer.writerow(CONTACT_COLUMNS)
+        for person in people:
+            row = rows.get(person["id"])
+            scored = row is not None and row["status"] == "scored"
+            writer.writerow(
+                [
+                    *(csv_cell(person[k]) for k in ("name", "handle", "email", "company", "role")),
+                    person["created_at"],
+                    "" if not scored or row["return_pct"] is None else row["return_pct"],
+                    row["rank"] if scored else "",
+                ]
+            )
+        return Response(
+            out.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="bazaar-contacts-{stamp}.csv"',
+                "Cache-Control": "no-store",  # personal data: no browser or proxy keeps a copy
+            },
+        )
 
     @app.get("/api/admin/whoami")
     def whoami(request: Request, token: AdminToken = None) -> dict[str, str | None]:

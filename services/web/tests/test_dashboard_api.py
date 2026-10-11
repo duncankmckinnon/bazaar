@@ -428,7 +428,14 @@ def test_running_history_comes_from_progress_rows(seeded, helpers):
     runner = helpers.FakeRunner(values={"live-bot": "10060.00"})
     runner.gate.clear()
     with TestClient(create_app(seeded, runner)) as c:
-        body = {"name": "live-bot", "handle": None, "instructions": "Buy KO on dips, hold MSFT."}
+        body = {
+            "name": "live-bot",
+            "handle": None,
+            "instructions": "Buy KO on dips, hold MSFT.",
+            "email": "alice@example.com",
+            "company": "Example Co",
+            "role": "Engineer",
+        }
         sid = c.post("/api/submissions", json=body).json()["id"]
         helpers.wait_for(lambda: c.get(f"/api/submissions/{sid}").json()["day"] == 10)
         rows = c.get("/api/board").json()["rows"]
