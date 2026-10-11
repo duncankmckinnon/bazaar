@@ -140,13 +140,27 @@ def test_a_failure_gives_no_bundle_and_retries_at_most_every_30s(failure):
     assert len(calls) == 2
 
 
-def test_parse_takes_the_symbols_field_when_present():
+def test_parse_takes_the_universe_then_symbols_then_the_12():
     assert parse(V1).symbols == tuple(SYMBOLS)
     eleven = [s for s in SYMBOLS if s != "EA"]
     assert parse(bundle_body(SEP_OCT, symbols=eleven)).symbols == tuple(eleven)
+    universe = [{"symbol": s, "name": f"{s} Inc.", "sector": "Industrials"} for s in eleven]
+    v2 = bundle_body(SEP_OCT) | {
+        "universe": universe,
+        "universe_name": "S&P 500",
+        "benchmark": "SPY",
+    }
+    assert parse(v2).symbols == tuple(eleven)  # SPY, the benchmark, is not in the universe
+    both = v2 | {"symbols": ["AAPL"]}
+    assert parse(both).symbols == tuple(eleven)  # universe wins over symbols
+    v1_nulls = bundle_body(FEB) | {"universe": None, "universe_name": None, "benchmark": None}
+    assert parse(v1_nulls).symbols == tuple(SYMBOLS)
     for bad in ([], [""], [1, 2]):
         with pytest.raises(ValueError):
             parse(bundle_body(SEP_OCT, symbols=bad))
+    for bad in ([], [{"symbol": ""}], [{"name": "no symbol"}], ["AAPL"]):
+        with pytest.raises((ValueError, KeyError, TypeError)):
+            parse(bundle_body(SEP_OCT) | {"universe": bad})
     with pytest.raises(ValueError):
         parse(bundle_body(SEP_OCT) | {"sessions": ["2026-01-05"]})  # outside the window
 
@@ -333,11 +347,19 @@ def test_without_a_bundle_the_board_has_no_window_and_no_ticker_days(
     assert len(calls) == 1  # retried no sooner than RETRY_S
 
 
-def test_the_symbols_field_reaches_the_board(settings, helpers):
+@pytest.mark.parametrize("shape", ["universe", "symbols"])
+def test_the_bundle_symbols_reach_the_board_and_ticker(settings, helpers, tmp_path, shape):
     eleven = [s for s in SYMBOLS if s != "EA"]
-    app, _, _ = app_with(settings, helpers, bundle_body(SEP_OCT, symbols=eleven))
+    if shape == "universe":
+        universe = [{"symbol": s, "name": s, "sector": "Energy"} for s in eleven]
+        body = bundle_body(SEP_OCT) | {"universe": universe, "universe_name": "S&P 500"}
+    else:
+        body = bundle_body(SEP_OCT, symbols=eleven)
+    app, _, _ = app_with(settings, helpers, body, market_db=market_db(tmp_path / "m.db"))
     with TestClient(app) as c:
         assert c.get("/api/board").json()["window"]["symbols"] == eleven
+        days = c.get("/api/tickers").json()["days"]
+    assert days and all([q["symbol"] for q in d["quotes"]] == eleven for d in days)
 
 
 def test_tickers_and_the_bundle_fetch_emit_no_spans(settings, helpers, tmp_path, capfire):

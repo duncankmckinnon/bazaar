@@ -36,17 +36,27 @@ class Bundle:
     symbols: tuple[str, ...]
 
 
+def universe_symbols(body: dict[str, Any]) -> tuple[str, ...]:
+    """The bundle's tickers in display order: its universe [{symbol, name, sector}], else an
+    older symbols list, else (demo-bundle-v1) the original 12. ValueError on a bad shape."""
+    if body.get("universe") is not None:
+        symbols = [u["symbol"] for u in body["universe"]]
+    elif body.get("symbols") is not None:
+        symbols = body["symbols"]
+    else:
+        symbols = SYMBOLS
+    if not symbols or not all(isinstance(s, str) and s for s in symbols):
+        raise ValueError("the universe must be a non-empty list of tickers")
+    return tuple(symbols)
+
+
 def parse(body: Any) -> Bundle:
     """The route's JSON as a Bundle; ValueError (or KeyError/TypeError) on any other shape."""
     start, end = date.fromisoformat(body["start_date"]), date.fromisoformat(body["end_date"])
     sessions = tuple(date.fromisoformat(s) for s in body["sessions"])
     if end < start or any(not start <= s <= end for s in sessions):
         raise ValueError("sessions must fall inside start_date..end_date")
-    symbols = body.get("symbols")
-    if symbols is None:
-        symbols = SYMBOLS  # bundles before the symbols field carry the original universe
-    if not symbols or not all(isinstance(s, str) and s for s in symbols):
-        raise ValueError("symbols must be a non-empty list of tickers")
+    symbols = universe_symbols(body)
     if not isinstance(body["bars"], str) or not body["bars"]:
         raise ValueError("bars must name a bars version")
     return Bundle(
@@ -55,7 +65,7 @@ def parse(body: Any) -> Bundle:
         start=start,
         end=end,
         sessions=sessions,
-        symbols=tuple(symbols),
+        symbols=symbols,
     )
 
 
