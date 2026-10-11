@@ -1,6 +1,7 @@
 import json
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid5
 
 import httpx
@@ -785,3 +786,31 @@ def test_a_malformed_bundle_id_stops_the_cli_before_anything(
     assert ("letters, digits" if flag else "BAZAAR_DATA_BUNDLE is not a bundle id") in err
     assert "../v1" not in err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_the_cli_help_names_the_launched_momentum(offline_cli, capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert f"--no-momentum leave out {MOMENTUM_V2_REF}" in text
+    assert "momentum-v1" not in text
+    # The old --agent-* aliases still point at the momentum launch's flags.
+    assert "deprecated alias for --momentum-experiment-id" in text
+
+
+async def test_momentum_v2_takes_a_day_one_as_of_session_before_the_window(monkeypatch, tmp_path):
+    """On day 1 the latest closed session (2026-01-30 here) is before the window's first session;
+    the screen is valid and momentum runs on, holding until a 1d change exists."""
+    pytest.importorskip("bazaar_replay.baselines")
+    pytest.importorskip("bazaar_agent.trading")
+    from bazaar_agent.market_view import ScreenRequest
+
+    probe = InMemoryMarket()
+    await probe.set_cutoff(SPEC.experiment_id, SESSIONS[0].open_at, "demo-bundle-eleven", "e")
+    ctx = SimpleNamespace(simulated_at=SESSIONS[0].open_at, data_version="demo-bundle-eleven")
+    screen = await probe.screen(ctx, ScreenRequest())
+    assert screen.as_of_session == date(2026, 1, 30) < SESSIONS[0].date
+
+    (momentum, *_), *_ = await run_cli_set(tmp_path, monkeypatch)
+    assert momentum.status == "completed"
+    assert not [o for o in momentum.orders if o.decided_at == SESSIONS[0].open_at]

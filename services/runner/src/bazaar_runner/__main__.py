@@ -139,7 +139,7 @@ def _bundle_id(value: str) -> str:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m bazaar_runner", description=__doc__)
     parser.add_argument("--demo", action="store_true", required=True, help="run the demo launches")
-    parser.add_argument("--no-momentum", action="store_true", help="leave out scripted-momentum-v1")
+    parser.add_argument("--no-momentum", action="store_true", help=f"leave out {MOMENTUM_V2_REF}")
     parser.add_argument(
         "--no-fiscal-cycles",
         action="store_true",

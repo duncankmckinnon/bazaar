@@ -481,3 +481,41 @@ async def test_a_full_news_batch_stays_small():
     assert all(len(a.text) <= 400 for r in result.data.results for a in r.articles)
     # Measured 27,475 characters: 50 x (400 text + a 70-character headline + keys and times).
     assert size < 28_000, size
+
+
+def test_a_day_one_as_of_session_before_the_window_is_valid():
+    """On day 1 (2026-09-28) the latest closed session is 2026-09-25, before the bundle window:
+    the client only requires as_of_session <= the cutoff date, and the summary says so."""
+    from datetime import date
+
+    from bazaar_agent.market_view import Screen, Sectors, render_summary
+    from bazaar_protocol import ExperimentContext
+
+    cutoff = "2026-09-28T13:30:00Z"
+    ctx = ExperimentContext(
+        **IDS,
+        simulated_at=cutoff,
+        event_sequence=0,
+        data_version="v1",
+        execution_rule_version="exec-v1",
+    )
+    day_one = {"cutoff_at": cutoff, "as_of_session": "2026-09-25", "data_version": "v1"}
+    market = FakeMarket(11)
+    friday = "2026-09-25T20:00:00Z"
+    screen_body = market.screen({"limit": "5"}) | day_one
+    screen_body["rows"] = [r | {"observed_at": friday} for r in screen_body["rows"]]
+    sectors_body = market.sectors({}) | day_one
+    sectors_body["benchmark"] |= {"observed_at": friday}
+    screen = Screen.model_validate(screen_body)
+    sectors = Sectors.model_validate(sectors_body)
+
+    screen.check(ScreenRequest(limit=5), ctx)
+    sectors.check(None, ctx)
+    summary = render_summary(
+        sectors=sectors, gainers=screen, losers=None, positions=(), cash=Decimal(100)
+    )
+    assert "as of the 2026-09-25 close" in summary.splitlines()[0]
+    # A session after the cutoff date is still refused.
+    later = screen.model_copy(update={"as_of_session": date(2026, 9, 29)})
+    with pytest.raises(ValueError, match="as-of session"):
+        later.check(ScreenRequest(limit=5), ctx)
