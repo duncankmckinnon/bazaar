@@ -463,3 +463,25 @@ def test_an_incomplete_bundle_stops_the_submission_before_the_grant(markets, tmp
         submit(tmp_path, "http://m1")
     assert market.paths == [f"/bundles/{DEMO_BUNDLE}"] and market.grants == {}
     assert list(tmp_path.iterdir()) == []
+
+
+def test_the_operator_env_picks_the_submission_bundle(markets, tmp_path, monkeypatch):
+    market = GrantingMarket()
+    market.fake.bundles["demo-bundle-x"] = bundle_body("demo-bundle-x")
+    markets["http://m1"] = market
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "demo-bundle-x")
+    run_dir, _ = submit(tmp_path, "http://m1")
+    assert record_in(run_dir).manifest.data_version == "demo-bundle-x"
+    assert market.paths[0] == "/bundles/demo-bundle-x"
+
+
+def test_a_malformed_operator_bundle_fails_before_any_side_effect(markets, tmp_path, monkeypatch):
+    market = GrantingMarket()
+    markets["http://m1"] = market
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "v2?x=1")
+    configured = []
+    monkeypatch.setattr(submission, "configure_telemetry", lambda: configured.append(1))
+    with pytest.raises(SubmissionFailed, match="not a bundle id") as caught:
+        submit(tmp_path, "http://m1")
+    assert "v2?x=1" not in str(caught.value)
+    assert market.paths == [] and configured == [] and list(tmp_path.iterdir()) == []

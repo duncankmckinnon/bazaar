@@ -4,7 +4,8 @@
 
 Four launches: agent-fixture-v1 (the agent places its own order through bazaar_agent.trading),
 scripted-momentum-v1 (drop it with --no-momentum), and the buy-and-hold and cash-only baselines.
-Every launch runs on the one --data-version bundle (default DEMO_BUNDLE). The runner reads it
+Every launch runs on the one --data-version bundle (default $BAZAAR_DATA_BUNDLE, else
+DEMO_BUNDLE). The runner reads it
 once from the market's GET /bundles/{id}: the universe and the trading sessions come from there,
 and the CLI stops before any account opens if the market's sessions are incomplete or wrong.
 Logfire sends only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
@@ -23,7 +24,13 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from bazaar_runner.bundle import DEMO_BUNDLE, BundleError, read_bundle
+from bazaar_runner.bundle import (
+    BUNDLE_ENV,
+    BundleError,
+    check_bundle_id,
+    read_bundle,
+    run_bundle_id,
+)
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
@@ -119,6 +126,13 @@ def _id_flag(
         )
 
 
+def _bundle_id(value: str) -> str:
+    try:
+        return check_bundle_id(value)
+    except BundleError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m bazaar_runner", description=__doc__)
     parser.add_argument("--demo", action="store_true", required=True, help="run the demo launches")
@@ -137,8 +151,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument(
         "--data-version",
-        default=DEMO_BUNDLE,
-        help="the one bundle every launch runs on, as the market serves it at /bundles/{id}",
+        type=_bundle_id,
+        help="the one bundle every launch runs on, as the market serves it at /bundles/{id};"
+        f" defaults to ${BUNDLE_ENV}, else demo-bundle-v2",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))
@@ -149,6 +164,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     for kind in KINDS:
         _id_flag(parser, "refused", kind, default=uuid4())
     args = parser.parse_args(argv)
+    if args.data_version is None:
+        try:
+            args.data_version = run_bundle_id()
+        except BundleError as exc:
+            parser.error(str(exc))
     missing = [
         f"--{prefix}-{kind}-id"
         for prefix, ref, _ in demo_launches(args)

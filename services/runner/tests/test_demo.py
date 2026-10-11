@@ -641,3 +641,31 @@ async def test_the_twelve_symbol_bundle_still_drives_buy_and_hold(tmp_path):
     *_, hold = await run_baselines(tmp_path)
     assert len(BUNDLE.symbols) == 12 and hold.manifest.data_version == BUNDLE.bundle_id
     assert sorted(o.request.symbol for o in hold.orders) == sorted(BUNDLE.symbols)
+
+
+def test_the_cli_bundle_defaults_to_the_operator_env(offline_cli, monkeypatch):
+    assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v2"
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "")
+    assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v2"
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "demo-bundle-v1")
+    assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v1"
+    # An explicit flag still wins over the environment.
+    args = cli.parse_args(["--demo", "--data-version", "synthetic-v1", *cli_ids()])
+    assert args.data_version == "synthetic-v1"
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_a_malformed_bundle_id_stops_the_cli_before_anything(
+    offline_cli, monkeypatch, capsys, tmp_path, flag
+):
+    monkeypatch.setenv(RUNNER_TOKEN_ENV, TOKEN)
+    extra = ["--data-version", "../v1"] if flag else []
+    if not flag:
+        monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "../v1")
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["--demo", "--runs-dir", str(tmp_path), *extra, *cli_ids()])
+    assert exit_.value.code == 2
+    err = capsys.readouterr().err
+    assert ("letters, digits" if flag else "BAZAAR_DATA_BUNDLE is not a bundle id") in err
+    assert "../v1" not in err
+    assert list(tmp_path.iterdir()) == []

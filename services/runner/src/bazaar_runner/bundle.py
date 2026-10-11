@@ -6,6 +6,9 @@ New York clock and checks the list against the exchange calendar. Anything short
 the declared window stops the launch before any account exists.
 """
 
+import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from urllib.parse import quote
@@ -19,6 +22,9 @@ from bazaar_runner.clock import ClockScript, TradingSession
 
 # The one bundle every demo launch and submission runs on. Nothing else names a bundle.
 DEMO_BUNDLE = "demo-bundle-v2"
+# Operator override, shared with the web app; never taken from strategy text or a request.
+BUNDLE_ENV = "BAZAAR_DATA_BUNDLE"
+BUNDLE_ID = re.compile(r"[A-Za-z0-9.-]{1,128}")
 NEW_YORK = ZoneInfo("America/New_York")
 # Decide at the open (seeing the previous close), mark at the close; zoneinfo picks EST or EDT.
 OPEN_AT, CLOSE_AT = time(9, 30), time(16, 0)
@@ -81,6 +87,24 @@ class Bundle:
     @property
     def sessions(self) -> tuple[TradingSession, ...]:
         return self.script.sessions
+
+
+def check_bundle_id(value: str) -> str:
+    """A bundle id is letters, digits, dots and dashes; anything else is refused unechoed."""
+    if not BUNDLE_ID.fullmatch(value):
+        raise BundleError("a bundle id may hold only letters, digits, dots and dashes")
+    return value
+
+
+def run_bundle_id(environ: Mapping[str, str] = os.environ) -> str:
+    """$BAZAAR_DATA_BUNDLE if set and non-empty, else DEMO_BUNDLE."""
+    value = environ.get(BUNDLE_ENV, "")
+    if not value:
+        return DEMO_BUNDLE
+    try:
+        return check_bundle_id(value)
+    except BundleError:
+        raise BundleError(f"${BUNDLE_ENV} is not a bundle id: {BUNDLE_ID.pattern}") from None
 
 
 def session_on(day: date) -> TradingSession:

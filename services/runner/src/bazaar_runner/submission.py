@@ -28,7 +28,7 @@ from bazaar_agent.strategy_evaluation import strategy_evaluation_session
 from bazaar_agent.trading import TRADING_ROLE_VARIABLE, DecisionBudget, RuntimeConfig
 from bazaar_protocol.telemetry import redact
 
-from bazaar_runner.bundle import DEMO_BUNDLE, BundleError, read_bundle
+from bazaar_runner.bundle import BundleError, read_bundle, run_bundle_id
 from bazaar_runner.demo import Launch, demo_spec
 from bazaar_runner.http_market import HttpMarketPort, market_client
 from bazaar_runner.market import MarketError
@@ -123,11 +123,18 @@ def run_submission(
     on_progress: Callable[..., None] | None = None,
     handle: str | None = None,
 ) -> Path:
-    """Run one agent over DEMO_BUNDLE's sessions and return its scored run directory.
+    """Run one agent over the run bundle's sessions and return its scored run directory.
+
+    The bundle is $BAZAAR_DATA_BUNDLE (the operator's, shared with the web app), else
+    DEMO_BUNDLE; a malformed value fails before anything else happens.
 
     The run directory appears in runs_dir all at once (record.json and evaluation.json) or not
     at all. Any failure raises SubmissionFailed with a readable message and leaves nothing behind.
     """
+    try:
+        bundle_id = run_bundle_id()
+    except BundleError as exc:
+        raise SubmissionFailed(f"the demo data is not configured: {exc}") from None
     # Configures Logfire only if nothing in this process has (the web app usually has).
     configure_telemetry()
     staging = runs_dir / f".tmp-{uuid4().hex}"
@@ -139,6 +146,7 @@ def run_submission(
                 instructions=instructions,
                 market_url=market_url,
                 runner_token=runner_token,
+                bundle_id=bundle_id,
                 staging=staging,
                 runs_dir=runs_dir,
                 model=model,
@@ -168,6 +176,7 @@ async def _run(
     instructions: str,
     market_url: str,
     runner_token: str,
+    bundle_id: str,
     staging: Path,
     runs_dir: Path,
     model: str | None,
@@ -193,7 +202,7 @@ async def _run(
             ) as client,
         ):
             # Read before the grant: a bundle the market cannot run leaves no approval bound.
-            bundle = await read_bundle(client, DEMO_BUNDLE)
+            bundle = await read_bundle(client, bundle_id)
             spec = demo_spec(
                 launch,
                 bundle=bundle,

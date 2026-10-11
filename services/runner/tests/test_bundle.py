@@ -3,12 +3,14 @@ from datetime import UTC, date, datetime, timedelta
 import httpx
 import pytest
 from bazaar_runner.bundle import (
+    BUNDLE_ENV,
     DEMO_BUNDLE,
     BundleError,
     BundleInfo,
     bundle_from,
     exchange_days,
     read_bundle,
+    run_bundle_id,
 )
 from bazaar_runner.clock import build_schedule, schedule_digest
 from bazaar_runner.http_market import APPROVAL_HEADER, RUNNER_TOKEN_HEADER
@@ -163,3 +165,22 @@ async def test_an_unreachable_market_fails_without_echoing_the_error():
     with pytest.raises(BundleError, match=r"\(ConnectError\)$") as caught:
         await read_bundle(client, DEMO_BUNDLE)
     assert TOKEN not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, DEMO_BUNDLE),
+        ({BUNDLE_ENV: ""}, DEMO_BUNDLE),
+        ({BUNDLE_ENV: "demo-bundle-v1"}, "demo-bundle-v1"),
+    ],
+)
+def test_the_operator_env_picks_the_bundle(environ, expected):
+    assert run_bundle_id(environ) == expected
+
+
+@pytest.mark.parametrize("bad", ["../market", "demo bundle", "v2?x=1", "v2/../v1", "ünï"])
+def test_a_malformed_operator_bundle_is_refused_unechoed(bad):
+    with pytest.raises(BundleError, match="BAZAAR_DATA_BUNDLE is not a bundle id") as caught:
+        run_bundle_id({BUNDLE_ENV: bad})
+    assert bad not in str(caught.value)
