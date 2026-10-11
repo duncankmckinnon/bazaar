@@ -184,6 +184,7 @@ def test_contacts_csv_rows_match_the_board_and_leave_out_hidden_and_contactless(
         runner.gate.set()
 
     assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["cache-control"] == "no-store"
     assert response.headers["content-disposition"] == (
         'attachment; filename="bazaar-contacts-20261008T140000Z.csv"'
     )

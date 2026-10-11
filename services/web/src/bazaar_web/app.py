@@ -326,7 +326,10 @@ def create_app(
         return Response(
             out.getvalue(),
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="bazaar-contacts-{stamp}.csv"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="bazaar-contacts-{stamp}.csv"',
+                "Cache-Control": "no-store",  # personal data: no browser or proxy keeps a copy
+            },
         )
 
     @app.get("/api/admin/whoami")
