@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import bazaar_web.telemetry
+import bazaar_web.worker
 import httpx
 import pytest
 from bazaar_web.settings import Settings
@@ -162,6 +163,43 @@ class Clock:
 
     def __call__(self) -> datetime:
         return self.at
+
+
+def release(runner) -> None:
+    """Open every gate a fake runner (or a wrapper around one, via .fake) is holding."""
+    while runner is not None:
+        gate = getattr(runner, "gate", None)
+        if isinstance(gate, threading.Event):
+            gate.set()
+        if callable(getattr(runner, "release_all", None)):
+            runner.release_all()
+        runner = getattr(runner, "fake", None)
+
+
+@pytest.fixture(autouse=True)
+def drain_background_work(monkeypatch):
+    """Join every app's run threads before the next test starts.
+
+    Worker.stop() shuts its pools down without waiting (right in production: a real run takes
+    minutes and recovery reruns it after a restart). In tests that let a fake run, still
+    reporting progress, write rows and sqlite spans into the NEXT test's capfire. So each
+    Worker made during a test is tracked, its runner released, and its run and house pools
+    joined here.
+    """
+    workers = []
+    real_init = bazaar_web.worker.Worker.__init__
+
+    def tracked(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        workers.append(self)
+
+    monkeypatch.setattr(bazaar_web.worker.Worker, "__init__", tracked)
+    yield
+    for worker in workers:
+        release(worker.run_submission)
+        for pool in (worker.pool, getattr(worker, "house_pool", None)):
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
 
 
 REAL_CONFIGURE = bazaar_web.telemetry.configure

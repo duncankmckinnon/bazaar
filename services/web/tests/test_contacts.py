@@ -252,12 +252,31 @@ def test_contacts_csv_defuses_formulas(settings, helpers, start):
         assert row["name"] == "'-formula-bot"
 
 
-def test_contacts_csv_is_not_traced(settings, helpers, capfire):
+def test_contacts_csv_is_not_traced(settings, helpers, capfire, caplog):
+    # Distinctive values, so stray spans from elsewhere can never mask or fake a result.
+    sentinels = ("zz-csvtrace@example.com", "ZZCSVTRACECOMPANY", "ZZCSVTRACEROLE")
+    caplog.set_level(logging.DEBUG)
+    Store(settings.web_db).create(
+        name="csv-trace-bot", handle=None, instructions="Buy KO on dips, hold MSFT.",
+        ip_hash="h", max_queue=30, max_per_day=150, max_per_ip_hour=5,
+        contact=Contact(*sentinels),
+    )  # fmt: skip
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         capfire.exporter.clear()
-        client.get("/api/admin/contacts", headers=ADMIN)
+        response = client.get("/api/admin/contacts", headers=ADMIN)
 
-    assert capfire.exporter.exported_spans_as_dict() == []
+    assert sentinels[0] in response.text  # the export really carried them
+    spans = capfire.exporter.exported_spans_as_dict()
+    # (a) No span for the contacts request: not by name, route, path or URL.
+    for span in spans:
+        where = json.dumps([span["name"], span["attributes"]], default=str)
+        assert "/api/admin/contacts" not in where, span["name"]
+    # (b) The contact values are in no span name or attribute (db.statement and any
+    # parameters included) and no log record.
+    exported = json.dumps(spans, default=str).lower()
+    logs = "\n".join(f"{r.name} {r.getMessage()} {r.args}" for r in caplog.records).lower()
+    for sentinel in sentinels:
+        assert sentinel.lower() not in exported and sentinel.lower() not in logs, sentinel
 
 
 # ---------- the leak test ----------
