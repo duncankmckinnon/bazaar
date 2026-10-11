@@ -25,6 +25,9 @@ from pathlib import Path
 logger = logging.getLogger("bazaar.live")
 
 MARKET_PORT = 8000
+# Idle keep-alive seconds for the market's uvicorn, well above any client's keepalive_expiry
+# (httpx: 5 s). At uvicorn's default of 5 s a client could reuse a connection the server was closing.
+MARKET_KEEP_ALIVE = 75
 COMMIT_INTERVAL = 10.0
 LIVE_PREFIX = "bazaar-live"
 DEFAULT_CPU = 2.0
@@ -167,8 +170,9 @@ def start_market(
     """Start the market on 127.0.0.1:`port` against `db_path`. Call `wait_healthy` next."""
     require_runner_token(env)
     child_env = {**env, "BAZAAR_MARKET_DB": str(db_path)}
-    command = [python, "-m", "uvicorn", "bazaar_market.app:app"]
-    return subprocess.Popen([*command, "--host", "127.0.0.1", "--port", str(port)], env=child_env)
+    command = [python, "-m", "uvicorn", "bazaar_market.app:app", "--host", "127.0.0.1"]
+    command += ["--port", str(port), "--timeout-keep-alive", str(MARKET_KEEP_ALIVE)]
+    return subprocess.Popen(command, env=child_env)
 
 
 def wait_healthy(url: str, timeout: float = 30.0, process: subprocess.Popen | None = None) -> None:

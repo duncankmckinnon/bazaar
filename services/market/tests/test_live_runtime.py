@@ -526,3 +526,15 @@ def test_each_staging_cap_has_the_value_replay_specified(name, value):
     assert staging.extra_env[name] == value
     assert len(staging.extra_env) == 3
     assert name not in rt.resolve_target({"BAZAAR_MODAL_TARGET": "live"}).extra_env
+
+
+def test_the_market_keeps_idle_connections_open_longer_than_clients_do(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda args, env: started.append(args))
+
+    rt.start_market(tmp_path / "market.sqlite3", port=8123, env={"BAZAAR_RUNNER_TOKEN": TOKEN})
+
+    [args] = started
+    assert args[args.index("--timeout-keep-alive") + 1] == "75"
+    assert rt.MARKET_KEEP_ALIVE > 5  # httpx's default keepalive_expiry
+    assert args[args.index("--port") + 1] == "8123"
