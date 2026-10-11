@@ -9,12 +9,10 @@ from typing import Any
 
 from bazaar_replay.leaderboard import Entry, Leaderboard, load_board
 
+from bazaar_web.bundle import SYMBOLS, Bundle
 from bazaar_web.store import Store
 
-SYMBOLS = ["AAPL", "AMZN", "EA", "FISV", "JNJ", "JPM", "KO", "META", "MSFT", "NVDA", "WMT", "XOM"]
-DAYS = 10
 DEFAULT_STARTING_CASH = Decimal(10000)
-DEFAULT_WINDOW = {"start": "2026-02-02", "end": "2026-02-13", "starting_cash": 10000.0}
 STATUS_ORDER = {"scored": 0, "running": 1, "queued": 2, "failed": 3}
 
 
@@ -136,7 +134,10 @@ def submission_row(
 
 
 def build_board(
-    source: BoardSource, store: Store, logfire_url: Callable[[str], str | None] = lambda _: None
+    source: BoardSource,
+    store: Store,
+    logfire_url: Callable[[str], str | None] = lambda _: None,
+    bundle: Bundle | None = None,
 ) -> dict[str, Any]:
     board, histories = source.load()
     by_dir = store.by_run_dir()
@@ -165,15 +166,16 @@ def build_board(
         else:
             row["rank"] = None
 
-    window = dict(DEFAULT_WINDOW)
-    if board.header is not None:
-        window = {
-            "start": board.header.start_at.date().isoformat(),
-            "end": board.header.end_at.date().isoformat(),
-            "starting_cash": float(board.header.starting_cash),
-        }
+    # The window is the data bundle's; without one the board shows no dates.
+    window = {
+        "start": bundle.start.isoformat() if bundle else None,
+        "end": bundle.end.isoformat() if bundle else None,
+        "starting_cash": float(starting_cash),
+        "symbols": list(bundle.symbols if bundle else SYMBOLS),
+        "days": len(bundle.sessions) if bundle else None,
+    }
     return {
-        "window": {**window, "symbols": SYMBOLS, "days": DAYS},
+        "window": window,
         "rows": rows,
         "events": store.recent_events(20),
     }

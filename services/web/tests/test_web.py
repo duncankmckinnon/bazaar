@@ -426,13 +426,13 @@ def test_pages_fall_back_to_placeholders(settings, helpers, tmp_path, monkeypatc
     assert "The submission form is coming soon." in form.text
 
 
-def test_empty_runs_dir_gives_default_window(settings, helpers):
+def test_empty_runs_dir_and_no_bundle_give_no_window(settings, helpers):
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         payload = client.get("/api/board").json()
 
     assert payload["window"] == {
-        "start": "2026-02-02",
-        "end": "2026-02-13",
+        "start": None,
+        "end": None,
         "starting_cash": 10000.0,
         "symbols": [
             "AAPL",
@@ -448,7 +448,7 @@ def test_empty_runs_dir_gives_default_window(settings, helpers):
             "WMT",
             "XOM",
         ],
-        "days": 10,
+        "days": None,
     }
     assert payload["rows"] == []
 

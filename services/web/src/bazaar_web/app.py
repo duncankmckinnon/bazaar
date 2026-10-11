@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bazaar_web import telemetry
 from bazaar_web.board import BoardSource, build_board
+from bazaar_web.bundle import BundleSource
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     CapReached,
@@ -82,8 +83,10 @@ def create_app(
     run_submission: RunSubmission | None = None,
     on_scored: Callable[[str, Path], None] | None = None,
     now: Now | None = None,
+    bundle_source: BundleSource | None = None,
 ) -> FastAPI:
-    """Build the app. Nothing touches disk until the lifespan starts."""
+    """Build the app. Nothing touches disk until the lifespan starts, nor the market until a
+    request needs the trading window."""
     settings = settings or Settings.from_env()
 
     @asynccontextmanager
@@ -105,10 +108,13 @@ def create_app(
 
     app = FastAPI(title="Bazaar web", lifespan=lifespan)
     app.state.on_scored = on_scored
-    tickers = TickerSource(settings.market_db, settings.ticker_data_version)
+    tickers = TickerSource(settings.market_db)
+    bundles = bundle_source or BundleSource(settings.market_url, settings.ticker_data_version)
 
     def board_payload(request: Request) -> dict[str, Any]:
-        return build_board(request.app.state.board, request.app.state.store, settings.logfire_url)
+        return build_board(
+            request.app.state.board, request.app.state.store, settings.logfire_url, bundles.get()
+        )
 
     @app.get("/", include_in_schema=False)
     def board_page(request: Request) -> Response:
@@ -188,7 +194,7 @@ def create_app(
     @app.get("/api/tickers")
     def ticker_days() -> dict[str, Any]:
         with logfire.suppress_instrumentation():  # polled; see submission_status
-            return tickers.payload()
+            return tickers.payload(bundles.get())
 
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:
