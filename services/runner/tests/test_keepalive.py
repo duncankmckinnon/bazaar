@@ -17,7 +17,7 @@ from bazaar_runner.demo import CASH_ONLY_REF, Launch, run_demo
 from bazaar_runner.http_market import KEEPALIVE_EXPIRY_SECONDS, HttpMarketPort, market_client
 from bazaar_runner.market import MarketError
 
-from .market_fakes import SPEC, TOKEN, InMemoryMarket, delegating_transport
+from .market_fakes import BUNDLE, SPEC, TOKEN, InMemoryMarket, delegating_transport
 
 LAUNCH = Launch(CASH_ONLY_REF, SPEC.experiment_id, SPEC.approval_id)
 # uvicorn's default timeout_keep_alive, which the market runs with.
@@ -67,8 +67,8 @@ async def test_a_mark_survives_one_dropped_connection(capfire, tmp_path: Path):
     (record,) = await run_demo(
         [LAUNCH],
         {LAUNCH: port_on(transport)},
-        {CASH_ONLY_REF: lambda prices: cash_only},
-        data_version="synthetic-v1",
+        {CASH_ONLY_REF: lambda bundle, prices: cash_only},
+        bundle=BUNDLE,
         execution_rule_version="exec-v1",
         starting_cash=Decimal(10000),
         runs_dir=tmp_path,

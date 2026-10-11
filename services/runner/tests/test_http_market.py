@@ -416,3 +416,46 @@ def test_from_env_requires_the_token_at_startup(monkeypatch):
     HttpMarketPort.from_env(client, EID, APPROVAL)
     with pytest.raises(RunnerConfigError):
         HttpMarketPort(client, EID, APPROVAL, "")
+
+
+async def test_screen_and_quotes_go_through_the_port_with_the_approval_only():
+    from bazaar_agent.market_view import QuotesRequest, ScreenRequest
+    from bazaar_protocol import ExperimentContext
+
+    from .market_fakes import delegating_transport
+
+    seen: list[httpx.Request] = []
+    fake = InMemoryMarket()
+    client = httpx.AsyncClient(transport=delegating_transport(fake, seen), base_url="http://m")
+    port = HttpMarketPort(client, SPEC.experiment_id, SPEC.approval_id, TOKEN)
+    at = SESSIONS[1].open_at
+    await port.set_cutoff(SPEC.experiment_id, at, "synthetic-v1", "exec-v1")
+    ctx = ExperimentContext(
+        experiment_id=SPEC.experiment_id,
+        account_id=UUID(int=1),
+        agent_id=SPEC.agent_id,
+        strategy_version_id=SPEC.strategy_version_id,
+        approval_id=SPEC.approval_id,
+        data_version="synthetic-v1",
+        execution_rule_version="exec-v1",
+        simulated_at=at,
+        event_sequence=2,
+    )
+    screen = await port.screen(ctx, ScreenRequest(limit=3))
+    quotes = await port.quotes(ctx, QuotesRequest(symbols=("KO", "ZZZ")))
+
+    assert len(screen.rows) == 3 and [q.symbol for q in quotes.quotes] == ["KO"]
+    reads = seen[1:]
+    assert [r.url.path for r in reads] == [
+        f"/experiments/{SPEC.experiment_id}/market/screen",
+        f"/experiments/{SPEC.experiment_id}/market/quotes",
+    ]
+    for request in reads:
+        assert RUNNER_TOKEN_HEADER not in request.headers
+        assert request.headers[APPROVAL_HEADER] == str(SPEC.approval_id)
+        assert not {"as_of", "cutoff", "at"} & set(request.url.params)
+
+    # An answer computed at another cutoff breaks the contract and fails the read.
+    later = ctx.model_copy(update={"simulated_at": SESSIONS[1].close_at})
+    with pytest.raises(MarketError, match="does not match the contract"):
+        await port.screen(later, ScreenRequest())

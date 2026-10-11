@@ -1,16 +1,20 @@
 """`python -m bazaar_runner --demo`: run the demo launches against the market service.
 
-    uv run --package bazaar-runner python -m bazaar_runner --demo --data-version demo-bundle-v1
+    uv run --package bazaar-runner python -m bazaar_runner --demo
 
 Four launches: agent-fixture-v1 (the agent places its own order through bazaar_agent.trading),
-scripted-momentum-v1 (drop it with --no-momentum), and the buy-and-hold and cash-only baselines.
-demo-bundle-v1 (bars, news, filings) is the default because the agent reads news; every launch
-uses the one --data-version. alpaca-bars-v1 is bars only; synthetic-v1 is the offline fallback.
+scripted-momentum-v2 (the universe's top movers from one screen per decision; drop it with
+--no-momentum), baseline-buy-and-hold-spy (the bundle's benchmark, bought on day 1) and
+baseline-cash-only.
+Every launch runs on the one --data-version bundle (default $BAZAAR_DATA_BUNDLE, else
+DEMO_BUNDLE). The runner reads it
+once from the market's GET /bundles/{id}: the universe and the trading sessions come from there,
+and the CLI stops before any account opens if the market's sessions are incomplete or wrong.
 Logfire sends only when LOGFIRE_TOKEN is set in the environment; the runner never reads it.
 
 Ids come from flags or environment variables. The runner token comes only from
 BAZAAR_RUNNER_TOKEN and is never printed. The agent harness (bazaar_agent.trading), evals
-(bazaar_evaluation) and the baselines (bazaar_replay) are on the demo integration branch.
+(bazaar_evaluation) and the cash-only baseline (bazaar_replay) are on the demo integration branch.
 """
 
 import argparse
@@ -22,18 +26,24 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from bazaar_runner.bundle import (
+    BUNDLE_ENV,
+    BundleError,
+    check_bundle_id,
+    read_bundle,
+    run_bundle_id,
+)
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
-    BUY_AND_HOLD_REF,
+    BUY_AND_HOLD_SPY_REF,
     CASH_ONLY_REF,
-    DEMO_SYMBOLS,
-    MOMENTUM_REF,
+    MOMENTUM_V2_REF,
+    BuyAndHoldBenchmark,
     DuplicateLaunch,
     Launch,
     PolicyFactory,
-    ScriptedMomentum,
+    ScriptedMomentumV2,
     check_one_agent_per_experiment,
-    demo_script,
     run_demo,
 )
 from bazaar_runner.http_market import (
@@ -51,8 +61,8 @@ logger = logging.getLogger("bazaar_runner")
 # and port.
 DEMO_LAUNCHES = (
     ("agent-fixture", AGENT_FIXTURE_REF, ()),
-    ("momentum", MOMENTUM_REF, ("agent",)),
-    ("buy-and-hold", BUY_AND_HOLD_REF, ()),
+    ("momentum", MOMENTUM_V2_REF, ("agent",)),
+    ("buy-and-hold", BUY_AND_HOLD_SPY_REF, ()),
     ("cash-only", CASH_ONLY_REF, ()),
 )
 KINDS = ("experiment", "approval")
@@ -119,10 +129,17 @@ def _id_flag(
         )
 
 
+def _bundle_id(value: str) -> str:
+    try:
+        return check_bundle_id(value)
+    except BundleError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m bazaar_runner", description=__doc__)
     parser.add_argument("--demo", action="store_true", required=True, help="run the demo launches")
-    parser.add_argument("--no-momentum", action="store_true", help="leave out scripted-momentum-v1")
+    parser.add_argument("--no-momentum", action="store_true", help=f"leave out {MOMENTUM_V2_REF}")
     parser.add_argument(
         "--no-fiscal-cycles",
         action="store_true",
@@ -137,9 +154,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument(
         "--data-version",
-        default="demo-bundle-v1",
-        help="one data version for every launch, so they stay comparable: demo-bundle-v1 (bars,"
-        " news, filings), alpaca-bars-v1 (bars only) or synthetic-v1",
+        type=_bundle_id,
+        help="the one bundle every launch runs on, as the market serves it at /bundles/{id};"
+        f" defaults to ${BUNDLE_ENV}, else demo-bundle-v2",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))
@@ -150,6 +167,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     for kind in KINDS:
         _id_flag(parser, "refused", kind, default=uuid4())
     args = parser.parse_args(argv)
+    if args.data_version is None:
+        try:
+            args.data_version = run_bundle_id()
+        except BundleError as exc:
+            parser.error(str(exc))
     missing = [
         f"--{prefix}-{kind}-id"
         for prefix, ref, _ in demo_launches(args)
@@ -162,7 +184,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def demo_launches(args: argparse.Namespace) -> list[tuple[str, str, tuple[str, ...]]]:
-    return [row for row in DEMO_LAUNCHES if not (args.no_momentum and row[1] == MOMENTUM_REF)]
+    return [row for row in DEMO_LAUNCHES if not (args.no_momentum and row[1] == MOMENTUM_V2_REF)]
 
 
 def _ids(args: argparse.Namespace, prefix: str) -> dict[str, UUID | None]:
@@ -193,34 +215,32 @@ def load_policies(market_url: str, *, fiscal_cycles: bool = True) -> dict[str, P
     )
     from bazaar_runner.agent_step import AgentStep
 
-    def agent(prices):
+    def agent(bundle, prices):
         # A fresh decider and fixture model per launch; the agent reads prices itself.
         decider = make_agent_decider(
             AGENT_FIXTURE_INSTRUCTIONS,
             fixture_model_factory(),
             runtime=RuntimeConfig(instrument=True),
-            quote_symbols=DEMO_SYMBOLS,
-            # demo_spec gives every launch demo_script(), so this is the run's own schedule.
-            sessions=demo_script().sessions,
+            # demo_spec gives every launch the bundle's script, so this is the run's own schedule.
+            sessions=bundle.sessions,
         )
         return AgentStep(
             decider,
             market_url=market_url,
-            symbols=DEMO_SYMBOLS,
             read_fiscal_cycles=fiscal_cycles,
         )
 
     policies: dict[str, PolicyFactory] = {
         AGENT_FIXTURE_REF: agent,
-        MOMENTUM_REF: lambda prices: ScriptedMomentum(DEMO_SYMBOLS, prices),
+        MOMENTUM_V2_REF: lambda bundle, prices: ScriptedMomentumV2(bundle.symbols),
+        BUY_AND_HOLD_SPY_REF: lambda bundle, prices: BuyAndHoldBenchmark(bundle.benchmark, prices),
     }
     try:
-        from bazaar_replay.baselines import BuyAndHold, CashOnly
+        from bazaar_replay.baselines import CashOnly
     except ImportError:
-        logger.warning("bazaar_replay is not installed; skipping the baseline runs")
+        logger.warning("bazaar_replay is not installed; skipping the cash-only run")
     else:
-        policies[BUY_AND_HOLD_REF] = lambda prices: BuyAndHold(DEMO_SYMBOLS, prices)
-        policies[CASH_ONLY_REF] = lambda prices: CashOnly()
+        policies[CASH_ONLY_REF] = lambda bundle, prices: CashOnly()
     return policies
 
 
@@ -234,7 +254,9 @@ async def amain(args: argparse.Namespace) -> int:
             ids = _ids(args, prefix)
             launches.append(Launch(ref, ids["experiment"], ids["approval"]))
     if args.refused_demo:
-        launches.append(Launch(MOMENTUM_REF, args.refused_experiment_id, args.refused_approval_id))
+        launches.append(
+            Launch(MOMENTUM_V2_REF, args.refused_experiment_id, args.refused_approval_id)
+        )
     # One agent per experiment: refuse before any port, account or order exists.
     check_one_agent_per_experiment(launches)
 
@@ -247,11 +269,13 @@ async def amain(args: argparse.Namespace) -> int:
             launch: HttpMarketPort.from_env(client, launch.experiment_id, launch.approval_id)
             for launch in launches
         }
+        # Once per launch set, before any account: every run gets the same universe and days.
+        bundle = await read_bundle(client, args.data_version)
         records = await run_demo(
             launches,
             ports,
             policies,
-            data_version=args.data_version,
+            bundle=bundle,
             execution_rule_version=args.execution_rule_version,
             starting_cash=args.starting_cash,
             runs_dir=args.runs_dir,
@@ -272,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(amain(args))
     # By name only: any other ValueError (a pydantic ValidationError, say) keeps its traceback.
-    except (RunnerConfigError, DemoUnavailable, DuplicateLaunch) as exc:
+    except (RunnerConfigError, DemoUnavailable, DuplicateLaunch, BundleError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
