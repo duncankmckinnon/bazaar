@@ -360,14 +360,16 @@ class Drafts(BaseModel):
     drafts: list[Draft]
 
 
-def build_model() -> Any:
-    """The strategist's model, built like the trader's: $BAZAAR_STRATEGIST_MODEL, else the
-    trader's default (env_model_factory), redacted inside its instrumentation (content on)."""
+def build_model(model_name: str | None = None) -> Any:
+    """The strategist's model, built like the trader's: model_name (an experiment's choice),
+    else $BAZAAR_STRATEGIST_MODEL, else the trader's default (env_model_factory), redacted
+    inside its instrumentation (content on)."""
     from bazaar_agent.redaction import RedactingModel
     from bazaar_agent.trading import ModelUnavailable, env_model_factory
 
     try:
-        model = env_model_factory(os.environ.get(STRATEGIST_MODEL_ENV) or None)("strategist")
+        name = model_name or os.environ.get(STRATEGIST_MODEL_ENV) or None
+        model = env_model_factory(name)("strategist")
     except ModelUnavailable as exc:
         raise StrategistError(str(exc)) from None
     return InstrumentedModel(RedactingModel(model), STRATEGIST_INSTRUMENTATION)
@@ -470,6 +472,58 @@ def _prompt(
     )
 
 
+# The per-draft rules, shared by validate() (the runtime gate) and the strategist evaluators
+# (strategist_eval), so the two never diverge.
+
+
+def allowed_symbols(universe: Iterable[Mapping[str, Any]], benchmark: str | None) -> set[str]:
+    return {m["symbol"] for m in universe} | ({benchmark} if benchmark else set())
+
+
+def qualified_name(name: str, generation: int) -> str:
+    """The draft's name with its generation prefix, as a proposal would carry it."""
+    prefix = f"g{generation}-"
+    name = name.strip()
+    return name if name.startswith(prefix) else prefix + name
+
+
+def valid_name(name: str) -> bool:
+    return NAME.fullmatch(name) is not None
+
+
+def valid_length(text: str) -> bool:
+    return INSTRUCTION_CHARS[0] <= len(text) <= INSTRUCTION_CHARS[1]
+
+
+def makes_claim(text: str) -> bool:
+    return CLAIMS.search(text) is not None
+
+
+def is_multi_position(text: str) -> bool:
+    return any(p.search(text) for p in MULTI_POSITION)
+
+
+def tickers_allowed(text: str, allowed: Iterable[str]) -> bool:
+    """Every uppercase ticker-like token is an allowed symbol or a known acronym."""
+    known = set(allowed) | ACRONYMS
+    return all(t in known for t in TICKER_TOKEN.findall(text))
+
+
+def known_parents(parents: Iterable[str], brief_names: Iterable[str]) -> list[str]:
+    """The listed parents that are brief names, deduplicated, in listed order."""
+    names = set(brief_names)
+    return [p for p in dict.fromkeys(parents) if p in names]
+
+
+def near_duplicate(text: str, others: Iterable[str]) -> bool:
+    """text equals or nearly equals one of others (both normalized)."""
+    norm = normalized(text)
+    return any(
+        norm == other or difflib.SequenceMatcher(None, norm, other).ratio() >= NEAR_DUPLICATE
+        for other in others
+    )
+
+
 def validate(
     drafts: list[Draft],
     *,
@@ -480,9 +534,9 @@ def validate(
     allowed_symbols: Iterable[str],
 ) -> tuple[list[Proposal], Counter]:
     """The drafts that pass every rule, in model order, at most k; and why the others failed."""
-    known_parents = list(dict.fromkeys(brief_names))
-    taken = set(known_parents)
-    allowed = set(allowed_symbols) | ACRONYMS
+    brief_names = list(dict.fromkeys(brief_names))
+    taken = set(brief_names)
+    allowed = set(allowed_symbols)
     seen = [normalized(t) for t in existing_instructions]
     accepted: list[Proposal] = []
     rejected: Counter = Counter()
@@ -493,33 +547,25 @@ def validate(
     for draft in drafts:
         if len(accepted) == k:
             break
-        prefix = f"g{generation}-"
-        name = draft.name.strip()
-        name = name if name.startswith(prefix) else prefix + name
+        name = qualified_name(draft.name, generation)
         text = draft.instructions.strip()
-        parents = [p for p in dict.fromkeys(draft.parents) if p in known_parents]
-        if not NAME.fullmatch(name) or name in taken:
+        parents = known_parents(draft.parents, brief_names)
+        if not valid_name(name) or name in taken:
             reject("name")
-        elif not INSTRUCTION_CHARS[0] <= len(text) <= INSTRUCTION_CHARS[1]:
+        elif not valid_length(text):
             reject("length")
-        elif CLAIMS.search(text):
+        elif makes_claim(text):
             reject("claim")
-        elif any(p.search(text) for p in MULTI_POSITION):
+        elif is_multi_position(text):
             reject("multi_position")
-        elif any(t not in allowed for t in TICKER_TOKEN.findall(text)):
+        elif not tickers_allowed(text, allowed):
             reject("ticker")
         elif not parents:
             reject("parents")
+        elif near_duplicate(text, seen):
+            reject("duplicate")
         else:
-            norm = normalized(text)
-            if any(
-                norm == other
-                or difflib.SequenceMatcher(None, norm, other).ratio() >= NEAR_DUPLICATE
-                for other in seen
-            ):
-                reject("duplicate")
-                continue
-            seen.append(norm)
+            seen.append(normalized(text))
             taken.add(name)
             accepted.append(
                 Proposal(name=name, instructions=text, parents=parents, idea=draft.idea.strip())
@@ -527,7 +573,7 @@ def validate(
     return accepted, rejected
 
 
-async def _draft(prompt: str, model: Any) -> list[Draft]:
+async def _draft(prompt: str, model: Any, role: str) -> list[Draft]:
     from pydantic_ai import Agent
     from pydantic_ai.usage import UsageLimits
 
@@ -535,12 +581,45 @@ async def _draft(prompt: str, model: Any) -> list[Draft]:
         model,
         name="strategist",
         output_type=Drafts,
-        instructions=STRATEGIST_ROLE,
+        instructions=role,
         model_settings={"max_tokens": 6000},
         retries=1,
     )
     result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=3))
     return result.output.drafts
+
+
+async def draft_proposals(
+    *,
+    brief: PerformanceBrief,
+    k: int,
+    generation: int,
+    instructions_by_name: Mapping[str, str],
+    existing_instructions: list[str],
+    universe: list[dict],
+    benchmark: str | None,
+    trading_days: int | None = None,
+    role: str = STRATEGIST_ROLE,
+    model: str | None = None,
+) -> tuple[list[Draft], list[Proposal], Counter]:
+    """The model's raw drafts, the proposals that pass validate() (at most k) and the rejection
+    reasons. Opens no strategist.propose span: propose() and the evaluation task wrap it.
+
+    role is the strategist's instructions; model, when given, names the model to build in
+    place of the default (see build_model). Errors propagate as they are."""
+    constraints = _runtime_constraints(trading_days)
+    built = build_model() if model is None else build_model(model)
+    prompt = _prompt(constraints, brief, k, generation, instructions_by_name, universe, benchmark)
+    drafts = await _draft(prompt, built, role)
+    proposals, rejected = validate(
+        drafts,
+        k=k,
+        generation=generation,
+        brief_names=brief.names,
+        existing_instructions=existing_instructions,
+        allowed_symbols=allowed_symbols(universe, benchmark),
+    )
+    return drafts, proposals, rejected
 
 
 def propose(
@@ -559,30 +638,27 @@ def propose(
     Synchronous (its own asyncio.run), so a worker thread can call it. A model or validation
     failure, or no valid proposal, raises StrategistError naming only the error's type.
     trading_days, when given, is the window's length in the prompt; absent, no number is stated."""
-    allowed = {m["symbol"] for m in universe} | ({benchmark} if benchmark else set())
     with logfire.span("strategist.propose", **{"bazaar.generation": generation}, k=k) as span:
         failure: StrategistError | None = None
         try:
-            constraints = _runtime_constraints(trading_days)
-            model = build_model()
-            prompt = _prompt(
-                constraints, brief, k, generation, instructions_by_name, universe, benchmark
+            drafts, proposals, rejected = asyncio.run(
+                draft_proposals(
+                    brief=brief,
+                    k=k,
+                    generation=generation,
+                    instructions_by_name=instructions_by_name,
+                    existing_instructions=existing_instructions,
+                    universe=universe,
+                    benchmark=benchmark,
+                    trading_days=trading_days,
+                )
             )
-            drafts = asyncio.run(_draft(prompt, model))
         except StrategistError as exc:
             failure = StrategistError(str(exc))
         except Exception as exc:  # noqa: BLE001 - only the type: details could quote a secret
             failure = StrategistError(f"the strategist model failed ({type(exc).__name__})")
         if failure is not None:
             raise failure  # outside the except block: the original error is not its context
-        proposals, rejected = validate(
-            drafts,
-            k=k,
-            generation=generation,
-            brief_names=brief.names,
-            existing_instructions=existing_instructions,
-            allowed_symbols=allowed,
-        )
         span.set_attribute(
             "bazaar.parents", sorted({p for proposal in proposals for p in proposal.parents})
         )
