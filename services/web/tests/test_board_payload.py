@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import sqlite3
-import time
 
 import bazaar_web.board
 import pytest
@@ -64,7 +63,10 @@ def link(config, run_id: str, name: str) -> str:
     return sid
 
 
-def test_the_payload_is_small_and_a_warm_request_fast(big, helpers):
+def test_the_payload_is_small_and_a_warm_request_parses_nothing(big, helpers, monkeypatch):
+    calls = []
+    real = bazaar_web.board.load_run
+    monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
     runner = helpers.FakeRunner()
     runner.gate.clear()
     with TestClient(create_app(big, runner)) as client:
@@ -74,18 +76,18 @@ def test_the_payload_is_small_and_a_warm_request_fast(big, helpers):
                   "email": "a@example.com", "company": "Co", "role": "Dev"},
         ).json()["id"]  # fmt: skip
         helpers.wait_for(lambda: client.get(f"/api/submissions/{sid}").json()["day"] == 10)
-        start = time.perf_counter()
         cold = client.get("/api/board")
-        cold_s = time.perf_counter() - start
-        start = time.perf_counter()
+        cold_parsed = len(calls)
+        # A rebuild, as after the 2 s TTL or a scored run: it lists every dir again.
+        client.app.state.board.invalidate()
         warm = client.get("/api/board")
-        warm_s = time.perf_counter() - start
         runner.gate.set()
 
     body = warm.json()
-    print(f"\n3,000 runs: {len(cold.content)} bytes, first {cold_s:.3f} s, warm {warm_s:.3f} s")
+    print(f"\n3,000 runs: {len(cold.content)} bytes")
+    assert cold_parsed == RUNS  # each dir parsed once, by the first build
+    assert len(calls) == cold_parsed  # the warm rebuild parsed nothing
     assert len(warm.content) < 100_000
-    assert warm_s < 0.5
     assert body["total"]["rows"] == RUNS + 1 and body["total"]["scored"] == RUNS
     scored = [r for r in body["rows"] if r["status"] == "scored"]
     top = [r for r in scored if r["kind"] != "baseline"]
@@ -202,22 +204,21 @@ def test_a_cold_board_never_parses_hidden_dirs(big, helpers, monkeypatch):
     real = bazaar_web.board.load_run
     monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
     with TestClient(create_app(big, helpers.FakeRunner())) as client:
-        start = time.perf_counter()
         cold = client.get("/api/board").json()
-        cold_s = time.perf_counter() - start
-        start = time.perf_counter()
+        cold_parsed = len(calls)
+        client.app.state.board.invalidate()  # a rebuild, as after the TTL
         client.get("/api/board")
-        warm_s = time.perf_counter() - start
         parsed = len(calls)
         with sqlite3.connect(big.web_db) as conn:  # un-hide the best run
             conn.execute("UPDATE submissions SET hidden = 0 WHERE run_dir = 'run-0000'")
         conn.close()
         shown = client.get("/api/board").json()
 
-    print(f"\n2,800 of 3,000 hidden: parsed {parsed}, cold {cold_s:.3f} s, warm {warm_s:.3f} s")
+    print(f"\n2,800 of 3,000 hidden: parsed {parsed}")
+    assert parsed == cold_parsed  # the warm rebuild parsed nothing
     assert parsed == RUNS - 2800  # 197 agents and the 3 baselines
     assert not {p.name for p in calls[:parsed]} & set(hidden)
-    assert cold["total"]["rows"] == 200 and warm_s < 0.5
+    assert cold["total"]["rows"] == 200
     assert shown["rows"][0]["name"] == "hidden-run-0000" and shown["rows"][0]["rank"] == 1
     assert [p.name for p in calls[parsed:]] == ["run-0000"]  # the next poll parsed it alone
 
