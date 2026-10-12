@@ -677,3 +677,24 @@ def test_market_requests_carry_the_run_trace(monkeypatch, capfire, tmp_path):
     assert not [k for s in spans for k in s["attributes"] if k.startswith(HEADER_KEYS)]
     exported = json.dumps(spans, default=str)
     assert not [secret for secret in (*SENTINELS.values(), TOKEN) if secret in exported]
+
+
+def test_the_runs_bundle_is_on_the_run_and_scored_log_but_not_baggage(traced_submission):
+    """bazaar.data_version lets a brief keep one window's runs. It is not baggage, so it never
+    rides to the Gateway or the market as a header, and child spans do not carry it."""
+    from bazaar_runner.bundle import DEMO_BUNDLE
+
+    _, spans, _ = traced_submission
+    (run,) = named(spans, "runner.run")
+    (scored,) = named(spans, "bazaar.run scored")
+    assert run["attributes"]["bazaar.data_version"] == DEMO_BUNDLE
+    assert scored["attributes"]["bazaar.data_version"] == DEMO_BUNDLE
+    trace = run["context"]["trace_id"]
+    children = [
+        s
+        for s in spans
+        if s["context"]["trace_id"] == trace
+        and s["name"] not in ("runner.run", "bazaar.run scored")
+    ]
+    assert len(children) > 50
+    assert not [s["name"] for s in children if "bazaar.data_version" in s["attributes"]]
