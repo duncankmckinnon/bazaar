@@ -70,7 +70,7 @@ body:has(> .adm) .board { padding-bottom: max(48px, calc(var(--px)*64)); }
 /* House (AI-generated) strategies carry a dim tag; attendee rows have none. */
 .ar-row .nm .ai { font: 400 max(min(12px, 1em), calc(var(--px)*13))/1 var(--pixel); color: var(--muted); border: 1px solid currentColor; padding: 1px 6px; margin-right: calc(var(--px)*8); vertical-align: .15em; }
 .ar-row .rt { text-align: right; white-space: nowrap; }
-.ar-row .sc.prov { opacity: .7; }
+.ar-row .sc.prov { opacity: .8; }  /* >= 4.8:1 on the plum ground, still muted */
 .ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 max(min(12px, 1em), calc(var(--px)*13))/1 var(--pixel); color: var(--ink); background: var(--lime); padding: .3em .5em; animation: blink .5s steps(1) 16; }
 .pending-head { margin: calc(var(--px)*6) 0 0; border-top: 1px solid var(--line); padding-top: calc(var(--px)*8); font: 400 max(12px, calc(var(--px)*14))/1 var(--pixel); color: var(--muted); }
 /* Sized to its rows (shrinking when they don't fit), so "+K more" sits right under the last one
@@ -124,8 +124,12 @@ body:has(> .adm) .board { padding-bottom: max(48px, calc(var(--px)*64)); }
 /* Tall windows (placeQR): the QR block sits at the bottom of the left column, sized to the room
    there, and the chart takes the whole right column. */
 .dash.qr-left { grid-template-rows: auto minmax(0,1fr) auto; grid-template-areas: "hd hd" "board chart" "tape tape"; }
-.board .side { flex: none; padding: calc(var(--px)*12) 0; }
+.board .side { flex: none; }
 .board .ar-qr { width: var(--qr); box-sizing: border-box; }
+/* A narrow left column: the CTA above the QR, each line across the column's width. */
+.dash.qr-stacked .board .side { flex-direction: column; align-items: stretch; gap: calc(var(--px)*16); }
+.dash.qr-stacked .board .side .ins { order: -1; flex: none; }
+.dash.qr-stacked .board .side .ar-qr { align-self: flex-start; }
 
 /* Bottom: the replay tape of each day's top movers. */
 .tape { grid-area: tape; margin: 0 calc(var(--px)*-40); display: flex; align-items: center; border-top: 1px solid var(--line); background: rgba(28,18,32,.7); overflow: hidden; white-space: nowrap; }
@@ -490,18 +494,21 @@ function chartSeries(rows, tab) {
   rows.filter(r => r.status === "scored" && r.kind !== "baseline" && Number.isInteger(members(r))).forEach(add);
   rows.filter(r => r.kind === "baseline" && r.status === "scored").forEach(add);
   rows.filter(r => r.status === "running" && onTab(r, tab)).forEach(add);
-  // The tab's top 3 lines take the podium colours; every other line (and running ones) is one
-  // plum-grey; baselines keep their own muted greys.
-  let rank = 0, base = 0;
+  // A line's colour and label come from its representative's rank in this tab's table (the
+  // server makes each group's best-ranked row its representative): 1st/2nd/3rd take the podium
+  // colours, every other line (and running ones) is one plum-grey; baselines keep their greys.
+  // Ranks 1-5 on one line make it "1st ... +4", and no line is 2nd or 3rd.
+  const tabPlace = (r) => (tab === "both" ? r.rank : r.lane_rank);
+  let base = 0;
   return picked.map(r => {
     const baseline = r.kind === "baseline", running = r.status === "running";
-    const place = baseline || running ? null : ++rank;
-    const podium = place !== null && place <= COLORS.length;
+    const place = baseline || running || !Number.isInteger(tabPlace(r)) ? null : tabPlace(r);
+    const podium = place !== null && place >= 1 && place <= COLORS.length;
     const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : podium ? COLORS[place - 1] : DIM;
     const pts = r.history.filter(p => p && Number.isFinite(p.day) && Number.isFinite(p.value)).map(p => ({ day: p.day, value: p.value }));
     const n = members(r);
     const more = Number.isInteger(n) && n > 1 ? ` +${n - 1}` : "";
-    return { id: String(r.id), name: String(r.name) + more, short: String(r.name), color, baseline, running, podium: podium ? place : null, pts };
+    return { id: String(r.id), name: String(r.name) + more, short: String(r.name), more, color, baseline, running, podium: podium ? place : null, pts };
   });
 }
 // chartSeries:end
@@ -561,8 +568,10 @@ function renderLabels(series, x, y, bottom, right) {
     const last = s.pts[s.pts.length - 1], lx = x(last.day) + 10;
     // Mono: about 0.6em a character; the name is cut to the room left of the SVG's edge.
     const room = Math.max(4, Math.floor((right - lx) / (size * 0.6)));
-    const full = s.baseline ? baseLabel(s.short) : `${ordinal(s.podium)} ${s.short}`;
-    return { s, x: lx, y: y(last.value), text: full.length > room ? full.slice(0, room - 1) + "…" : full };
+    // The name is cut, never the place or the "+N" it stands for.
+    const head = s.baseline ? "" : `${ordinal(s.podium)} `, tail = s.baseline ? "" : s.more;
+    const name = s.baseline ? baseLabel(s.short) : s.short, fit = Math.max(3, room - head.length - tail.length);
+    return { s, x: lx, y: y(last.value), text: head + (name.length > fit ? name.slice(0, fit - 1) + "…" : name) + tail };
   }).sort((a, b) => a.y - b.y);
   const gap = size * 1.25;
   for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + gap);
@@ -672,15 +681,23 @@ function renderHeader(data) {
 }
 
 // qrPlace:start
-// The QR block moves to the bottom of the left column only when the QR it gets there is bigger than
-// the strip's (300 px at 1920) and at least 220 px. The left size reserves the top 15, 3 pending
-// rows and a "+K more" line, and the CTA's share of the width (its text scales), capped at 420 px.
+// Three places for the QR block, the biggest QR wins: the strip under the chart (300 px at 1920),
+// or the bottom of the left column with the CTA beside the QR (the CTA takes its share of the
+// width) or stacked above it (the QR gets the column's width, less the CTA's two lines). A left
+// place needs a QR of 220 px or more, bigger than the strip's. The left column reserves the top
+// 15, 3 pending rows and a "+K more" line; the QR is capped at 420 px.
 const QR_MAX = 420, QR_MIN_LEFT = 220, CTA_SHARE = 0.4;
 function qrPlace(m) {
-  const free = m.board - m.above - 15 * 40 * m.px - 4 * 34 * m.px - m.note - 2 * 12 * m.px - 2 * 12 * m.px;
-  const room = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px - 2 * 12 * m.px));
+  // The left column's gaps (16 px) above and below the block.
+  const free = m.board - m.above - 15 * 40 * m.px - 4 * 34 * m.px - m.note - 2 * 16 * m.px;
+  const beside = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px));
+  // The stacked CTA's height, from .ar-coin and .side p at the column's width (cqi), plus the
+  // gaps between its lines and above the QR.
+  const ctaH = Math.min(48 * m.px, 0.074 * m.width) * 1.1 + 12 * m.px + Math.min(24 * m.px, 0.046 * m.width) * 1.3 + 16 * m.px;
+  const stacked = Math.floor(Math.min(free - ctaH, QR_MAX, m.width));
   const strip = 300 * m.px;
-  return room > strip && room >= QR_MIN_LEFT ? { left: true, size: room } : { left: false, size: strip };
+  const best = stacked > beside ? { mode: "stacked", size: stacked } : { mode: "beside", size: beside };
+  return best.size > strip && best.size >= QR_MIN_LEFT ? { left: true, ...best } : { left: false, mode: "strip", size: strip };
 }
 // qrPlace:end
 
@@ -691,13 +708,14 @@ function placeQR() {
   const b = board.getBoundingClientRect(), note = board.lastElementChild; // the footnote
   // The CTA's share of the block: its one-line text scales to whatever width it is given.
   const cta = Math.round(b.width * CTA_SHARE);
-  const { left, size } = narrow ? { left: false } : qrPlace({
+  const { left, mode, size } = narrow ? { left: false, mode: "strip" } : qrPlace({
     px, board: b.height, width: b.width, cta,
     above: list.getBoundingClientRect().top - b.top + $("pending-head").offsetHeight + 6 * px,
     note: note.offsetHeight,
   });
   const was = dash.classList.contains("qr-left");
   dash.style.setProperty("--qr", left ? `${size}px` : "");
+  dash.classList.toggle("qr-stacked", mode === "stacked");
   if (left !== was) {
     dash.classList.toggle("qr-left", left);
     if (left) board.insertBefore(side, note); else dash.insertBefore(side, $("tape"));

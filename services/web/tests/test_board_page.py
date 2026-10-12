@@ -278,22 +278,35 @@ def test_a_tall_window_moves_the_qr_block_under_the_table():
     assert "new ResizeObserver(placeQR).observe(board);" in script
 
 
-def test_the_qr_block_goes_left_only_when_its_qr_there_is_bigger_and_at_least_220():
+def test_the_biggest_qr_wins_strip_beside_or_stacked():
     def place(px, board, above, note, width, cta):
         m = {"px": px, "board": board, "above": above, "note": note, "width": width, "cta": cta}
         return run_tabs(f"qrPlace({json.dumps(m)})")
 
-    # left room = min(board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34)
-    #                 - note - two 12 px gaps - the frame's 12 px above and below,
-    #                 420, width - CTA - 36 px gap - the frame's 12 px each side); strip = 300 px
-    # 960x966 live: the CTA at its narrowest (120 px), so the long URL can't starve the QR.
-    assert place(0.5, 898, 60, 33, 450, 120) == {"left": True, "size": 300}
-    # The same window with the CTA as wide as the long URL on one line: the old bug.
-    assert place(0.5, 898, 60, 33, 450, 330) == {"left": False, "size": 150}
-    assert place(1, 945, 120, 20, 900, 250) == {"left": False, "size": 300}  # 1920x1080
-    assert place(1, 1214, 120, 20, 900, 250) == {"left": False, "size": 300}  # 290 < the strip's
-    assert place(0.75, 1338, 90, 17, 675, 180) == {"left": True, "size": 420}  # 1440x1440, cap
-    assert place(0.4, 900, 50, 20, 284, 60) == {"left": False, "size": 120}  # 200: under 220
+    # free = board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34) - note
+    #        - two 16 px gaps
+    # beside = min(free, 420, width - CTA - 36 px gap)
+    # stacked = min(free - CTA height, 420, width), the CTA height being
+    #           min(48 px, 7.4% width) x 1.1 + 12 px + min(24 px, 4.6% width) x 1.3 + 16 px
+    # A left place needs >= 220 px and more than the strip's 300 px (at 1920).
+    # 960x966 as measured live: free 347, beside 252, stacked 347 - 56 = 291.
+    assert place(0.5, 855, 88, 36, 450, 180) == {"left": True, "mode": "stacked", "size": 291}
+    # 1920x1080: 37 px free, so the strip, unchanged.
+    assert place(1, 945, 120, 20, 900, 360) == {"left": False, "mode": "strip", "size": 300}
+    # 1440x1440: beside 378, stacked capped at 420.
+    assert place(0.75, 1338, 90, 17, 675, 270) == {"left": True, "mode": "stacked", "size": 420}
+    # Wide and short: beside 400 beats stacked 400 - 112 = 288.
+    assert place(1, 1308, 120, 20, 900, 360) == {"left": True, "mode": "beside", "size": 400}
+    # 292 left: under the strip's 300, so the strip.
+    assert place(1, 1200, 120, 20, 900, 360) == {"left": False, "mode": "strip", "size": 300}
+    # Narrow: stacked is 200, bigger than the strip's 120 but under 220.
+    assert place(0.4, 900, 50, 20, 200, 60) == {"left": False, "mode": "strip", "size": 120}
+
+
+def test_the_stacked_cta_sits_above_the_qr():
+    assert ".dash.qr-stacked .board .side { flex-direction: column;" in BOARD
+    assert ".dash.qr-stacked .board .side .ins { order: -1; flex: none; }" in BOARD
+    assert 'dash.classList.toggle("qr-stacked", mode === "stacked");' in BOARD
 
 
 def test_placement_reruns_on_render_and_when_the_fonts_load():
@@ -441,6 +454,71 @@ def test_baselines_are_listed_on_both_only():
     assert ["base", 2] in view_of(rows, "both")[0]
     for tab in ("human", "factory"):
         assert "base" not in {row_id for row_id, _ in view_of(rows, tab)[0]}
+
+
+def lines_of(rows, tab):
+    """chartSeries' lines on a tab as (id, podium place, colour, the label's "+N")."""
+    return run_tabs(
+        f"chartSeries({json.dumps(rows)}, {json.dumps(tab)})"
+        ".map(function (s) { return [s.id, s.podium, s.color, s.more]; })"
+    )
+
+
+def scored_row(i, rank, *, lane="house", lane_rank=None, tabs=None):
+    path = [{"day": d, "value": 10000 + d * (100 - rank)} for d in range(1, 11)]
+    return {
+        "id": i, "name": f"name-{i}", "lane": lane, "kind": "agent", "status": "scored",
+        "rank": rank, "lane_rank": lane_rank, "chart_tabs": tabs, "history": path,
+    }  # fmt: skip
+
+
+LIME, CYAN, MAGENTA, GREY = "#d0ff71", "#00ffeb", "#e520e9", "#8d7a96"
+
+
+def test_line_colours_and_labels_follow_the_table_rank_not_the_line_order():
+    # Ranks 1-2 share a line (a represents 2); b is the table's 3rd but the 2nd line.
+    rows = [
+        scored_row("a", 1, lane_rank=1, tabs={"both": 2, "factory": 2}),
+        scored_row("a2", 2, lane_rank=2),
+        scored_row("b", 3, lane_rank=3, tabs={"both": 1, "factory": 1}),
+        scored_row("c", 4, lane_rank=4, tabs={"both": 1, "factory": 1}),
+    ]
+
+    assert lines_of(rows, "both") == [
+        ["a", 1, LIME, " +1"], ["b", 3, MAGENTA, ""], ["c", None, GREY, ""],
+    ]  # fmt: skip
+    script = BOARD.split("<script>", 1)[1]
+    assert (
+        'const head = s.baseline ? "" : `${ordinal(s.podium)} `, tail = s.baseline ? "" : s.more;'
+        in script
+    )
+
+
+def test_ranks_1_to_5_on_one_line_leave_no_2nd_or_3rd_colour():
+    rows = [scored_row("top", 1, tabs={"both": 5})]
+    rows += [scored_row(f"t{r}", r) for r in range(2, 6)]
+    rows += [scored_row("six", 6, tabs={"both": 1}), scored_row("seven", 7, tabs={"both": 1})]
+
+    assert lines_of(rows, "both") == [
+        ["top", 1, LIME, " +4"], ["six", None, GREY, ""], ["seven", None, GREY, ""],
+    ]  # fmt: skip
+
+
+def test_a_lane_tab_colours_by_its_own_rank():
+    # A human row is 1st overall; on Agent factory the house rows are 1st and 2nd by lane_rank.
+    rows = [
+        scored_row("h", 1, lane="human", lane_rank=1, tabs={"both": 1, "human": 1}),
+        scored_row("f1", 2, lane_rank=1, tabs={"both": 1, "factory": 1}),
+        scored_row("f2", 3, lane_rank=2, tabs={"both": 1, "factory": 1}),
+    ]
+
+    assert lines_of(rows, "both") == [
+        ["h", 1, LIME, ""],
+        ["f1", 2, CYAN, ""],
+        ["f2", 3, MAGENTA, ""],
+    ]
+    assert lines_of(rows, "factory") == [["f1", 1, LIME, ""], ["f2", 2, CYAN, ""]]
+    assert lines_of(rows, "human") == [["h", 1, LIME, ""]]
 
 
 def test_each_tab_charts_its_own_lines_and_every_baseline():
