@@ -513,7 +513,8 @@ function renderChart(data) {
     const last = s.pts[s.pts.length - 1];
     svgEl("circle", { class: "tip", cx: x(last.day), cy: y(last.value), r: s.running ? 5 : 3.5, fill: s.color }, g);
   }
-  svgEl("line", { class: "cursor", x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, id: "cursor" }, svg);
+  // Hidden until hovered: with the SVG's overflow visible, a parked cursor would show.
+  svgEl("line", { class: "cursor", x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, id: "cursor", visibility: "hidden" }, svg);
   applyFocus();
 }
 
@@ -541,6 +542,7 @@ function showTip(event) {
   const cursor = document.getElementById("cursor");
   if (!best) { tip.hidden = true; return; }
   cursor.setAttribute("x1", geom.x(day)); cursor.setAttribute("x2", geom.x(day));
+  cursor.setAttribute("visibility", "visible");
   focusId = best.s.id; applyFocus();
   tip.replaceChildren();
   const b = document.createElement("b");
@@ -553,7 +555,7 @@ function showTip(event) {
   tip.style.top = `${Math.max(0, (geom.y(best.p.value) / geom.H) * box.height - tip.offsetHeight - 10)}px`;
 }
 plot.addEventListener("mousemove", showTip);
-plot.addEventListener("mouseleave", () => { tip.hidden = true; const c = document.getElementById("cursor"); if (c) { c.setAttribute("x1", -10); c.setAttribute("x2", -10); } setFocus(null); });
+plot.addEventListener("mouseleave", () => { tip.hidden = true; const c = document.getElementById("cursor"); if (c) { c.setAttribute("x1", -10); c.setAttribute("x2", -10); c.setAttribute("visibility", "hidden"); } setFocus(null); });
 addEventListener("resize", () => { if (lastData) renderChart(lastData); });
 
 /* ---------- the replay tape: each day's top movers (bottom) ---------- */

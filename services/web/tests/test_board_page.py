@@ -273,6 +273,13 @@ def test_the_chart_has_no_legend():
     assert "legend" not in BOARD.lower()
 
 
+def test_the_hover_cursor_is_hidden_until_hovered():
+    script = BOARD.split("<script>", 1)[1]
+    assert 'id: "cursor", visibility: "hidden" }, svg);' in script  # parked at x=-10, unseen
+    assert script.count('cursor.setAttribute("visibility", "visible");') == 1  # on hover only
+    assert 'c.setAttribute("visibility", "hidden"); }' in script  # and hidden on leave
+
+
 def run_tabs(expression):
     """Evaluate an expression in node with the page's tab and chart helpers loaded."""
     node = shutil.which("node")
