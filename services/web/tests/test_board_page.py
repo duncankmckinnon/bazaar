@@ -178,7 +178,7 @@ def test_board_defines_the_helpers_its_functions_call():
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
         "renderBoard", "renderTape", "showTip", "applyFocus", "loadTickers", "tabFromHash",
         "onTab", "tabView", "factoryText", "renderTabs", "makeRow", "fillRow", "chartSeries",
-        "fitPending", "qrFit", "placeQR",
+        "fitPending", "qrPlace", "placeQR",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -271,18 +271,30 @@ def test_a_tall_window_moves_the_qr_block_under_the_table():
     assert "new ResizeObserver(placeQR).observe(board);" in script
 
 
-def test_the_qr_block_goes_left_only_when_a_large_qr_and_3_pending_rows_fit():
-    def fit(px, board, above, note, width, cta):
+def test_the_qr_block_goes_left_only_when_its_qr_there_is_bigger_and_at_least_220():
+    def place(px, board, above, note, width, cta):
         m = {"px": px, "board": board, "above": above, "note": note, "width": width, "cta": cta}
-        return run_tabs(f"qrFit({json.dumps(m)})")
+        return run_tabs(f"qrPlace({json.dumps(m)})")
 
-    # free = board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34)
-    #        - note - two 12 px gaps - the frame's 12 px above and below
-    assert fit(1, 945, 120, 20, 900, 500) == 0  # 1920x1080: 21 px free, the strip stays
-    assert fit(1, 1100, 120, 20, 900, 300) == 0  # 176 px free: smaller than the strip's 300
-    assert fit(1, 1224, 120, 20, 900, 300) == 300  # exactly the strip's size
-    assert fit(1, 1500, 120, 20, 900, 300) == 420  # capped
-    assert fit(0.5, 900, 60, 33, 450, 160) == 260  # 960 wide: the column width limits it
+    # left room = min(board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34)
+    #                 - note - two 12 px gaps - the frame's 12 px above and below,
+    #                 420, width - CTA - 36 px gap - the frame's 12 px each side); strip = 300 px
+    # 960x966 live: the CTA at its narrowest (120 px), so the long URL can't starve the QR.
+    assert place(0.5, 898, 60, 33, 450, 120) == {"left": True, "size": 300}
+    # The same window with the CTA as wide as the long URL on one line: the old bug.
+    assert place(0.5, 898, 60, 33, 450, 330) == {"left": False, "size": 150}
+    assert place(1, 945, 120, 20, 900, 250) == {"left": False, "size": 300}  # 1920x1080
+    assert place(1, 1214, 120, 20, 900, 250) == {"left": False, "size": 300}  # 290 < the strip's
+    assert place(0.75, 1338, 90, 17, 675, 180) == {"left": True, "size": 420}  # 1440x1440, cap
+    assert place(0.4, 900, 50, 20, 284, 60) == {"left": False, "size": 120}  # 200: under 220
+
+
+def test_placement_reruns_on_render_and_when_the_fonts_load():
+    script = BOARD.split("<script>", 1)[1]
+    assert "new ResizeObserver(placeQR).observe(board);" in script
+    assert "document.fonts.ready.then(placeQR);" in script
+    assert "  renderBoard(data);\n  placeQR();" in script
+    assert 'ins.style.width = "min-content";' in script  # the CTA at its narrowest
 
 
 def test_a_running_rows_day_text_widens_its_column_instead_of_clipping():
@@ -351,7 +363,7 @@ def run_tabs(expression):
     if node is None:
         pytest.skip("node is not installed")
     sources = re.findall(r"^const (?:PALETTE|BASELINE_COLORS) = .*$", BOARD, re.MULTILINE)
-    for marker in ("tabs", "chartSeries", "qrFit"):
+    for marker in ("tabs", "chartSeries", "qrPlace"):
         sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", BOARD, re.DOTALL)
     script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
