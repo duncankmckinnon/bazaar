@@ -30,11 +30,14 @@ UNIVERSE = [
 ALLOWED = {"KO", "MSFT", "BRK.B", "SPY"}
 
 
-def bundle_body(universe=UNIVERSE):
+SESSIONS = ["2026-09-28", "2026-10-09"]
+
+
+def bundle_body(universe=UNIVERSE, sessions=SESSIONS):
     body = {
         "bundle_id": "demo-bundle-v2", "bars": "sp-bars-v2", "news": "n", "filings": "f",
         "start_date": "2026-09-28", "end_date": "2026-10-09",
-        "sessions": ["2026-09-28", "2026-10-09"], "incomplete_sessions": [],
+        "sessions": sessions, "incomplete_sessions": [],
         "universe_name": "S&P 500", "benchmark": "SPY",
     }  # fmt: skip
     return body | ({"universe": universe} if universe is not None else {})
@@ -306,6 +309,43 @@ def test_no_call_while_enough_proposals_wait(lane, helpers, monkeypatch):
 
     assert state["proposals_waiting"] == 2  # as many as the slots: enough, so no call
     assert fake.calls == []
+
+
+def calls_with(lane, helpers, monkeypatch, body):
+    """{kind: kwargs} of the lane's first brief() and propose() against a route answering body."""
+    monkeypatch.setattr("bazaar_web.app.BundleSource", market(body))
+    fake = helpers.FakeStrategist()
+    monkeypatch.setattr(bazaar_web.worker, "import_strategist", lambda: fake)
+    runner = AutoRunner(helpers)
+    with TestClient(create_app(lane, runner)) as client:
+        helpers.wait_for(lambda: len(runner.started) >= 1)
+        client.post("/api/admin/house/pause", headers=ADMIN)
+    return {kind: kwargs for kind, kwargs in reversed(fake.calls)}
+
+
+def test_propose_gets_the_window_length_from_the_bundle_sessions(lane, helpers, monkeypatch):
+    seven = [f"2026-09-{d}" for d in (28, 29, 30)] + [f"2026-10-0{d}" for d in (1, 2, 5, 6)]
+    kwargs = calls_with(lane, helpers, monkeypatch, bundle_body(sessions=seven))["propose"]
+    assert kwargs["trading_days"] == 7  # len(sessions), never a fixed 10
+
+
+def test_a_bundle_without_sessions_sends_no_trading_days(lane, helpers, monkeypatch):
+    kwargs = calls_with(lane, helpers, monkeypatch, bundle_body(sessions=[]))["propose"]
+    assert "trading_days" not in kwargs  # the strategist's own default, not 0
+
+
+def test_every_kwarg_the_lane_passes_fits_the_real_propose(lane, helpers, monkeypatch):
+    """Runs where bazaar_agent.strategist is installed (the integration); skips before it."""
+    import inspect
+
+    strategist = pytest.importorskip("bazaar_agent.strategist")
+    calls = calls_with(lane, helpers, monkeypatch, bundle_body())
+    assert calls["propose"]["trading_days"] == len(SESSIONS)
+    # TypeError on any name the real calls don't take. environment is the fake's own record of
+    # its default, so only what the lane passed is bound.
+    inspect.signature(strategist.propose).bind(**calls["propose"])
+    passed = {k: v for k, v in calls["brief"].items() if k != "environment"}
+    inspect.signature(strategist.brief).bind(**passed)
 
 
 class Boom(Exception):

@@ -286,6 +286,9 @@ class Worker:
                 data_version=self.settings.data_bundle,
             )
             names = list(brief.names)  # the brief is otherwise opaque here
+            # The window's length, from the bundle route's sessions; left out (the strategist's
+            # default) when the route lists none.
+            window = {"trading_days": bundle.days} if bundle.days > 0 else {}
             proposals = strategist.propose(
                 brief=brief,
                 k=PROPOSE_K,
@@ -294,6 +297,7 @@ class Worker:
                 existing_instructions=existing,
                 universe=universe_of(bundle),
                 benchmark=bundle.benchmark,
+                **window,
             )
             allowed = {symbol for symbol, _, _ in bundle.members} | {bundle.benchmark or ""}
             outcome = self.store.add_proposals(

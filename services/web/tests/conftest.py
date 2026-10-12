@@ -262,6 +262,9 @@ class FakeBrief:
     names: list[str]
 
 
+OMITTED = object()  # an argument the caller left out
+
+
 class FakeStrategist:
     """bazaar_agent.strategist's brief() and propose(), with the agreed F1/F2 signatures.
 
@@ -294,7 +297,7 @@ class FakeStrategist:
 
     def propose(
         self, *, brief, k, generation, instructions_by_name, existing_instructions, universe,
-        benchmark,
+        benchmark, trading_days=OMITTED,
     ):  # fmt: skip
         with self.lock:
             self.calls.append(("propose", {
@@ -302,6 +305,7 @@ class FakeStrategist:
                 "instructions_by_name": instructions_by_name,
                 "existing_instructions": existing_instructions, "universe": universe,
                 "benchmark": benchmark,
+                **({} if trading_days is OMITTED else {"trading_days": trading_days}),
             }))  # fmt: skip
             if self.batches:
                 batch = list(self.batches.pop(0))

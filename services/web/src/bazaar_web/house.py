@@ -46,6 +46,7 @@ class Strategist(Protocol):
     def propose(
         self, *, brief: Any, k: int, generation: int, instructions_by_name: dict[str, str],
         existing_instructions: list[str], universe: list[dict[str, Any]], benchmark: str | None,
+        trading_days: int | None = ...,
     ) -> list[Proposal]: ...  # fmt: skip
 
 
