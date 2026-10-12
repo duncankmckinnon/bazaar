@@ -327,6 +327,16 @@ class Store:
         existing = sorted({normalize(row["instructions"]) for row in texts})
         return frozenset(row["name"] for row in excluded), existing, (highest or 0) + 1
 
+    def house_names(self) -> frozenset[str]:
+        """Names of every house row, any status: lane 'house', or the reserved handle 'house'
+        (rows older than the lane column were migrated as 'human'). Attendees can't take the
+        handle, so no attendee name is ever here, whatever it looks like."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT name FROM submissions WHERE lane = 'house' OR handle = 'house'"
+            ).fetchall()
+        return frozenset(row["name"] for row in rows)
+
     def instructions_for(self, names: Iterable[str]) -> dict[str, str]:
         """{name: instructions} for the visible submissions among names (names are unique)."""
         names = list(names)

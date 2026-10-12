@@ -226,6 +226,7 @@ def test_the_lane_asks_with_the_agreed_arguments_and_runs_the_proposals(lane, he
     assert brief == {
         "bundle_id": "demo-bundle-v2", "since": SINCE, "environment": "production",
         "exclude_names": frozenset({"smoke", "hidden-dup"}), "data_version": "demo-bundle-v2",
+        "house_names": frozenset(),  # no house row yet
     }  # fmt: skip
     assert propose["k"] == 6 and propose["generation"] == 1
     # Only brief names, and only those with a visible row (the baseline has none here).
@@ -321,6 +322,44 @@ def calls_with(lane, helpers, monkeypatch, body):
         helpers.wait_for(lambda: len(runner.started) >= 1)
         client.post("/api/admin/house/pause", headers=ADMIN)
     return {kind: kwargs for kind, kwargs in reversed(fake.calls)}
+
+
+def house_and_attendees(store, helpers):
+    """A factory house row, a catalog-era house row from before the lane column (handle
+    'house', lane migrated as 'human'), and attendees whose names look like house names."""
+    batch = [proposal(helpers, "g1-factory", "Put $1,000 into KO on day 1 and hold it.")]
+    store.add_proposals(batch, generation=1, allowed=ALLOWED, parents=[])
+    store.create_house(None)
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
+            "created_at, lane) VALUES ('old', 'house-ko-hold-7', 'house', 'Buy KO.', 'house', "
+            "'scored', 't', 'human')"
+        )
+    conn.close()
+    for name, handle in (("house-x", None), ("g1-x", None), ("momentum-2", None),
+                         ("fan-bot", "housefan")):  # fmt: skip
+        store.create(
+            name=name, handle=handle, instructions=f"Attendee {name}: buy MSFT on day 1.",
+            ip_hash="h", max_queue=30, max_per_day=150, max_per_ip_hour=50,
+        )  # fmt: skip
+    return {"g1-factory", "house-ko-hold-7"}
+
+
+def test_house_names_are_house_rows_only(tmp_path, helpers):
+    store = Store(tmp_path / "web.sqlite3")
+    expected = house_and_attendees(store, helpers)
+
+    names = store.house_names()
+
+    assert isinstance(names, frozenset) and names == expected
+    assert not names & {"house-x", "g1-x", "momentum-2", "fan-bot"}
+
+
+def test_brief_gets_exactly_the_house_names(lane, helpers, monkeypatch):
+    expected = house_and_attendees(Store(lane.web_db), helpers)
+    calls = calls_with(lane, helpers, monkeypatch, bundle_body())
+    assert calls["brief"]["house_names"] == expected
 
 
 def test_propose_gets_the_window_length_from_the_bundle_sessions(lane, helpers, monkeypatch):

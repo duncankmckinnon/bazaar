@@ -41,6 +41,7 @@ class Strategist(Protocol):
     def brief(
         self, *, bundle_id: str, since: Any, environment: str = ..., top: int = ...,
         bottom: int = ..., exclude_names: frozenset[str] = ..., data_version: str | None = ...,
+        house_names: frozenset[str] | None = ...,
     ) -> Any: ...  # fmt: skip
 
     def propose(

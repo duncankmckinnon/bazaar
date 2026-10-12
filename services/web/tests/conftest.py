@@ -284,12 +284,13 @@ class FakeStrategist:
 
     def brief(
         self, *, bundle_id, since, environment="production", top=10, bottom=5,
-        exclude_names=frozenset(), data_version=None,
+        exclude_names=frozenset(), data_version=None, house_names=OMITTED,
     ):  # fmt: skip
         with self.lock:
             self.calls.append(("brief", {
                 "bundle_id": bundle_id, "since": since, "environment": environment,
                 "exclude_names": exclude_names, "data_version": data_version,
+                **({} if house_names is OMITTED else {"house_names": house_names}),
             }))  # fmt: skip
         if self.fail is not None:
             raise self.fail

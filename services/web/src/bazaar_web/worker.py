@@ -284,6 +284,8 @@ class Worker:
                 since=self.settings.house_since,
                 exclude_names=exclude,
                 data_version=self.settings.data_bundle,
+                # Only these names' trailing -<n> copies are grouped as one strategy.
+                house_names=self.store.house_names(),
             )
             names = list(brief.names)  # the brief is otherwise opaque here
             # The window's length, from the bundle route's sessions; left out (the strategist's
