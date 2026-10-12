@@ -273,6 +273,26 @@ def test_the_chart_has_no_legend():
     assert "legend" not in BOARD.lower()
 
 
+def test_the_running_day_text_is_steady_and_a_marker_blinks():
+    # 'day d/10' sits in .rt; a blinking .rt hid it half of each second (and from photos).
+    rules = dict(re.findall(r"^\s*([^{}@/][^{}]*?)\s*\{([^}]*)\}", BOARD, re.MULTILINE))
+    data_text = [sel for sel in rules if sel.endswith((".rt", ".ar-coin"))]
+    assert data_text, "the day text's rules"
+    for selector in data_text:
+        assert "animation" not in rules[selector], selector
+    marker = rules[".pending .ar-row.st-running .rt::before"]
+    assert "animation: blink 1s steps(1) infinite" in marker and "var(--aqua)" in marker
+    reduced = BOARD.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+    assert ".pending .ar-row.st-running .rt::before" in reduced.split("}", 1)[0]
+
+
+def test_the_hover_cursor_is_hidden_until_hovered():
+    script = BOARD.split("<script>", 1)[1]
+    assert 'id: "cursor", visibility: "hidden" }, svg);' in script  # parked at x=-10, unseen
+    assert script.count('cursor.setAttribute("visibility", "visible");') == 1  # on hover only
+    assert 'c.setAttribute("visibility", "hidden"); }' in script  # and hidden on leave
+
+
 def run_tabs(expression):
     """Evaluate an expression in node with the page's tab and chart helpers loaded."""
     node = shutil.which("node")
