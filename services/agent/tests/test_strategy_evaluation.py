@@ -366,3 +366,25 @@ async def test_the_judges_client_is_closed_after_its_call(monkeypatch, capfire):
     await invoke(model)
     await wait_for_evaluations()
     assert len(clients) == 1 and clients[0].is_closed
+
+
+async def test_a_failing_judge_is_logged_with_its_type_and_never_its_message(
+    monkeypatch, capfire, caplog
+):
+    from bazaar_agent import strategy_evaluation
+
+    def broken(http_client=None):
+        raise RuntimeError("judge upstream said sk-not-a-real-secret-123")
+
+    route_judge(monkeypatch, lambda request: httpx2.Response(200, json=verdict(0.9)))
+    monkeypatch.setattr(strategy_evaluation, "judge_model", broken)
+    with caplog.at_level("WARNING", logger="bazaar_agent.strategy_evaluation"):
+        result, _ = await invoke(TestModel(call_tools=[], custom_output_args={"action": "hold"}))
+        await wait_for_evaluations()
+    assert result.error is None and result.decision.action == "hold"
+    (record,) = [r for r in caplog.records if r.name == "bazaar_agent.strategy_evaluation"]
+    assert record.levelname == "WARNING"
+    assert record.getMessage() == (
+        "strategy judge: 1 evaluator failure(s): StrategyAdherence (RuntimeError)"
+    )
+    assert "sk-not-a-real-secret" not in caplog.text
