@@ -198,7 +198,9 @@ def drain_background_work(monkeypatch):
     yield
     for worker in workers:
         release(worker.run_submission)
-        pools = ("pool", "house_pool", "propose_pool")
+        if hasattr(worker, "dataset"):
+            worker.dataset.stop()
+        pools = ("pool", "house_pool", "propose_pool", "dataset_pool")
         for pool in (getattr(worker, name, None) for name in pools):
             if pool is not None:
                 pool.shutdown(wait=True, cancel_futures=True)
@@ -212,6 +214,12 @@ def no_global_telemetry_setup(monkeypatch):
     """The lifespan configures Logfire for real; tests keep capfire's (or no) configuration."""
     monkeypatch.setattr("bazaar_web.telemetry.configure", lambda: None)
     monkeypatch.setenv("LOGFIRE_IGNORE_NO_CONFIG", "1")
+
+
+@pytest.fixture(autouse=True)
+def no_dataset_key(monkeypatch):
+    """No test pushes to the real Logfire dataset: a key in the shell never reaches a test."""
+    monkeypatch.delenv("LOGFIRE_API_WRITE_KEY", raising=False)
 
 
 @pytest.fixture(autouse=True)
