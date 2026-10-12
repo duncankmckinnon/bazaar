@@ -639,28 +639,36 @@ function renderHeader(data) {
   $("sub-c").textContent = factoryText(data.factory);
 }
 
-// qrFit:start
-// The QR block moves to the bottom of the left column when that column has room under the top 15
-// plus 3 pending rows and a "+K more" line for a QR at least as large as the strip's (300 px at 1920), capped at 420 px.
-const QR_MAX = 420;
-function qrFit(m) {
+// qrPlace:start
+// The QR block moves to the bottom of the left column only when the QR it gets there is bigger than
+// the strip's (300 px at 1920) and at least 220 px. The left size reserves the top 15, 3 pending
+// rows and a "+K more" line, and the CTA at its narrowest (the URL wraps), capped at 420 px.
+const QR_MAX = 420, QR_MIN_LEFT = 220;
+function qrPlace(m) {
   const free = m.board - m.above - 15 * 40 * m.px - 4 * 34 * m.px - m.note - 2 * 12 * m.px - 2 * 12 * m.px;
-  const size = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px - 2 * 12 * m.px));
-  return size >= 300 * m.px ? size : 0;
+  const room = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px - 2 * 12 * m.px));
+  const strip = 300 * m.px;
+  return room > strip && room >= QR_MIN_LEFT ? { left: true, size: room } : { left: false, size: strip };
 }
-// qrFit:end
+// qrPlace:end
 
 const dash = document.querySelector(".dash"), board = document.querySelector(".board"), side = document.querySelector(".side");
 function placeQR() {
   const narrow = matchMedia("(max-width: 760px)").matches;
   const px = parseFloat(getComputedStyle(document.querySelector(".ar-cols")).columnGap) / 12;
   const b = board.getBoundingClientRect(), note = board.lastElementChild; // the footnote
-  const size = narrow ? 0 : qrFit({
-    px, board: b.height, width: b.width, cta: document.querySelector(".ins").scrollWidth,
+  // The CTA's narrowest width: its scrollWidth is the long submit URL on one line, which once
+  // left no room for the QR.
+  const ins = document.querySelector(".ins");
+  ins.style.width = "min-content";
+  const cta = ins.offsetWidth;
+  ins.style.width = "";
+  const { left, size } = narrow ? { left: false } : qrPlace({
+    px, board: b.height, width: b.width, cta,
     above: list.getBoundingClientRect().top - b.top + $("pending-head").offsetHeight + 6 * px,
     note: note.offsetHeight,
   });
-  const left = size > 0, was = dash.classList.contains("qr-left");
+  const was = dash.classList.contains("qr-left");
   dash.style.setProperty("--qr", left ? `${size}px` : "");
   if (left !== was) {
     dash.classList.toggle("qr-left", left);
@@ -670,6 +678,7 @@ function placeQR() {
   fitPending();
 }
 new ResizeObserver(placeQR).observe(board);
+document.fonts.ready.then(placeQR);
 new ResizeObserver(fitPending).observe(pendingList);
 
 /* ---------- polling ---------- */
@@ -677,7 +686,7 @@ function render(data) {
   lastData = data;
   renderHeader(data);
   renderBoard(data);
-  fitPending();
+  placeQR();
   renderChart(data);
 }
 
