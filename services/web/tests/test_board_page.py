@@ -130,25 +130,27 @@ def test_board_escapes_server_text():
                   "s.name", "q.symbol", "day.date"):  # fmt: skip
         assert f"${{{field}}}" not in script
     assert 'innerHTML = \'<span class="rk">' in script  # static row skeleton only
-    assert "DAY ${Number(r.day) || 0}/${DAYS}" in script  # numeric coercion, via textContent
+    assert "day ${Number(r.day) || 0}/${DAYS}" in script  # numeric coercion, via textContent
 
 
-def test_board_uses_the_arcade_design_on_the_podium_background():
-    assert "HIGH SCORES" in BOARD
-    assert "<h1>TRADING AGENT FACTORY</h1>" in BOARD and "DASHBOARD" not in BOARD
-    assert ".hd h1 { margin: 0; white-space: nowrap;" in BOARD  # one line at any width
-    assert "PORTFOLIO VALUE BY TRADING DAY" in BOARD
-    assert "INSERT POLICY" in BOARD and "SCAN TO PLAY" in BOARD
+def test_board_uses_the_v11_prototype_design():
+    assert "<h1>Trading agent factory</h1>" in BOARD
+    assert ".hd h1 { margin: 0; white-space: nowrap;" in BOARD  # one line at conference widths
+    assert "<h2>Portfolio value by trading day</h2>" in BOARD
+    assert '<div class="ar-coin">Insert policy</div>' in BOARD and "Scan to play" in BOARD
     assert (
-        "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
-        "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, "
-        "rgba(255,101,80,.16) 0%, rgba(255,101,80,0) 60%), #36182D;"
+        '<div class="ar-cols"><span>Rank</span><span>Score</span><span>Policy</span>'
+        "<span>Return</span></div>"
+    ) in BOARD
+    assert (
+        "background: radial-gradient(90% 70% at 40% 10%, #5a1d5e 0%, #2a1230 55%, #1c1220 100%);"
     ) in BOARD
     stylesheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', BOARD)
     assert len(stylesheets) == 1
     assert stylesheets[0].startswith("https://fonts.googleapis.com/css2?")
-    assert "family=Press+Start+2P" in stylesheets[0]
-    assert "const PHONE_ROWS = 10;" in BOARD and "selectRows(all, capacity)" in BOARD
+    assert "family=Silkscreen" in stylesheets[0] and "Press+Start" not in BOARD
+    assert '<img class="logo" src="/static/brand/pydantic-name-dark.svg" alt="Pydantic"' in BOARD
+    assert 'const COLORS = ["#d0ff71", "#00ffeb", "#e520e9"];' in BOARD  # 1st, 2nd, 3rd
 
 
 def test_board_respects_reduced_motion():
@@ -174,7 +176,8 @@ def test_board_defines_the_helpers_its_functions_call():
         assert f"const {helper} = " in script, helper
     for function in (
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
-        "renderBoard", "selectRows", "measureCapacity", "renderTape", "showTip", "applyFocus", "loadTickers",
+        "renderBoard", "renderTape", "showTip", "applyFocus", "loadTickers", "tabFromHash",
+        "onTab", "tabView", "factoryText", "renderTabs", "makeRow", "fillRow", "chartSeries",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -186,27 +189,21 @@ def test_chart_and_tape_build_data_with_dom_apis_not_html():
     assert "document.createElementNS(SVG_NS, tag)" in script
     assert "el.setAttribute(k, String(v))" in script
     assert "b.textContent = best.s.name;" in script  # tooltip title
-    assert "li.appendChild(document.createTextNode(s.name));" in script  # legend
     assert "b.textContent = String(q.symbol);" in script  # tape
-    # The only innerHTML writes are static skeletons (row and probe row), the logo, the QR and
-    # the empty state.
+    assert "empty.textContent = EMPTY[tab];" in script  # the empty state
+    # The only innerHTML writes are the static row skeleton, the QR and clearing the list.
     writes = re.findall(r"innerHTML = ([^;]+);", script)
-    assert sorted(writes) == sorted(
-        [
-            "LOGO_SVG",
-            'qrSVG(SUBMIT_URL, "#36182D", "#E320E7")',
-            "'<li class=\"empty\">Scan to submit the first strategy</li>'",
-            '""',
-            '\'<span class="rk"></span><span class="sc num"></span><span class="nm"></span><span class="rt num"></span>\'',
-            '\'<span class="rk">1ST</span><span class="sc num">$10,000</span><span class="nm">PROBE</span><span class="rt num">+0.00%</span>\'',
-        ]
+    skeleton = (
+        '\'<span class="rk"></span><span class="sc num"></span><span class="nm"></span>'
+        '<span class="rt num"></span>\''
     )
+    assert sorted(writes) == sorted(['qrSVG(SUBMIT_URL, "#36182D", "#E320E7")', '""', skeleton])
 
 
 def test_chart_draws_the_start_reference_and_replay_label():
-    assert 'rt.textContent = money(start) + " START";' in BOARD
+    assert 'rt.textContent = money(start) + " start";' in BOARD
     assert "stroke-dasharray: 6 6" in BOARD  # dashed $10,000 reference
-    assert "FEB 2-13" not in BOARD.replace('"FEB 2-13 2026" within a month', "")  # derived
+    assert "Feb 2" not in BOARD.replace('"Feb 2–13 2026" within a month', "")  # derived
     assert 'fetch("/api/tickers"' in BOARD
 
 
@@ -225,9 +222,9 @@ def run_js(function, call):
 @pytest.mark.parametrize(
     ("start", "end", "label"),
     [
-        ("2026-02-02", "2026-02-13", "FEB 2-13 2026"),
-        ("2026-09-28", "2026-10-09", "SEP 28 - OCT 9 2026"),
-        ("2025-12-29", "2026-01-09", "DEC 29 2025 - JAN 9 2026"),
+        ("2026-02-02", "2026-02-13", "Feb 2–13 2026"),
+        ("2026-09-28", "2026-10-09", "Sep 28 – Oct 9 2026"),
+        ("2025-12-29", "2026-01-09", "Dec 29 2025 – Jan 9 2026"),
         (None, None, None),
         ("2026-02-02", None, None),
         ("2026-13-01", "2026-13-05", None),
@@ -244,10 +241,16 @@ def test_the_header_and_tape_take_the_window_from_the_data():
     assert "tapeWindow = data.window ? windowLabel(data.window.start, data.window.end)" in script
     assert "if (!tapeWindow) tapeDays = [];" in script  # no window, no tape
     assert '$("sub-a").textContent' in script and '$("sub-b").textContent' in script
+    assert '$("sub-c").textContent = factoryText(data.factory);' in script
 
 
 def test_the_conference_layout_puts_the_qr_strip_under_the_chart():
-    assert '"hd hd hd" "board chart chart" "board side side" "tape tape tape"' in BOARD
+    assert '"hd hd" "board chart" "board side" "tape tape"' in BOARD
+    # The prototype's 900 px table column and 330 px QR strip; the chart takes the rest.
+    assert (
+        "grid-template-columns: calc(var(--px)*900) minmax(0,1fr); grid-template-rows: auto "
+        "minmax(0,1fr) calc(var(--px)*330) auto;"
+    ) in BOARD
     body = BOARD.split("<main", 1)[1]
     assert body.index('class="chart"') < body.index('class="side"')
 
@@ -266,56 +269,130 @@ def test_the_qr_keeps_a_four_module_quiet_zone_and_error_correction_h():
     assert re.search(r"\bpad = 4, size = n \+ pad \* 2;", script)
 
 
-def test_the_legend_never_drops_below_12px():
-    assert re.search(r"\.legend \{[^}]*font: 500 max\(calc\(var\(--u\)\*\.63\), 12px\)", BOARD)
+def test_the_chart_has_no_legend():
+    assert "legend" not in BOARD.lower()
 
 
-def select_rows(rows, capacity):
-    """Run board.html's selectRows under node; there is no JS toolchain, only the function."""
+def run_tabs(expression):
+    """Evaluate an expression in node with the page's tab and chart helpers loaded."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
-    source = re.search(r"^function selectRows\(.*?^}$", BOARD, re.DOTALL | re.MULTILINE).group(0)
-    script = f"{source}\nconsole.log(JSON.stringify(selectRows({json.dumps(rows)}, {capacity})));"
+    sources = re.findall(r"^const (?:PALETTE|BASELINE_COLORS) = .*$", BOARD, re.MULTILINE)
+    for marker in ("tabs", "chartSeries"):
+        sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", BOARD, re.DOTALL)
+    script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
-    result = json.loads(out)
-    return [r["id"] for r in result["rows"]], result["more"]
+    return json.loads(out)
 
 
-def rows_of(*spec):
-    return [{"id": f"{status}{i}", "status": status} for status, n in spec for i in range(n)]
+def test_the_tab_comes_from_the_url_hash():
+    hashes = ["#human", "#factory", "#both", "", "#", "#HUMAN", "#other", "#__proto__", "human"]
+
+    assert run_tabs(f"{json.dumps(hashes)}.map(tabFromHash)") == [
+        "human", "factory", "both", "both", "both", "both", "both", "both", "human"
+    ]  # fmt: skip
+    script = BOARD.split("<script>", 1)[1]
+    assert 'addEventListener("hashchange", () => {' in script
+    assert "location.hash = b.dataset.tab;" in script  # a click sets the hash
 
 
-def test_capacity_pins_running_and_queued_and_fills_with_scored_by_rank():
-    rows = rows_of(("scored", 40), ("running", 2), ("queued", 2), ("failed", 3))
+def test_tabs_are_real_tab_buttons_44px_tall():
+    tabs = re.findall(r'<button type="button" class="tab" role="tab"[^>]*>([^<]*)</button>', BOARD)
 
-    ids, more = select_rows(rows, 19)
+    assert tabs == ["Human", "Agent factory", "Both"]
+    assert 'role="tablist"' in BOARD and 'role="tabpanel"' in BOARD
+    assert 'b.setAttribute("aria-selected", String(on));' in BOARD
+    assert re.search(r"\.tab \{ min-height: max\(44px,", BOARD)
+    assert re.search(r'\.tab\[aria-selected="true"\] \{ background: var\(--lime\);', BOARD)
 
-    assert ids == [f"scored{i}" for i in range(15)] + ["running0", "running1", "queued0", "queued1"]
-    assert more is None
-    assert select_rows(rows, 4) == (["running0", "running1", "queued0", "queued1"], None)
-    assert select_rows(rows_of(("scored", 5), ("failed", 2)), 19) == (
-        [f"scored{i}" for i in range(5)],
-        None,
+
+def tab_rows():
+    return [
+        *({"id": f"f{i}", "lane": "house", "kind": "agent", "status": "scored", "rank": i,
+           "lane_rank": i} for i in range(1, 21)),
+        {"id": "base", "lane": None, "kind": "baseline", "status": "scored", "rank": 21,
+         "lane_rank": None},
+        *({"id": f"h{i}", "lane": "human", "kind": "agent", "status": "scored", "rank": 21 + i,
+           "lane_rank": i} for i in range(1, 18)),
+        {"id": "run-h", "lane": "human", "kind": "agent", "status": "running", "rank": None},
+        {"id": "run-f", "lane": "house", "kind": "agent", "status": "running", "rank": None},
+        {"id": "q-h", "lane": "human", "kind": "agent", "status": "queued", "rank": None},
+    ]  # fmt: skip
+
+
+def view_of(rows, tab):
+    return run_tabs(
+        f"(function () {{ var v = tabView({json.dumps(rows)}, {json.dumps(tab)});"
+        " return [v.scored.map(function (r) { return [r.id, r.place]; }),"
+        " v.pending.map(function (r) { return r.id; })]; })()"
     )
 
 
-def test_pinned_rows_beyond_capacity_are_counted_not_dropped():
-    rows = rows_of(("scored", 3), ("running", 2), ("queued", 6))
+def test_each_tab_shows_its_top_15_by_its_own_rank_then_its_pending_rows():
+    rows = tab_rows()
 
-    assert select_rows(rows, 5) == (
-        ["running0", "running1", "queued0", "queued1"],
-        "+4 MORE QUEUED",
+    assert view_of(rows, "human") == [[[f"h{i}", i] for i in range(1, 16)], ["run-h", "q-h"]]
+    assert view_of(rows, "factory") == [[[f"f{i}", i] for i in range(1, 16)], ["run-f"]]
+    assert view_of(rows, "both") == [
+        [[f"f{i}", i] for i in range(1, 16)],
+        ["run-h", "run-f", "q-h"],
+    ]
+
+
+def test_baselines_are_listed_on_both_only():
+    rows = tab_rows()
+    rows[20]["rank"] = 2  # a strong baseline, 2nd overall
+
+    assert ["base", 2] in view_of(rows, "both")[0]
+    for tab in ("human", "factory"):
+        assert "base" not in {row_id for row_id, _ in view_of(rows, tab)[0]}
+
+
+def test_each_tab_charts_its_own_lines_and_every_baseline():
+    path = [{"day": d, "value": 10000 + d} for d in range(1, 11)]
+    rows = [
+        {"id": "f1", "name": "fac", "lane": "house", "kind": "agent", "status": "scored",
+         "chart_tabs": {"both": 3, "factory": 2}, "history": path},
+        {"id": "h1", "name": "hum", "lane": "human", "kind": "agent", "status": "scored",
+         "chart_tabs": {"human": 1}, "history": path},
+        {"id": "b", "name": "SPY", "lane": None, "kind": "baseline", "status": "scored",
+         "chart_tabs": None, "history": path},
+        {"id": "r", "name": "live", "lane": "human", "kind": "agent", "status": "running",
+         "chart_tabs": None, "history": path},
+    ]  # fmt: skip
+    series = run_tabs(
+        f"(function () {{ var rows = {json.dumps(rows)}; var out = {{}};"
+        " ['human', 'factory', 'both'].forEach(function (t) { out[t] = chartSeries(rows, t)"
+        ".map(function (s) { return [s.name, s.baseline]; }); }); return out; })()"
     )
-    assert select_rows(rows_of(("running", 4)), 2) == (["running0"], "+3 MORE")
-    assert select_rows(rows, 0) == ([], "+8 MORE")  # capacity is at least 1
+
+    assert series["human"] == [["hum", False], ["SPY", True], ["live", False]]
+    assert series["factory"] == [["fac +1", False], ["SPY", True]]
+    assert series["both"] == [["fac +2", False], ["SPY", True], ["live", False]]
+
+
+def test_the_header_states_the_factory():
+    calls = [
+        {"state": "running", "running": 1}, {"state": "running", "running": 2},
+        {"state": "running", "running": 0}, {"state": "paused", "running": 1},
+        {"state": "off", "running": 0}, None, {"state": "exploded"},
+        {"state": "running", "running": "3"},
+    ]  # fmt: skip
+
+    assert run_tabs(f"{json.dumps(calls)}.map(factoryText)") == [
+        "Factory: 1 agent running", "Factory: 2 agents running", "Factory: 0 agents running",
+        "Factory: paused", "Factory: off", "", "", "Factory: 0 agents running",
+    ]  # fmt: skip
+    assert '<span id="sub-c" class="factory"></span>' in BOARD
+    assert ".hd .sub .factory { color: var(--lime); }" in BOARD
 
 
 def test_house_rows_get_a_dim_ai_tag_by_text_only():
     script = BOARD.split("<script>", 1)[1]
     assert 'if (r.lane === "house" || r.handle === "house") {' in script
     house = script.split('if (r.lane === "house" || r.handle === "house") {', 1)[1]
-    house = house.split("\n    }\n", 1)[0]
+    house = house.split("\n  }\n", 1)[0]  # the block's closing brace, in fillRow
     # Every house row gets the AI chip, unconditionally; the G chip only for a generation > 0.
     assert 'const chips = ["AI"];' in house
     assert "const gen = Number(r.generation);" in house

@@ -118,8 +118,8 @@ def test_the_page_draws_representatives_labelled_with_their_group():
     script = BOARD.split("<script>", 1)[1]
     assert (
         'rows.filter(r => r.status === "scored" && r.kind !== "baseline" && '
-        "Number.isInteger(r.chart_members)).forEach(add);"
+        "Number.isInteger(members(r))).forEach(add);"
     ) in script
-    assert 'r.chart_members > 1 ? ` +${r.chart_members - 1}` : ""' in script
+    assert 'const more = Number.isInteger(n) && n > 1 ? ` +${n - 1}` : "";' in script
     assert ".slice(0, 10)" not in script  # no fixed top 10 any more
-    assert "li.appendChild(document.createTextNode(s.name));" in script  # text only
+    assert "b.textContent = best.s.name;" in script  # the line's name, as text only
