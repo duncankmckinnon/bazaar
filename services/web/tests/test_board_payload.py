@@ -38,6 +38,9 @@ def big_runs(tmp_path_factory, helpers):
             helpers.write_run(
                 runs, f"run-{i:04d}", policy_ref=policy, period_return=str(ret(i)), marks=marks
             )
+        for path in runs.rglob("*"):  # every test hard-links these: a write through one fails
+            if path.is_file():
+                path.chmod(0o444)
         _BUILT["runs"] = runs
     return _BUILT["runs"]
 
