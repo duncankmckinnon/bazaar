@@ -16,7 +16,7 @@ import re
 import socket
 import threading
 import time
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, urlparse
 
 import pytest
 import uvicorn
@@ -53,8 +53,11 @@ TOKEN_ENV = "BAZAAR_LOGFIRE_BROWSER_TOKEN"
 TOKEN = "test-browser-token-SENTINEL-77"  # fake; never a real token
 EXPORT_URL = "https://logfire-us.pydantic.dev/v1/traces"
 REPLAY_URL = "https://logfire-us.pydantic.dev/v1/replay"
-# Session replay sampling must never be forced on in served code; the test forces it itself.
-FORCED_SAMPLING = re.compile(r"sessionSampleRate\s*:\s*1(?![\d.])")
+# Replay uploads start after 10 s of session, then every 5 s while active, plus on pagehide.
+SECOND_INTERACTION_AT = 11.0
+STAY_ON_PAGE = 16.0
+# Text that session replay must mask on /submit (maskAllText is on everywhere but the board).
+UNMASKED_TEXT = ("Enter your trading agent", "use your email only to contact you")
 
 FIELDS = {
     "name": "name-sentinel-53",
@@ -85,8 +88,7 @@ def serve(tmp_path, monkeypatch, helpers):
             monkeypatch.delenv(TOKEN_ENV, raising=False)
         else:
             monkeypatch.setenv(TOKEN_ENV, token)
-        runner = helpers.FakeRunner()
-        runner.gate.clear()  # stays running: the page keeps polling while we look
+        runner = helpers.FakeRunner()  # scores at once; the page still polls its status
         runners.append(runner)
         app = create_app(Settings.from_env(), run_submission=runner)
         port = free_port()
@@ -130,7 +132,7 @@ class Traffic:
         if request.url.startswith("https://logfire-us.pydantic.dev/"):
             body = request.post_data_buffer or b""
             headers = request.all_headers()
-            if headers.get("content-encoding") == "gzip":
+            if body[:2] == b"\x1f\x8b":  # gzip (replay chunks are fflate-compressed)
                 body = gzip.decompress(body)
             self.logfire.append(
                 {"method": request.method, "url": request.url, "headers": headers, "body": body}
@@ -185,8 +187,44 @@ def forms_of(value: str) -> set[str]:
     }
 
 
-def fill_and_submit(page, base: str) -> str:
+def replay_chunks(traffic: Traffic) -> list[dict]:
+    """Decoded replay uploads: {version, meta: {seq, urls, ...}, events: [rrweb events]}."""
+    return [json.loads(replay["body"]) for replay in traffic.replays]
+
+
+def on_submit_page(chunk: dict) -> bool:
+    return any(urlparse(url).path == "/submit" for url in chunk.get("meta", {}).get("urls", []))
+
+
+def locate(export: dict, needle: str) -> list[str]:
+    """Where a sentinel sits in a JSON body: key paths, each prefixed with its span's name."""
+    try:
+        payload = json.loads(export["body"])
+    except ValueError:
+        return []
+    found = []
+
+    def walk(node, path: str, span: str | None) -> None:
+        if isinstance(node, dict):
+            span = node.get("name") if "spanId" in node else span
+            if "key" in node and "value" in node:  # an OTLP attribute: name it by its key
+                path = f"{path}{{{node['key']}}}"
+            for key, value in node.items():
+                walk(value, f"{path}.{key}", span)
+        elif isinstance(node, list):
+            for i, value in enumerate(node):
+                walk(value, f"{path}[{i}]", span)
+        elif needle in json.dumps(node).lower():
+            found.append(f"span {span!r} at {path}" if span else path)
+
+    walk(payload, "$", None)
+    return found
+
+
+def fill_and_submit(page, base: str) -> tuple[str, float]:
+    """Fill every field and submit; returns the submission id and when the page loaded."""
     page.goto(base + "/submit")
+    loaded = time.monotonic()
     for field, value in FIELDS.items():
         page.locator(f"#{field}").click()  # a user-interaction span per field, if any are made
         page.keyboard.type(value)
@@ -199,8 +237,14 @@ def fill_and_submit(page, base: str) -> str:
     ):
         page.locator("#submit").click()  # then the page polls the submission's status once
     assert posted.value.status == 201, posted.value.text()
-    submission_id = posted.value.json()["id"]
-    return submission_id
+    return posted.value.json()["id"], loaded
+
+
+def stay(page, loaded: float) -> None:
+    """Keep /submit open long enough for replay uploads, with one more interaction mid-way."""
+    page.wait_for_timeout(max(0.0, loaded + SECOND_INTERACTION_AT - time.monotonic()) * 1000)
+    page.mouse.click(5, 5)
+    page.wait_for_timeout(max(0.0, loaded + STAY_ON_PAGE - time.monotonic()) * 1000)
 
 
 def response_bodies(responses) -> dict[str, bytes]:
@@ -215,10 +259,11 @@ def response_bodies(responses) -> dict[str, bytes]:
 
 
 def flush(page, traffic: Traffic, timeout: float = 15.0) -> None:
-    """The SDK exports on visibilitychange/pagehide: leave the page, then wait for an export."""
+    """The SDKs upload on visibilitychange/pagehide: leave the page, then wait for both a trace
+    export and a replay upload (or the timeout)."""
     page.goto("about:blank")
     deadline = time.monotonic() + timeout
-    while not traffic.exports and time.monotonic() < deadline:
+    while not (traffic.exports and traffic.replays) and time.monotonic() < deadline:
         page.wait_for_timeout(100)
 
 
@@ -231,16 +276,20 @@ def test_no_sentinel_leaves_the_browser_and_the_proof_is_not_vacuous(serve, brow
     responses = []
     page.on("response", lambda response: responses.append(response))
 
-    submission_id = fill_and_submit(page, base)
+    submission_id, loaded = fill_and_submit(page, base)
+    stay(page, loaded)
     bodies = response_bodies(responses)
     flush(page, traffic)
     context.close()
 
     unexpected = [r["url"] for r in traffic.logfire if r not in traffic.exports + traffic.replays]
     assert not unexpected, unexpected
-    module = bodies[f"GET {base}/browser-telemetry.js"].decode()
+    served = bodies.get(f"GET {base}/browser-telemetry.js")
+    assert served is not None, "the page loaded no /browser-telemetry.js body"
+    module = served.decode()
     assert "import" in module
-    assert not FORCED_SAMPLING.search(module), "served code forces session replay sampling"
+    # Sampling stays at the SDK default; served code passes no sampling option at all.
+    assert "sessionSampleRate" not in module
 
     # (a) Non-vacuous: real spans, including the submission fetch and a user interaction.
     assert traffic.exports, "no export reached logfire-us"
@@ -252,9 +301,22 @@ def test_no_sentinel_leaves_the_browser_and_the_proof_is_not_vacuous(serve, brow
         {span["name"] for span in exported}
     )
 
-    # (b) No sentinel, in any form, in any export URL, header or body.
+    # Replay is non-vacuous too: decoded /submit chunks with recorded events, including a full
+    # DOM snapshot (rrweb type 2), so text missing from them was masked, not just never recorded.
+    chunks = replay_chunks(traffic)
+    assert chunks, "no replay upload reached logfire-us"
+    submit_chunks = [chunk for chunk in chunks if on_submit_page(chunk)]
+    assert submit_chunks, [chunk.get("meta", {}).get("urls") for chunk in chunks]
+    assert any(chunk.get("events") for chunk in submit_chunks)
+    assert any(e.get("type") == 2 for chunk in submit_chunks for e in chunk.get("events", []))
+    for text in UNMASKED_TEXT:
+        for chunk in submit_chunks:
+            assert text.lower() not in json.dumps(chunk).lower(), f"replay recorded {text!r}"
+
+    # (b) No sentinel, in any form, in any export or replay URL, header or (decoded) body.
     for export in traffic.exports:
         assert export["method"] == "POST" and export["url"] == EXPORT_URL
+    for export in traffic.logfire:
         haystack = " ".join(
             [
                 export["url"],
@@ -264,7 +326,10 @@ def test_no_sentinel_leaves_the_browser_and_the_proof_is_not_vacuous(serve, brow
         ).lower()
         for field, value in FIELDS.items():
             for form in forms_of(value):
-                assert form not in haystack, f"{field} sentinel {form!r} was exported"
+                assert form not in haystack, (
+                    f"BLOCKER: {field} sentinel {form!r} in {export['url']}: "
+                    f"{locate(export, form) or 'URL, headers or non-JSON body'}"
+                )
 
     # (c) The token authorises exports and is served only by the telemetry module.
     for export in traffic.exports:
@@ -300,7 +365,8 @@ def test_without_a_token_the_page_sends_no_telemetry_and_still_submits(serve, br
     assert module.status == 200
     assert "import" not in module.text()
 
-    fill_and_submit(page, base)  # asserts the 201
+    _, loaded = fill_and_submit(page, base)  # asserts the 201
+    stay(page, loaded)  # long enough that a replay upload would have happened
     flush(page, traffic, timeout=3.0)
     context.close()
 
