@@ -35,7 +35,7 @@ EMAIL_SCRUBBED = "[Scrubbed email]"
 _EMAIL = re.compile(EMAIL_PATTERN)
 # Key triggers only (the callback keeps a value that is not under a credential key): header and
 # attribute names such as x-bazaar-runner-token or read_token, never the counts *_tokens.
-_KEY_TRIGGERS = (r"[._-]token\b", r"x[._ -]?bazaar[._ -]?approval")
+_KEY_TRIGGERS = (r"token\b", r"x[._ -]?bazaar[._ -]?approval")
 # A secret value this short is not used as a pattern (it could match ordinary text).
 MIN_SCRUB_SECRET_LENGTH = 16
 _CREDENTIAL_KEYS = frozenset(
@@ -54,16 +54,22 @@ _CREDENTIAL_KEYS = frozenset(
     }
 )
 _BAZAAR_TOKEN_HEADER = re.compile(r"x-bazaar-[\w-]+-token")
+# A key NAME containing one of these is a credential key (client_secret, private_key, jwt,
+# apca-api-secret-key, authorization-foreign). Keys only: values are never matched by a word.
+_CREDENTIAL_KEY_PARTS = re.compile(
+    r"secret|password|passwd|credential|private[._ -]?key|jwt|authorization"
+)
 
 
 def _credential_key(key: object) -> bool:
     """A key whose value is a credential: checked as a whole and after its last '.', so
-    http.request.header.authorization counts. A *_tokens count never does."""
+    http.request.header.authorization and logfire.token count. A *_tokens count never does."""
     whole = str(key).lower()
     for name in {whole, whole.rsplit(".", 1)[-1]}:
         if name in _CREDENTIAL_KEYS or _BAZAAR_TOKEN_HEADER.fullmatch(name):
             return True
-        if name.endswith(("_token", "-token")):
+        # token, logfire.token, read_token, refresh-token; never input_tokens or *_tokens.
+        if name.endswith("token") or _CREDENTIAL_KEY_PARTS.search(name):
             return True
     return False
 
@@ -144,6 +150,8 @@ SECRET_ENV = (
     "LOGFIRE_READ_TOKEN",
     "LOGFIRE_API_WRITE_KEY",  # the strategist eval's dataset push (bazaar_agent.strategist_eval)
     "BAZAAR_LOGFIRE_BROWSER_TOKEN",
+    "PAIG_API_KEY",
+    "BAZAAR_CURSOR_SECRET",
 )
 REDACTED = "[REDACTED]"
 STRATEGY_NAME_BAGGAGE = "bazaar.strategy_name"
