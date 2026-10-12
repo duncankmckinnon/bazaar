@@ -338,22 +338,24 @@ def build_board(
     house_enabled: bool = False,
 ) -> dict[str, Any]:
     rows, starting_cash = board_rows(source, store, logfire_url)
-
-    # The window and universe are the data bundle's; without one the board shows neither.
-    window = {
-        "start": bundle.start.isoformat() if bundle else None,
-        "end": bundle.end.isoformat() if bundle else None,
-        "starting_cash": float(starting_cash),
-        "universe": bundle.universe if bundle else None,
-        "symbols": list(bundle.symbols) if bundle else None,
-        "days": bundle.days if bundle else None,
-    }
     return {
-        "window": window,
+        "window": board_window(bundle, float(starting_cash)),
         "rows": page_rows(rows),
         "total": {"rows": len(rows), **Counter(row["status"] for row in rows)},
         "events": store.recent_events(20),
         "factory": board_factory(store, house_enabled),
+    }
+
+
+def board_window(bundle: Bundle | None, starting_cash: float) -> dict[str, Any]:
+    """The window and universe are the data bundle's; without one the board shows neither."""
+    return {
+        "start": bundle.start.isoformat() if bundle else None,
+        "end": bundle.end.isoformat() if bundle else None,
+        "starting_cash": starting_cash,
+        "universe": bundle.universe if bundle else None,
+        "symbols": list(bundle.symbols) if bundle else None,
+        "days": bundle.days if bundle else None,
     }
 
 

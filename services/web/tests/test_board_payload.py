@@ -88,13 +88,14 @@ def test_the_payload_is_small_and_a_warm_request_parses_nothing(big, helpers, mo
         start = time.perf_counter()
         warm = client.get("/api/board")
         warm_s = time.perf_counter() - start  # reported only; CI asserts no timing
-        runner.gate.set()
+        warm_parsed, warm_read = len(calls), len(reads)
+        runner.gate.set()  # live-bot then scores, and its own new run dir is parsed
 
     body = warm.json()
     print(f"\n3,000 runs: {len(cold.content)} bytes, warm rebuild {warm_s:.3f} s (not asserted)")
     assert cold_parsed == RUNS and cold_read == RUNS  # each dir parsed once, by the first build
     # The warm rebuild, chart grouping included, parsed nothing and read no history.
-    assert len(calls) == cold_parsed and len(reads) == cold_read
+    assert warm_parsed == cold_parsed and warm_read == cold_read
     assert sum(r["chart_members"] is not None for r in body["rows"]) == 10
     assert len(warm.content) < 100_000
     assert body["total"]["rows"] == RUNS + 1 and body["total"]["scored"] == RUNS
@@ -327,15 +328,16 @@ def test_a_cold_board_never_parses_hidden_dirs(big, helpers, monkeypatch):
     real = bazaar_web.board.load_run
     monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
     with TestClient(create_app(big, helpers.FakeRunner())) as client:
-        cold = helpers.board(client).json()
+        cold = client.get("/api/board").json()
         cold_parsed = len(calls)
         client.app.state.board.invalidate()  # a rebuild, as after the TTL
-        helpers.board(client)
+        client.get("/api/board")
         parsed = len(calls)
         with sqlite3.connect(big.web_db) as conn:  # un-hide the best run
             conn.execute("UPDATE submissions SET hidden = 0 WHERE run_dir = 'run-0000'")
         conn.close()
-        shown = helpers.board(client).json()
+        client.app.state.board_cache.invalidate()  # raw SQL bypasses the store's change hook
+        shown = client.get("/api/board").json()
 
     print(f"\n2,800 of 3,000 hidden: parsed {parsed}")
     assert parsed == cold_parsed  # the warm rebuild parsed nothing

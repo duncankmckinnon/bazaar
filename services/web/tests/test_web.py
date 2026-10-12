@@ -30,11 +30,6 @@ def status(client, submission_id):
 
 
 def rows(client):
-    """The board after a build that started after this call (the route serves its last
-    payload and rebuilds in the background)."""
-    cache = client.app.state.board_cache
-    cache.invalidate()
-    assert cache.settled()
     return client.get("/api/board").json()["rows"]
 
 
@@ -209,7 +204,7 @@ def test_failed_run_reports_a_generic_error(seeded, helpers, caplog, monkeypatch
         done = helpers.wait_for(
             lambda: (s := status(client, submission_id))["status"] == "failed" and s
         )
-        board_text = helpers.board(client).text
+        board_text = client.get("/api/board").text
 
     assert done["error"] == "the run failed; please try again"
     assert done["rank"] is None
@@ -360,7 +355,7 @@ def test_hide_requires_the_admin_token(seeded, helpers):
         unknown = client.post(
             "/api/admin/submissions/nope/hide", headers={"X-Bazaar-Admin-Token": "admin-secret"}
         )
-        board = helpers.board(client).json()
+        board = client.get("/api/board").json()
         after = client.get(f"/api/submissions/{submission_id}")
 
     assert (missing.status_code, wrong.status_code, ok.status_code) == (403, 403, 204)

@@ -246,6 +246,9 @@ def settings(tmp_path) -> Settings:
         runs_dir=tmp_path / "runs",
         web_db=tmp_path / "data" / "web.sqlite3",
         admin_token="admin-secret",
+        # A state change shows on the next poll once its rebuild ends; tests wait for that
+        # rebuild rather than racing it (live waits 1 s, then serves the previous board).
+        board_fresh_wait_ms=60_000,
     )
 
 
@@ -331,19 +334,9 @@ class FakeStrategist:
         return batch
 
 
-def fresh_board(client):
-    """GET /api/board after a build that started after this call. The route serves its last
-    payload and rebuilds in the background, so a read straight after a write may be older."""
-    cache = client.app.state.board_cache
-    cache.invalidate()
-    assert cache.settled()
-    return client.get("/api/board")
-
-
 @pytest.fixture
 def helpers():
     class H:
-        board = staticmethod(fresh_board)
         FakeStrategist = FakeStrategist
         FakeProposal = FakeProposal
         FakeRunner = FakeRunner
