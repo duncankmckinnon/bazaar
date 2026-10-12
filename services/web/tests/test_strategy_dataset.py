@@ -9,6 +9,7 @@ import threading
 import uuid
 
 import bazaar_web.dataset
+import httpx
 import pytest
 from bazaar_web.app import create_app
 from bazaar_web.dataset import DATASET, DatasetSync, case_for
@@ -610,3 +611,144 @@ def test_a_refused_delete_does_not_block_the_others(tmp_path, keyed):
     assert second["dataset_deleted_at"] is not None
     assert wait == 0.05 and sync.failures == 0  # one went through: no backoff
     assert [r["id"] for r in store.pending_deletes(10)] == ["r000"]
+
+
+# ---------- the real client's reply shapes and statuses (P1b/P1c review) ----------
+
+
+class LogfireServer:
+    """Logfire's datasets API as an httpx.MockTransport handler, behind the real
+    LogfireAPIClient. The import reply can leave out case names, come back reversed, or carry
+    other inputs; POST and DELETE can answer with a status instead."""
+
+    def __init__(self, *, names=True, reverse=False, inputs_name=None, post_status=200,
+                 delete_status=204):  # fmt: skip
+        self.names, self.reverse, self.inputs_name = names, reverse, inputs_name
+        self.post_status, self.delete_status = post_status, delete_status
+        self.cases = {}  # case name -> case id
+        self.posts = self.deletes = 0
+
+    def __call__(self, request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": str(uuid.UUID(int=999)), "name": DATASET})
+        if request.method == "DELETE":
+            self.deletes += 1
+            return httpx.Response(self.delete_status)
+        self.posts += 1
+        if self.post_status != 200:
+            return httpx.Response(self.post_status, json={"detail": "no"})
+        reply = []
+        for case in json.loads(request.content)["cases"]:
+            case_id = self.cases.setdefault(
+                case["name"], str(uuid.uuid5(uuid.NAMESPACE_URL, case["name"]))
+            )
+            inputs = dict(case["inputs"])
+            if self.inputs_name is not None:
+                inputs["name"] = self.inputs_name
+            reply.append(
+                {"id": case_id, "inputs": inputs} | ({"name": case["name"]} if self.names else {})
+            )
+        return httpx.Response(200, json=reply[::-1] if self.reverse else reply)
+
+
+def real_client(server):
+    from logfire.experimental.api_client import LogfireAPIClient
+
+    def make(key):
+        return LogfireAPIClient(
+            client=httpx.Client(
+                transport=httpx.MockTransport(server), base_url="https://logfire-us.pydantic.dev"
+            )
+        )
+
+    return make
+
+
+@pytest.mark.parametrize(("names", "reverse"), [(True, False), (False, False), (False, True),
+                                                 (True, True)])  # fmt: skip
+def test_case_ids_are_matched_by_content_never_by_position(tmp_path, keyed, names, reverse):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(3))
+    server = LogfireServer(names=names, reverse=reverse)
+    sync = DatasetSync(store, real_client(server))
+
+    sync.round()
+
+    for i in range(3):
+        row = store.get(f"r{i:03d}")
+        assert row["dataset_synced_at"] is not None
+        assert row["dataset_case_id"] == server.cases[f"strategy-bot-{i:03d}-r{i:03d}"]
+
+
+def test_a_reply_that_matches_no_row_leaves_it_unsynced(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(2))
+    sync = DatasetSync(store, real_client(LogfireServer(names=False, inputs_name="someone-else")))
+
+    assert sync.round() == 0.05  # a failure, and no guessing by position
+    for i in range(2):
+        row = store.get(f"r{i:03d}")
+        assert (row["dataset_synced_at"], row["dataset_case_id"]) == (None, None)
+        assert row["dataset_error_class"] == "MissingCaseId"
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 408, 429, 500, 503])
+def test_a_service_failure_backs_off_the_batch_without_fan_out(tmp_path, keyed, status):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(100))
+    server = LogfireServer(post_status=status)
+    sync = DatasetSync(store, real_client(server))
+
+    assert sync.round() == 0.05 and sync.failures == 1
+    assert server.posts == 1  # one request, not one per row
+    assert {store.get(f"r{i:03d}")["dataset_attempts"] for i in range(100)} == {1}
+
+
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_a_bad_payload_fans_out(tmp_path, keyed, status):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(3))
+    server = LogfireServer(post_status=status)
+    sync = DatasetSync(store, real_client(server))
+    sync.round()
+    assert server.posts == 1 + 3  # the batch, then each row alone
+
+
+def test_a_refused_key_on_delete_backs_off_without_trying_the_rest(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(2))
+    server = LogfireServer()
+    sync = DatasetSync(store, real_client(server))
+    sync.round()
+    store.hide("r000")
+    store.hide("r001")
+    server.delete_status = 403
+
+    assert sync.round() == 0.05 and sync.failures == 1
+    assert server.deletes == 1  # stopped at the first: the key, not the row
+    # Both still wait; the one tried sinks behind the other (ordered by attempts).
+    assert [r["id"] for r in store.pending_deletes(10)] == ["r001", "r000"]
+    assert store.get("r000")["dataset_attempts"] == 1
+
+
+def test_a_dataset_deleted_after_startup_is_created_again(tmp_path, keyed):
+    class Vanishing(FakeClient):
+        def add_cases(self, dataset_id_or_name, cases, *, on_conflict):
+            if not self.exists:
+                self.record("add_cases", dataset_id_or_name, cases=cases, on_conflict=on_conflict)
+                raise DatasetNotFoundError("Dataset not found")
+            return super().add_cases(dataset_id_or_name, cases, on_conflict=on_conflict)
+
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(1))
+    fake = Vanishing()
+    sync = DatasetSync(store, factory_for(fake))
+    sync.round()
+    insert(store.path, rows_named(1, start=1))
+    fake.exists = False  # deleted in the Logfire UI
+
+    assert sync.round() == 0.05  # fails once...
+    sync.round()  # ...then checks, creates it again and pushes
+
+    assert [m for m, _, _ in fake.calls].count("create_dataset") == 2
+    assert store.get("r001")["dataset_synced_at"] is not None

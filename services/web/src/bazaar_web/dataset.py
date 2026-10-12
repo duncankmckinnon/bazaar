@@ -97,12 +97,41 @@ def is_gone(exc: Exception) -> bool:
     return isinstance(exc, CaseNotFoundError)
 
 
+# Statuses that mean "this payload is bad": retrying it alone would fail again, and the others
+# may go through. Anything else (401/403 a bad key, 408/429 load, a 5xx, a timeout) is about the
+# service, so the whole batch backs off instead of being fanned out into one request per row.
+BAD_PAYLOAD = frozenset({400, 413, 422})
+
+
 def is_rejected(exc: Exception) -> bool:
-    """Logfire refused this request itself (a 4xx), so retrying it as is would fail again; a
-    timeout or a 5xx is the service, and backs the whole loop off instead."""
     from logfire.experimental.api_client import DatasetApiError
 
-    return isinstance(exc, DatasetApiError) and 400 <= exc.status_code < 500
+    return isinstance(exc, DatasetApiError) and exc.status_code in BAD_PAYLOAD
+
+
+def case_ids(
+    rows: list[dict[str, Any]], cases: list[dict[str, Any]], returned: Any
+) -> dict[str, str]:
+    """{submission id: case id} from an add_cases reply, matched by content, never by position
+    (the reply's order isn't documented, and a wrong match would later delete the wrong case).
+    A reply case is matched by its name when it has one (optional in CaseDetail), else by
+    inputs.name (inputs is required, and inputs.name is the row's unique submission name)."""
+    by_case: dict[str, str] = {}
+    by_input: dict[str, str] = {}
+    for reply in returned or ():
+        if not isinstance(reply, dict) or not reply.get("id"):
+            continue
+        if isinstance(reply.get("name"), str):
+            by_case[reply["name"]] = str(reply["id"])
+        inputs = reply.get("inputs")
+        if isinstance(inputs, dict) and isinstance(inputs.get("name"), str):
+            by_input[inputs["name"]] = str(reply["id"])
+    found = {}
+    for row, case in zip(rows, cases, strict=True):
+        case_id = by_case.get(case["name"]) or by_input.get(row["name"])
+        if case_id:
+            found[row["id"]] = case_id
+    return found
 
 
 class MissingCaseId(Exception):
@@ -210,6 +239,7 @@ class DatasetSync:
                     refused += 1
                     continue
                 if not is_gone(exc):
+                    self.ensured = self.ensured and not is_missing(exc)
                     raise Failed([row["id"]], type(exc).__name__) from None
             with logfire.suppress_instrumentation():
                 self.store.dataset_deleted([row["id"]])
@@ -228,6 +258,8 @@ class DatasetSync:
         except Failed:
             raise
         except Exception as exc:  # noqa: BLE001 - Logfire down, bad key, anything
+            if is_missing(exc):  # the dataset was deleted after startup: create it again
+                self.ensured = False
             if not (is_rejected(exc) and len(rows) > 1):
                 raise Failed([row["id"] for row in rows], type(exc).__name__) from None
         pushed = refused = 0
@@ -263,9 +295,7 @@ class DatasetSync:
         unsynced (Failed), so no row counts as synced without an id."""
         cases = [case_for(row) for row in rows]
         returned = self.connect().add_cases(DATASET, cases=cases, on_conflict="update")
-        by_name = {c.get("name"): str(c["id"]) for c in returned or () if c.get("id")}
-        found = {row["id"]: by_name[case["name"]] for row, case in zip(rows, cases, strict=True)
-                 if case["name"] in by_name}  # fmt: skip
+        found = case_ids(rows, cases, returned)
         with logfire.suppress_instrumentation():
             self.store.dataset_synced(found)
         missing = [row["id"] for row in rows if row["id"] not in found]
