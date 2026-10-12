@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import threading
+import uuid
 
 import bazaar_web.dataset
 import pytest
@@ -14,7 +15,7 @@ from bazaar_web.dataset import DATASET, DatasetSync, case_for
 from bazaar_web.settings import SECRET_ENV_VARS
 from bazaar_web.store import OPERATOR_CONTACT_EMAIL, Store
 from fastapi.testclient import TestClient
-from logfire.experimental.api_client import DatasetNotFoundError
+from logfire.experimental.api_client import CaseNotFoundError, DatasetNotFoundError
 
 KEY = "pylf_v1_us_DATASETKEYSENTINEL0123456789"
 SECRETS = ("contact-sentinel@example.org", "SentinelCo Industries", "Chief Sentinel Officer")
@@ -22,15 +23,22 @@ ADMIN = {"X-Bazaar-Admin-Token": "admin-secret"}
 
 
 class FakeClient:
-    """LogfireAPIClient's dataset calls, recorded; add_cases can fail or block."""
+    """LogfireAPIClient's dataset calls, recorded, over an in-memory dataset: add_cases upserts
+    by name (an existing name keeps its case id) and returns the cases with ids; delete_case
+    raises CaseNotFoundError for an unknown id. add_cases can fail or block, delete_case fail;
+    during, when set, runs inside add_cases (to change the store mid-call)."""
 
-    def __init__(self, *, exists=False, fail=None, block=None):
+    def __init__(self, *, exists=False, fail=None, block=None, fail_delete=None, during=None):
         self.lock = threading.Lock()
         self.calls = []
         self.exists = exists
         self.fail = fail
+        self.fail_delete = fail_delete
         self.block = block
+        self.during = during
         self.blocked = threading.Event()
+        self.live = {}  # case name -> case id
+        self.count = 0
 
     def get_dataset(self, id_or_name, *, include_cases):
         self.record("get_dataset", id_or_name, include_cases=include_cases)
@@ -48,6 +56,29 @@ class FakeClient:
             self.block.wait(10)
         if self.fail is not None:
             raise self.fail
+        if self.during is not None:
+            self.during()
+        with self.lock:
+            for case in cases:
+                if case["name"] not in self.live:
+                    self.count += 1
+                    self.live[case["name"]] = uuid.UUID(int=self.count)
+            return [{"id": self.live[c["name"]], "name": c["name"], "inputs": c["inputs"]}
+                    for c in cases]  # fmt: skip
+
+    def delete_case(self, dataset_id_or_name, case_id):
+        self.record("delete_case", dataset_id_or_name, case_id)
+        if self.fail_delete is not None:
+            raise self.fail_delete
+        with self.lock:
+            name = next((n for n, i in self.live.items() if str(i) == case_id), None)
+            if name is None:
+                raise CaseNotFoundError("Case not found")
+            del self.live[name]
+
+    def deleted(self):
+        with self.lock:
+            return [args[1] for m, args, _ in self.calls if m == "delete_case"]
 
     def record(self, method, *args, **kwargs):
         with self.lock:
@@ -128,7 +159,7 @@ def test_a_case_carries_only_the_public_fields(tmp_path):
     assert set(row) == {"id", "name", "instructions", "handle", "lane", "generation", "parents",
                         "created_at"}  # fmt: skip
     assert case == {
-        "name": "strategy-bot-a",
+        "name": "strategy-bot-a-a",  # the name at push time, then the id's first 8
         "inputs": {
             "name": "bot-a", "instructions": "bot-a: hold KO all week.", "handle": "@ann",
             "lane": "human", "generation": None, "parents": None,
@@ -203,7 +234,8 @@ def test_the_dataset_is_created_once_and_cases_upsert_by_name(tmp_path, keyed):
     assert fake.calls[1][1:] == ((DATASET,), {"description": bazaar_web.dataset.DESCRIPTION})
     adds = [kw for m, _, kw in fake.calls if m == "add_cases"]
     assert [a["on_conflict"] for a in adds] == ["update", "update"]
-    assert [c["name"] for c in fake.pushed()] == ["strategy-bot-a", "strategy-bot-a"]
+    assert [c["name"] for c in fake.pushed()] == ["strategy-bot-a-a", "strategy-bot-a-a"]
+    assert len(fake.live) == 1  # the same case, upserted
 
 
 def test_an_existing_dataset_is_not_created_again(tmp_path, keyed):
@@ -233,13 +265,16 @@ def test_without_a_key_the_factory_is_never_called(tmp_path, quick, caplog):
 def test_the_backfill_pushes_existing_rows_oldest_first_in_batches(settings, helpers, keyed):
     insert(settings.web_db, [(f"r{i:03d}", f"bot-{i:03d}", None, "human", None, 0, None)
                              for i in range(250)])  # fmt: skip
+
     fake = FakeClient()
     with TestClient(create_app(settings, helpers.FakeRunner(), dataset_client=factory_for(fake))):
         helpers.wait_for(lambda: len(fake.pushed()) == 250)
 
     sizes = [len(kw["cases"]) for m, _, kw in fake.calls if m == "add_cases"]
     assert sizes == [100, 100, 50]
-    assert [c["name"] for c in fake.pushed()] == [f"strategy-bot-{i:03d}" for i in range(250)]
+    assert [c["name"] for c in fake.pushed()] == [
+        f"strategy-bot-{i:03d}-r{i:03d}" for i in range(250)
+    ]
 
 
 def test_contact_details_never_leave_and_the_key_never_shows(
@@ -262,7 +297,7 @@ def test_contact_details_never_leave_and_the_key_never_shows(
 
     sent = json.dumps(fake.calls, default=str)
     spans = json.dumps(capfire.exporter.exported_spans_as_dict(), default=str)
-    assert "strategy-contact-bot" in sent  # it was pushed...
+    assert f"strategy-contact-bot-{sid[:8]}" in sent  # it was pushed...
     for secret in SECRETS:  # ...without any contact detail, anywhere
         assert secret not in sent and secret not in caplog.text and secret not in spans
     assert keys == [KEY]  # the key goes to the client only
@@ -336,3 +371,139 @@ def test_an_old_database_gets_the_dataset_columns(tmp_path):
         None, 0, None,
     )  # fmt: skip
     assert [r["name"] for r in store.pending_strategies(10)] == ["old-bot"]  # the backfill
+
+
+# ---------- hiding deletes the case (P1b) ----------
+
+
+def one_row(tmp_path, fake, row_id="a"):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, [(row_id, f"bot-{row_id}", None, "human", None, 0, None)])
+    return store, DatasetSync(store, factory_for(fake))
+
+
+def test_a_pushed_row_that_is_hidden_has_its_case_deleted(tmp_path, keyed):
+    fake = FakeClient()
+    store, sync = one_row(tmp_path, fake)
+    sync.round()
+    case_id = store.get("a")["dataset_case_id"]
+    store.hide("a")
+
+    sync.round()
+    row = store.get("a")
+
+    assert case_id == str(uuid.UUID(int=1))  # the id add_cases returned
+    assert fake.deleted() == [case_id]
+    assert row["dataset_deleted_at"] is not None and fake.live == {}
+    sync.round()
+    assert fake.deleted() == [case_id]  # once
+
+
+def test_a_row_hidden_before_its_push_is_never_sent(tmp_path, keyed):
+    fake = FakeClient()
+    store, sync = one_row(tmp_path, fake)
+    store.hide("a")
+    sync.round()
+    assert fake.calls == []
+
+
+def test_a_case_already_gone_counts_as_deleted(tmp_path, keyed):
+    fake = FakeClient()
+    store, sync = one_row(tmp_path, fake)
+    sync.round()
+    fake.live.clear()  # deleted by hand in the Logfire UI
+    store.hide("a")
+
+    assert sync.round() == 0.05 and sync.failures == 0
+    assert store.get("a")["dataset_deleted_at"] is not None
+
+
+def test_a_failed_delete_backs_off_and_retries(tmp_path, keyed):
+    fake = FakeClient()
+    store, sync = one_row(tmp_path, fake)
+    sync.round()
+    store.hide("a")
+    fake.fail_delete = RuntimeError("logfire said: details")
+
+    waits = [sync.round(), sync.round()]
+    failing = store.get("a")
+    fake.fail_delete = None
+    sync.round()
+
+    assert waits == [0.05, 0.1]
+    assert (failing["dataset_deleted_at"], failing["dataset_attempts"]) == (None, 2)
+    assert failing["dataset_error_class"] == "RuntimeError"
+    row = store.get("a")
+    assert row["dataset_deleted_at"] is not None and row["dataset_attempts"] == 0
+    assert fake.live == {}
+
+
+def test_without_a_key_a_hidden_row_waits_to_be_deleted(tmp_path, keyed, monkeypatch):
+    fake = FakeClient()
+    store, sync = one_row(tmp_path, fake)
+    sync.round()
+    store.hide("a")
+    monkeypatch.delenv("LOGFIRE_API_WRITE_KEY")
+
+    sync.round()
+    assert fake.deleted() == [] and store.pending_deletes(10)[0]["id"] == "a"
+
+    monkeypatch.setenv("LOGFIRE_API_WRITE_KEY", KEY)
+    sync.round()
+    assert len(fake.deleted()) == 1 and store.pending_deletes(10) == []
+
+
+def test_a_row_hidden_during_its_push_is_deleted_next_round(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, [("a", "bot-a", None, "human", None, 0, None)])
+    fake = FakeClient(during=lambda: store.hide("a"))
+    sync = DatasetSync(store, factory_for(fake))
+
+    sync.round()  # pushed, and hidden mid-call
+    mid = store.get("a")
+    fake.during = None
+    sync.round()
+
+    assert mid["hidden"] == 1 and mid["dataset_case_id"] is not None  # the id is kept anyway
+    assert fake.deleted() == [mid["dataset_case_id"]] and fake.live == {}
+
+
+def test_a_case_missing_from_the_reply_leaves_the_row_unsynced(tmp_path, keyed):
+    class Dropping(FakeClient):
+        def add_cases(self, dataset_id_or_name, cases, *, on_conflict):
+            return super().add_cases(dataset_id_or_name, cases, on_conflict=on_conflict)[1:]
+
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, [("a", "bot-a", None, "human", None, 0, None),
+                        ("b", "bot-b", None, "human", None, 0, None)])  # fmt: skip
+    sync = DatasetSync(store, factory_for(Dropping()))
+
+    assert sync.round() == 0.05  # a failure: the first backoff step
+    a, b = store.get("a"), store.get("b")
+    assert (a["dataset_synced_at"], a["dataset_case_id"]) == (None, None)
+    assert a["dataset_error_class"] == "MissingCaseId"
+    assert b["dataset_synced_at"] is not None and b["dataset_case_id"] is not None
+
+
+def test_a_rerun_gets_its_own_case_and_the_old_one_is_deleted(settings, helpers, keyed):
+    fake = FakeClient()
+    with TestClient(
+        create_app(settings, helpers.FakeRunner(), dataset_client=factory_for(fake))
+    ) as client:
+        old = submit(client, "rerun-bot")
+        helpers.wait_for(lambda: synced(settings.web_db, old))
+        helpers.wait_for(lambda: client.get(f"/api/submissions/{old}").json()["status"] == "scored")
+        new = client.post(f"/api/admin/submissions/{old}/rerun", headers=ADMIN).json()["id"]
+        store = Store(settings.web_db)
+        helpers.wait_for(
+            lambda: store.get(old)["dataset_deleted_at"] and synced(settings.web_db, new)
+        )
+
+    old_row, new_row = store.get(old), store.get(new)
+    assert old_row["name"].startswith("rerun-bot~") and new_row["name"] == "rerun-bot"
+    assert new_row["dataset_case_id"] != old_row["dataset_case_id"]
+    assert fake.deleted() == [old_row["dataset_case_id"]]
+    assert fake.live == {f"strategy-rerun-bot-{new[:8]}": uuid.UUID(new_row["dataset_case_id"])}
+    sent = json.dumps(fake.calls, default=str)
+    for secret in SECRETS:  # the rerun copies contact details; none of them is ever sent
+        assert secret not in sent

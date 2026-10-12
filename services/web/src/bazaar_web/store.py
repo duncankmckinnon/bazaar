@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS submissions (
     -- many pushes failed since, and the last failure's exception class (never its message).
     dataset_synced_at TEXT,
     dataset_attempts INTEGER NOT NULL DEFAULT 0,
-    dataset_error_class TEXT
+    dataset_error_class TEXT,
+    -- The case's id in the dataset, and when it was deleted after the row was hidden.
+    dataset_case_id TEXT,
+    dataset_deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -230,7 +233,12 @@ class Store:
                 conn.execute("ALTER TABLE submissions ADD COLUMN generation INTEGER")
             if "parents" not in columns:
                 conn.execute("ALTER TABLE submissions ADD COLUMN parents TEXT")
-            for column in ("dataset_synced_at", "dataset_error_class"):
+            for column in (
+                "dataset_synced_at",
+                "dataset_error_class",
+                "dataset_case_id",
+                "dataset_deleted_at",
+            ):
                 if column not in columns:  # existing rows start pending: the backfill
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
             if "dataset_attempts" not in columns:
@@ -718,18 +726,42 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def dataset_synced(self, submission_ids: list[str]) -> None:
-        """These strategies are in the dataset: clear their failures."""
+    def dataset_synced(self, case_ids: dict[str, str]) -> None:
+        """These strategies are in the dataset as these cases ({submission id: case id}): clear
+        their failures. Hidden or not: a row hidden during its push still gets its case id, so
+        the next delete pass removes the case."""
+        stamp = self._stamp()
+        with self._tx() as conn:
+            for submission_id, case_id in case_ids.items():
+                conn.execute(
+                    "UPDATE submissions SET dataset_synced_at = ?, dataset_case_id = ?, "
+                    "dataset_attempts = 0, dataset_error_class = NULL WHERE id = ?",
+                    (stamp, case_id, submission_id),
+                )
+
+    def pending_deletes(self, limit: int) -> list[dict[str, Any]]:
+        """Hidden rows whose case is still in the dataset, oldest first."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, dataset_case_id FROM submissions WHERE hidden = 1 "
+                "AND dataset_case_id IS NOT NULL AND dataset_deleted_at IS NULL "
+                "ORDER BY rowid LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def dataset_deleted(self, submission_ids: list[str]) -> None:
         marks = ", ".join("?" * len(submission_ids))
         with self._tx() as conn:
             conn.execute(
-                "UPDATE submissions SET dataset_synced_at = ?, dataset_attempts = 0, "
+                "UPDATE submissions SET dataset_deleted_at = ?, dataset_attempts = 0, "
                 f"dataset_error_class = NULL WHERE id IN ({marks})",
                 (self._stamp(), *submission_ids),
             )
 
     def dataset_failed(self, submission_ids: list[str], error_class: str) -> None:
-        """A failed push: these stay pending, with one more attempt and the error's class."""
+        """A failed push or delete: these stay pending, with one more attempt and the error's
+        class."""
         marks = ", ".join("?" * len(submission_ids))
         with self._tx() as conn:
             conn.execute(
