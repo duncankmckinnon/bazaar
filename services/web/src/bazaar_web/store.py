@@ -367,7 +367,7 @@ class Store:
 
     def _lead(self, conn: TracedConnection, email: str, ip_hash: str, now: datetime) -> str:
         """The leads row id for this email, made when new; a known email is only touched."""
-        email = email.strip().lower()
+        email = email.lower()  # the API has stripped and lowercased it already
         stamp = now.isoformat()
         row = conn.execute("SELECT id FROM leads WHERE email = ?", (email,)).fetchone()
         if row is not None:
@@ -848,18 +848,33 @@ class Store:
             )
 
     def contacts(self) -> list[dict[str, Any]]:
-        """Visible submissions that left contact details, oldest first (for the admin CSV).
+        """The admin CSV's people: visible submissions that left contact details (source
+        "submission", oldest first), then leads whose email no submission carries, hidden ones
+        included (source "lead", oldest first). Emails are matched normalised (lowercase).
 
-        Operator rows are left out. House runs never carry contact details, so the NOT NULL test
-        already leaves them out too.
+        A submission's created_at is the earliest of its own and its email's lead's, so an email
+        left before submitting keeps its first time. Operator rows and the operator's lead are
+        left out. House runs never carry contact details, so the NOT NULL test leaves them out.
         """
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT id, name, handle, email, company, role, created_at FROM submissions "
-                "WHERE email IS NOT NULL AND lower(email) != ? AND hidden = 0 ORDER BY rowid",
+            people = conn.execute(
+                "SELECT s.id, s.name, s.handle, s.email, s.company, s.role, "
+                "min(s.created_at, coalesce(l.created_at, s.created_at)) AS created_at, "
+                "'submission' AS source FROM submissions AS s "
+                "LEFT JOIN leads AS l ON l.email = lower(s.email) "
+                "WHERE s.email IS NOT NULL AND lower(s.email) != ? AND s.hidden = 0 "
+                "ORDER BY s.rowid",
                 (OPERATOR_CONTACT_EMAIL,),
             ).fetchall()
-        return [dict(row) for row in rows]
+            leads = conn.execute(
+                "SELECT NULL AS id, NULL AS name, NULL AS handle, l.email, NULL AS company, "
+                "NULL AS role, l.created_at, 'lead' AS source FROM leads AS l "
+                "WHERE l.email != ? AND NOT EXISTS "
+                "(SELECT 1 FROM submissions AS s WHERE lower(s.email) = l.email) "
+                "ORDER BY l.created_at, l.rowid",
+                (OPERATOR_CONTACT_EMAIL,),
+            ).fetchall()
+        return [dict(row) for row in (*people, *leads)]
 
     def by_run_dir(self) -> dict[str, dict[str, Any]]:
         with closing(self._connect()) as conn:

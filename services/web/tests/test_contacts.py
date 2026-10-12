@@ -205,7 +205,7 @@ def test_contacts_csv_rows_match_the_board_and_leave_out_hidden_and_contactless(
         'attachment; filename="bazaar-contacts-20261008T140000Z.csv"'
     )
     assert response.text.splitlines()[0] == (
-        "name,handle,email,company,role,created_at,return_pct,rank"
+        "name,handle,email,company,role,created_at,return_pct,rank,source"
     )
     # The seeded runs (no contact details) and the hidden row are not in it.
     assert [r["name"] for r in rows] == ["winner-bot", "second-bot", "waiting-bot"]

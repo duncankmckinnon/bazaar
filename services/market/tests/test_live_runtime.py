@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,7 @@ def test_the_live_target_is_the_conference_app():
         "bazaar-live",
     )
     assert target.environment == "production"
+    assert target.backup_volume == "bazaar-live-backup"
     assert dict(target.extra_env) == {}  # live keeps its caps from its secret or the defaults
 
 
@@ -456,6 +458,7 @@ def test_the_staging_target_has_its_own_app_volume_and_secret():
         "bazaar-staging",
     )
     assert target.environment == "staging"
+    assert target.backup_volume == "bazaar-staging-backup"
 
 
 @pytest.mark.parametrize("value", ["prod", "Live", "STAGING", "bazaar-live", "staging2"])
@@ -464,10 +467,15 @@ def test_an_unknown_target_is_refused(value):
         rt.resolve_target({"BAZAAR_MODAL_TARGET": value})
 
 
-@pytest.mark.parametrize("field", ["app", "volume", "secret"])
+@pytest.mark.parametrize("field", ["app", "volume", "secret", "backup_volume"])
 def test_staging_can_never_resolve_to_a_live_resource(monkeypatch, field):
     staging = rt.TARGETS["staging"]
-    wrong = {"app": "bazaar-live", "volume": "bazaar-live-data", "secret": "bazaar-live"}[field]
+    wrong = {
+        "app": "bazaar-live",
+        "volume": "bazaar-live-data",
+        "secret": "bazaar-live",
+        "backup_volume": "bazaar-live-backup",
+    }[field]
     monkeypatch.setitem(rt.TARGETS, "staging", dataclasses.replace(staging, **{field: wrong}))
 
     with pytest.raises(ValueError, match="must not use a bazaar-live"):
@@ -482,6 +490,7 @@ def test_modal_app_takes_every_live_name_from_the_target():
         "TARGET.app",
         "TARGET.volume",
         "TARGET.secret",
+        "TARGET.backup_volume",
         '"BAZAAR_ENVIRONMENT": TARGET.environment',
         '"BAZAAR_MODAL_TARGET": TARGET.name',
         "**TARGET.extra_env",
@@ -538,3 +547,265 @@ def test_the_market_keeps_idle_connections_open_longer_than_clients_do(tmp_path,
     assert args[args.index("--timeout-keep-alive") + 1] == "75"
     assert rt.MARKET_KEEP_ALIVE > 5  # httpx's default keepalive_expiry
     assert args[args.index("--port") + 1] == "8123"
+
+
+@pytest.mark.parametrize("name", ["live", "staging"])
+@pytest.mark.parametrize("backup", ["", "same"])
+def test_every_target_needs_its_own_backup_volume(monkeypatch, name, backup):
+    target = rt.TARGETS[name]
+    wrong = target.volume if backup == "same" else ""
+    monkeypatch.setitem(rt.TARGETS, name, dataclasses.replace(target, backup_volume=wrong))
+
+    with pytest.raises(ValueError, match="needs a backup volume apart from its data volume"):
+        rt.resolve_target({"BAZAAR_MODAL_TARGET": name})
+
+
+def test_modal_app_mounts_the_backup_volume_and_wires_backups_and_saves():
+    source = (Path(rt.__file__).parent / "modal_app.py").read_text()
+
+    assert "modal.Volume.from_name(TARGET.backup_volume, create_if_missing=True)" in source
+    assert "volumes={DATA: volume, BACKUP: backup_volume}" in source
+    assert "live_runtime.WebBackups(" in source and "backup_volume.commit" in source
+    assert "backups=self.backups" in source
+    assert "web_app.state.on_saved = self.committer.on_saved" in source
+
+
+# ---------- the debounced commit after a new lead or submission ----------
+
+
+def test_on_saved_returns_at_once_and_commits_soon_after():
+    gate = threading.Event()
+    commits = Commits()
+
+    def slow_commit():
+        gate.wait(5)
+        commits()
+
+    committer = rt.VolumeCommitter(slow_commit, interval=3600, debounce=0.05).start()
+    started = time.monotonic()
+    committer.on_saved()
+    assert time.monotonic() - started < 0.05  # the commit is blocked; the hook is not
+    gate.set()
+    assert wait_until(lambda: commits.count == 1)
+    committer.stop()
+
+
+def test_a_burst_of_saves_is_one_commit_per_debounce_window():
+    commits = Commits()
+    committer = rt.VolumeCommitter(commits, interval=3600, debounce=0.5).start()
+    committer.on_saved()
+    assert wait_until(lambda: commits.count == 1)
+    for _ in range(50):
+        committer.on_saved()
+    time.sleep(0.2)
+    assert commits.count == 1  # still inside the window
+    assert wait_until(lambda: commits.count == 2)  # the burst, once
+    time.sleep(0.7)
+    committer.stop()
+
+    assert commits.count == 3  # plus the shutdown commit
+
+
+def test_a_failed_saved_commit_is_logged_and_the_thread_lives_on(caplog):
+    commits = Commits(fail=True)
+    committer = rt.VolumeCommitter(commits, interval=3600, debounce=0.01).start()
+    with caplog.at_level("ERROR", logger="bazaar.live"):
+        committer.on_saved()
+        assert wait_until(lambda: commits.count == 1)
+        committer.on_saved()
+        assert wait_until(lambda: commits.count == 2)
+    committer.stop()
+
+    assert "volume commit failed (new row)" in caplog.text
+
+
+# ---------- web database backups ----------
+
+
+LEAD_EMAIL = "zz-backup-sentinel@example.com"
+
+
+def web_db(path: Path) -> Path:
+    """A web database in WAL mode holding a lead and a submission, as the app writes them."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(
+            "CREATE TABLE leads (id TEXT PRIMARY KEY, email TEXT UNIQUE, created_at TEXT);"
+            "CREATE TABLE submissions (id TEXT PRIMARY KEY, name TEXT, email TEXT);"
+        )
+        conn.execute(
+            "INSERT INTO leads VALUES ('l1', ?, '2026-10-12T19:00:00+00:00')", (LEAD_EMAIL,)
+        )
+        conn.execute("INSERT INTO submissions VALUES ('s1', 'alice-bot', 'alice@example.com')")
+        conn.commit()
+    return path
+
+
+def rows(db: Path) -> tuple[list, list]:
+    with closing(sqlite3.connect(db)) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        return (
+            conn.execute("SELECT id, email FROM leads").fetchall(),
+            conn.execute("SELECT id, name FROM submissions").fetchall(),
+        )
+
+
+NOW = datetime(2026, 10, 12, 19, 30, 5, tzinfo=UTC)
+
+
+def test_a_backup_is_an_online_copy_with_every_committed_row(tmp_path):
+    db = web_db(tmp_path / "web.sqlite3")
+    # A committed row still only in the WAL file: a plain file copy of web.sqlite3 would miss it.
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("INSERT INTO submissions VALUES ('s2', 'late-bot', 'late@example.com')")
+        conn.commit()
+        copy = rt.backup_web_db(db, tmp_path / "backup", now=NOW)
+
+    assert copy == tmp_path / "backup" / "web-20261012T193005Z.sqlite3"
+    assert rows(copy) == ([("l1", LEAD_EMAIL)], [("s1", "alice-bot"), ("s2", "late-bot")])
+    assert sorted(p.name for p in (tmp_path / "backup").iterdir()) == [copy.name]  # no -wal, .part
+
+
+def test_two_backups_in_one_second_both_keep(tmp_path):
+    db = web_db(tmp_path / "web.sqlite3")
+    first = rt.backup_web_db(db, tmp_path / "backup", now=NOW)
+    second = rt.backup_web_db(db, tmp_path / "backup", now=NOW)
+
+    assert (first.name, second.name) == (
+        "web-20261012T193005Z.sqlite3",
+        "web-20261012T193005Z-2.sqlite3",
+    )
+    assert rt.backups(tmp_path / "backup") == [first, second]
+
+
+def test_retention_keeps_exactly_the_newest_48(tmp_path):
+    db = web_db(tmp_path / "web.sqlite3")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "notes.txt").write_text("not a backup")  # never deleted
+    made = [rt.backup_web_db(db, backup, now=NOW + timedelta(minutes=15 * i)) for i in range(52)]
+
+    kept = rt.backups(backup)
+    assert len(kept) == 48 and kept == made[4:]
+    assert (backup / "notes.txt").exists()
+    assert len(list(backup.iterdir())) == 49
+
+
+def test_a_backup_while_a_writer_holds_begin_immediate_succeeds(tmp_path):
+    db = web_db(tmp_path / "web.sqlite3")
+    writer = sqlite3.connect(db, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("INSERT INTO submissions VALUES ('s3', 'uncommitted-bot', 'u@example.com')")
+    try:
+        copy = rt.backup_web_db(db, tmp_path / "backup", now=NOW, attempts=1)
+    finally:
+        writer.execute("COMMIT")
+        writer.close()
+
+    assert copy is not None
+    assert rows(copy) == ([("l1", LEAD_EMAIL)], [("s1", "alice-bot")])  # the committed snapshot
+
+
+def test_a_backup_that_keeps_failing_is_logged_by_class_and_returns_none(
+    tmp_path, caplog, monkeypatch
+):
+    db = web_db(tmp_path / "web.sqlite3")
+
+    def locked(self, target, **kwargs):
+        raise sqlite3.OperationalError(f"database is locked near {LEAD_EMAIL}")
+
+    monkeypatch.setattr(rt.sqlite3, "connect", _connect_with(locked))
+    with caplog.at_level("WARNING", logger="bazaar.live"):
+        copy = rt.backup_web_db(db, tmp_path / "backup", now=NOW, attempts=2, retry_wait=0)
+
+    assert copy is None
+    assert "web backup attempt 2 of 2 failed (OperationalError)" in caplog.text
+    assert LEAD_EMAIL not in caplog.text
+    assert list((tmp_path / "backup").iterdir()) == []  # no .part left behind
+
+
+def test_a_locked_first_attempt_is_retried(tmp_path, monkeypatch):
+    db = web_db(tmp_path / "web.sqlite3")
+    calls = []
+
+    def flaky(self, target, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return self.backup_real(target)
+
+    monkeypatch.setattr(rt.sqlite3, "connect", _connect_with(flaky))
+    copy = rt.backup_web_db(db, tmp_path / "backup", now=NOW, retry_wait=0)
+    monkeypatch.undo()  # rt.sqlite3 is the sqlite3 module: rows() needs the real connect
+
+    assert len(calls) == 2 and rows(copy)[1] == [("s1", "alice-bot")]
+
+
+def _connect_with(backup):
+    """sqlite3.connect whose connections run `backup` instead of Connection.backup."""
+    real = sqlite3.connect
+
+    class Conn:
+        def __init__(self, *args, **kwargs):
+            self.conn = real(*args, **kwargs)
+
+        def backup(self, target, **kwargs):
+            return backup(self, target, **kwargs)
+
+        def backup_real(self, target):
+            return self.conn.backup(target.conn)
+
+        def close(self):
+            self.conn.close()
+
+    return Conn
+
+
+def test_no_database_means_no_backup_and_no_empty_file(tmp_path):
+    assert rt.backup_web_db(tmp_path / "missing.sqlite3", tmp_path / "backup", now=NOW) is None
+    assert not (tmp_path / "missing.sqlite3").exists()
+
+
+def test_web_backups_commit_the_backup_volume_after_each_copy(tmp_path):
+    db = web_db(tmp_path / "web.sqlite3")
+    seen = []
+
+    def commit():
+        seen.append(len(rt.backups(tmp_path / "backup")))
+
+    backups = rt.WebBackups(db, tmp_path / "backup", commit, interval=0.05).start()
+    assert wait_until(lambda: len(seen) >= 2)
+    backups.stop()  # and one last backup
+
+    assert seen[:2] == [1, 2] and len(rt.backups(tmp_path / "backup")) == len(seen)
+
+
+def test_a_failed_backup_volume_commit_is_logged_not_raised(tmp_path, caplog):
+    db = web_db(tmp_path / "web.sqlite3")
+    backups = rt.WebBackups(db, tmp_path / "backup", Commits(fail=True), interval=3600)
+
+    with caplog.at_level("WARNING", logger="bazaar.live"):
+        assert backups.backup_now("test") is False
+
+    assert "backup volume commit failed (test, RuntimeError)" in caplog.text
+
+
+def test_shutdown_backs_up_before_the_last_data_commit(tmp_path):
+    order = []
+    db = web_db(tmp_path / "web.sqlite3")
+    committer = rt.VolumeCommitter(lambda: order.append("data commit"), interval=3600)
+    backups = rt.WebBackups(db, tmp_path / "backup", lambda: order.append("backup commit"))
+    rt.shutdown(sleeper(), committer, threading.Event(), timeout=5, backups=backups)
+
+    assert order == ["backup commit", "data commit"]
+    assert len(rt.backups(tmp_path / "backup")) == 1
+
+
+def wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False

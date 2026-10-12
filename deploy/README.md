@@ -90,8 +90,16 @@ the deploy with `set BAZAAR_DEPLOY_... to an existing local path`.
    If the market dies later, a watchdog logs `the market exited with status N; stopping the container` and exits the
    container non-zero, so Modal starts a new one instead of every run failing against a dead market.
 3. The Volume `bazaar-live-data` at `/data` holds `market.sqlite3`, `runs/` and `web.sqlite3`. It is committed every
-   10 s, after each scored run, and once at shutdown, after the market has exited. A failed commit is logged, never
-   raised into a request.
+   10 s, after each scored run, soon after each new lead or submission, and once at shutdown, after the market has
+   exited. A failed commit is logged, never raised into a request.
+   - `POST /api/leads` and `POST /api/submissions` answer only after their SQLite transaction has committed. Each then
+     asks for a volume commit without waiting for it: the first at once, then at most one every 2 s. So a new row is
+     durable on the volume within about 2 s, and within the 10 s timer at worst.
+   - A second Volume, `bazaar-live-backup` at `/backup` (`bazaar-staging-backup` on staging), keeps backups of the web
+     database: `web-<UTC stamp>.sqlite3`, one every 15 minutes and one at shutdown, before the last data commit. Each
+     is a consistent copy made with SQLite's online backup API, never a file copy. The newest 48 (12 hours) are kept
+     and older ones deleted, and the backup volume is committed after each copy. A failed backup is logged by
+     exception class only and never stops the app. Restore steps are under "Restoring the web database" below.
 4. The web app gets `BAZAAR_MARKET_URL=http://127.0.0.1:8000`, `BAZAAR_RUNS_DIR=/data/runs`,
    `BAZAAR_WEB_DB=/data/web.sqlite3` and `BAZAAR_MARKET_DB=/data/market.sqlite3`.
 
@@ -101,7 +109,7 @@ The scored-run hook: before serving, `modal_app.py` sets `app.state.on_scored` o
 absent, so the web app should treat it as optional: `getattr(app.state, "on_scored", None)`.
 
 Known limit: a commit can snapshot SQLite between two transactions. On restart SQLite recovers from the committed WAL
-file, so the worst case loses up to 10 s of writes.
+file, so the worst case loses up to 10 s of writes, or about 2 s for a new lead or submission (debounced commit).
 
 ## Redeploys
 
@@ -136,6 +144,51 @@ BAZAAR_MODAL_TARGET=live BAZAAR_DEPLOY_MARKET_DB=... BAZAAR_DEPLOY_RUNS=... BAZA
 
 The startup log then says `freshly seeded from /app/seed/market.sqlite3`. For a new set of seed runs, use the
 one-shot reseed below, which archives instead of deleting.
+
+### Restoring the web database
+
+The web database holds the submissions, the leads and their contact details. To roll it back to a backup (staging:
+use `bazaar-staging-backup`, `bazaar-staging-data` and `bazaar-staging` instead):
+
+1. List the backups. The UTC time is in the name, so the newest sorts last:
+
+   ```sh
+   uvx modal volume ls bazaar-live-backup
+   ```
+
+2. Pick one and download it, for example `web-20261012T193005Z.sqlite3`:
+
+   ```sh
+   uvx modal volume get bazaar-live-backup /web-20261012T193005Z.sqlite3 .
+   sqlite3 web-20261012T193005Z.sqlite3 "PRAGMA integrity_check; SELECT count(*) FROM submissions; SELECT count(*) FROM leads;"
+   ```
+
+   It must print `ok`. Stopping the app in the next step takes one more backup; if the live database is still
+   readable, that one is the newest state, so list again after step 3 and consider it.
+
+3. Stop the app, so nothing writes the database or commits the data volume while it is replaced:
+
+   ```sh
+   uvx modal app stop bazaar-live
+   ```
+
+4. Remove the old database's WAL and SHM files, then copy the backup in as `web.sqlite3`. A backup is a single file;
+   a `-wal` left from the old database would be replayed onto it and corrupt it.
+
+   ```sh
+   uvx modal volume ls bazaar-live-data
+   uvx modal volume rm bazaar-live-data /web.sqlite3-wal   # if listed
+   uvx modal volume rm bazaar-live-data /web.sqlite3-shm   # if listed
+   uvx modal volume put -f bazaar-live-data ./web-20261012T193005Z.sqlite3 /web.sqlite3
+   ```
+
+5. Redeploy with the usual command (see "Deploy (PM only)").
+
+6. Verify with the contacts CSV: its row count and newest rows should match the backup's.
+
+   ```sh
+   curl -s -H "X-Bazaar-Admin-Token: $BAZAAR_ADMIN_TOKEN" "$PUBLIC_URL/api/admin/contacts" | wc -l
+   ```
 
 ### Reseed runs (one-shot)
 
@@ -379,7 +432,8 @@ Signatures printed from the installed package with `inspect.signature`:
 - `modal.is_local()`: False only inside a running Modal Function, so the deploy-time paths are read only locally.
 - CLI, from `uvx modal ... --help`: `modal app stop [-y] APP_IDENTIFIER`, `modal volume ls VOLUME_NAME [PATH]`,
   `modal volume rm [-r] VOLUME_NAME REMOTE_PATH`, `modal volume cp [-r] VOLUME_NAME PATHS...`,
-  `modal volume delete [-y] NAME`, `modal secret create [--from-dotenv PATH] [--force] SECRET_NAME [KEYVALUES]...`,
+  `modal volume delete [-y] NAME`, `modal volume get [--force] VOLUME_NAME REMOTE_PATH [LOCAL_DESTINATION]`,
+  `modal volume put [-f] VOLUME_NAME LOCAL_PATH [REMOTE_PATH]`, `modal secret create [--from-dotenv PATH] [--force] SECRET_NAME [KEYVALUES]...`,
   `modal secret delete [-y] NAME`.
 
 `Image.uv_sync` is not used: modal 1.6.1 raises `uv workspaces are not supported` for a `pyproject.toml` with

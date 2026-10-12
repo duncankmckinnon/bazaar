@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -46,6 +47,8 @@ from bazaar_web.worker import WAITING_FOR_BUNDLE, RunSubmission, Worker
 STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
 FONT_NAME = re.compile(r"^[A-Za-z0-9_-]+\.woff2$")
+
+log = logging.getLogger("bazaar_web.app")
 
 
 # A conservative check, not RFC 5322 (no email-validator dependency): one "@", no whitespace, a
@@ -175,7 +178,9 @@ class LeadIn(BaseModel):
         return clean_email(value)
 
 
-CONTACT_COLUMNS = ["name", "handle", "email", "company", "role", "created_at", "return_pct", "rank"]
+CONTACT_COLUMNS = [
+    "name", "handle", "email", "company", "role", "created_at", "return_pct", "rank", "source",
+]  # fmt: skip
 # A spreadsheet runs a cell starting with these as a formula (CSV injection).
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 
@@ -207,6 +212,7 @@ def create_app(
     run_submission: RunSubmission | None = None,
     on_scored: Callable[[str, Path], None] | None = None,
     now: Now | None = None,
+    on_saved: Callable[[], None] | None = None,
     bundle_source: BundleSource | None = None,
     strategist: Strategist | None = None,
     dataset_client: ClientFactory | None = None,
@@ -249,6 +255,19 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detail)})
 
     app.state.on_scored = on_scored
+    # Called after a new lead or submission has committed (modal_app.py: a debounced volume
+    # commit). It must return at once; a failure is logged by class and never fails the request.
+    app.state.on_saved = on_saved
+
+    def saved(request: Request) -> None:
+        hook = request.app.state.on_saved
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception as exc:  # noqa: BLE001 - the row is already committed
+            log.warning("on_saved hook failed (%s)", type(exc).__name__)
+
     tickers = TickerSource(settings.market_db)
     bundles = bundle_source or BundleSource(settings.market_url, settings.data_bundle)
 
@@ -338,7 +357,9 @@ def create_app(
             raise HTTPException(422, "that name is taken") from None
         except CapReached as cap:
             raise HTTPException(429, cap.detail) from None
-        # A taken name gets a random suffix (Store.create): the final name is the stored one.
+        # Committed: Store.create returns after its transaction. A taken name got a random
+        # suffix there, so the final name is the stored one.
+        saved(request)
         name = store.get(submission_id)["name"]
         position = store.position(submission_id)  # read before a worker can pick it up
         request.app.state.worker.enqueue(submission_id)
@@ -366,6 +387,7 @@ def create_app(
                 )
             except CapReached as cap:
                 raise HTTPException(429, cap.detail, headers=no_store) from None
+        saved(request)  # add_lead returns after its transaction has committed
         return Response(status_code=204, headers=no_store)
 
     @app.get("/api/submissions/{submission_id}")
@@ -436,8 +458,10 @@ def create_app(
 
     @app.get("/api/admin/contacts")
     def contacts(request: Request, token: AdminToken = None) -> Response:
-        """CSV of the submitters who left contact details, to reach winners. Admin only and
-        untraced: it is the one place personal data leaves the web DB."""
+        """CSV of the submitters who left contact details, to reach winners, then the emails
+        left at the form's first step that never submitted (source "lead": email and time only).
+        A submission's created_at is its email's earliest (its lead's, when that came first).
+        Admin only and untraced: it is the one place personal data leaves the web DB."""
         require_admin(token)
         with logfire.suppress_instrumentation():
             store: Store = request.app.state.store
@@ -456,6 +480,7 @@ def create_app(
                     person["created_at"],
                     "" if not scored or row["return_pct"] is None else row["return_pct"],
                     row["rank"] if scored else "",
+                    person["source"],
                 ]
             )
         return Response(
