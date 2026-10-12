@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
 from bazaar_web import stats, telemetry
-from bazaar_web.board import BoardSource, build_board
+from bazaar_web.board import BoardSource, board_rows, build_board
 from bazaar_web.bundle import BundleSource
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
@@ -199,6 +199,10 @@ def create_app(
     tickers = TickerSource(settings.market_db)
     bundles = bundle_source or BundleSource(settings.market_url, settings.data_bundle)
 
+    def all_rows(request: Request) -> list[dict[str, Any]]:
+        """Every row, ranked over all of them (the board payload sends only the top rows)."""
+        return board_rows(request.app.state.board, request.app.state.store, settings.logfire_url)[0]
+
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(
             request.app.state.board, request.app.state.store, settings.logfire_url, bundles.get()
@@ -284,9 +288,7 @@ def create_app(
             submission = store.get(submission_id)
             if submission is None or submission["hidden"]:
                 raise HTTPException(404, "no such submission")
-            row = next(
-                (r for r in board_payload(request)["rows"] if r["id"] == submission_id), None
-            )
+            row = next((r for r in all_rows(request) if r["id"] == submission_id), None)
             scored = row is not None and row["status"] == "scored"
             provisional = row is not None and row["status"] == "running" and row["provisional"]
             return {
@@ -350,7 +352,7 @@ def create_app(
         require_admin(token)
         with logfire.suppress_instrumentation():
             store: Store = request.app.state.store
-            rows = {r["id"]: r for r in board_payload(request)["rows"]}
+            rows = {r["id"]: r for r in all_rows(request)}
             people = store.contacts()
             stamp = store.now().strftime("%Y%m%dT%H%M%SZ")
         out = io.StringIO()

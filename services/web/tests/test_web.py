@@ -328,6 +328,7 @@ def test_board_order_and_ranks(seeded, helpers):
         ids = [submit(client, name=f"wait-{i}", ip=f"10.0.1.{i}").json()["id"] for i in range(4)]
         helpers.wait_for(lambda: [status(client, i)["status"] for i in ids[:3]] == ["running"] * 3)
         board = rows(client)
+        total = client.get("/api/board").json()["total"]
         runner.gate.set()
 
     summary = [(r["name"], r["status"], r["rank"]) for r in board]
@@ -337,11 +338,10 @@ def test_board_order_and_ranks(seeded, helpers):
         ("baseline-cash-only", "scored", 3),
         ("low-bot", "scored", 4),
     ]
-    assert [s for _, s, _ in summary[4:]] == ["running"] * 3 + ["queued", "failed"]
+    # Failed runs (seed-refused; bad-bot never had a run dir) are not on the board: counted only.
+    assert [s for _, s, _ in summary[4:]] == ["running"] * 3 + ["queued"]
     assert all(rank is None for _, _, rank in summary[4:])
-    refused = board[-1]
-    assert (refused["id"], refused["return_pct"], refused["fills"]) == ("seed-refused", None, None)
-    assert "bad-bot" not in [r["name"] for r in board]  # failed before any run dir existed
+    assert total == {"rows": 9, "scored": 4, "running": 3, "queued": 1, "failed": 1}
 
 
 def test_hide_requires_the_admin_token(seeded, helpers):
