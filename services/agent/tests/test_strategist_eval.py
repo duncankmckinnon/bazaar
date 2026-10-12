@@ -19,18 +19,24 @@ from bazaar_agent.strategist_eval import (
     DeliveredK,
     DistinctNames,
     Executable,
+    LearnsFromTop,
     NoMultiPosition,
     NoParentCopy,
+    ParentDistance,
     ParentsInBrief,
+    SectorDiversity,
     StrategistCase,
     StrategistCaseMeta,
     StrategistOutput,
+    TickerDiversity,
+    TopParentShare,
     dataset,
     make_task,
     push_dataset,
 )
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_evals.evaluators import EvaluatorContext
 
 
@@ -203,20 +209,40 @@ async def test_the_task_k_overrides_the_cases(with_model):
     assert built == [None]  # no model name: the strategist's default
 
 
+def judge_returning(score=0.8, prompts=None):
+    async def respond(messages, info):
+        if prompts is not None:
+            prompts.append(
+                "\n".join(
+                    str(p.content)
+                    for m in messages
+                    for p in m.parts
+                    if isinstance(p, UserPromptPart)
+                )
+            )
+        grade = {"reason": "Keeps the top's momentum trait.", "pass": True, "score": score}
+        return ModelResponse([ToolCallPart(info.output_tools[0].name, grade)])
+
+    # Instrumented like a real judge, so its chat spans are exported and checked too.
+    return InstrumentedModel(FunctionModel(respond), InstrumentationSettings(include_content=True))
+
+
 def test_an_experiment_never_looks_like_a_run_or_a_proposal(with_model, capfire):
-    """PM: experiment output must never reach dashboards or brief()."""
+    """PM: experiment output, the judge's calls included, must never reach dashboards or brief()."""
     with_model(model_returning([MULTI, GOOD, MIXED]))
-    report = dataset({"two-strategies": (CASE, META)}).evaluate_sync(
+    report = dataset({"two-strategies": (CASE, META)}, judge_model=judge_returning()).evaluate_sync(
         make_task(), name="role-baseline", progress=False
     )
     (case,) = report.cases
     assert case.assertions["DeliveredK"].value is True
     assert case.scores["NoMultiPosition"].value == pytest.approx(2 / 3)
+    assert case.scores["LearnsFromTop"].value == 0.8 and not case.evaluator_failures
 
     spans = capfire.exporter.exported_spans_as_dict()
     names = [s["name"] for s in spans]
     messages = [s["attributes"].get("logfire.msg") for s in spans]
     assert "evaluate role-baseline" in messages and "strategist.eval_case" in names
+    assert any(name.startswith("chat ") for name in names)  # the judge's model call
     assert "bazaar.run scored" not in names and "bazaar.run scored" not in messages
     assert "strategist.propose" not in names
     for span in spans:
@@ -294,6 +320,16 @@ def test_the_dataset_carries_every_evaluator_and_named_cases():
         "ParentsInBrief",
         "NoParentCopy",
         "DeliveredK",
+        "TopParentShare",
+        "TickerDiversity",
+        "SectorDiversity",
+        "ParentDistance",
+        "LearnsFromTop",
+    }
+    (judge,) = [e for e in ds.evaluators if type(e).__name__ == "LearnsFromTop"]
+    assert judge.model == "gateway/anthropic:claude-sonnet-5"  # one fixed judge for every arm
+    assert "LearnsFromTop" not in {
+        type(e).__name__ for e in dataset({"a": (CASE, META)}, judge_model=None).evaluators
     }
 
 
@@ -312,3 +348,103 @@ def test_case_meta_round_trips_through_the_dataset(tmp_path):
     assert again.cases[0].inputs == CASE
     with pytest.raises(ValueError):
         StrategistCaseMeta(parent_texts="made-up", source="x")
+
+
+# Quality scores (D1-S2): computed on the ACCEPTED proposals.
+
+
+def proposal(name, instructions, parents=("momo-a",)):
+    return Proposal(name=name, instructions=instructions, parents=list(parents), idea="An idea.")
+
+
+def quality(evaluator, proposals):
+    return score(evaluator, [], proposals, k=len(proposals))
+
+
+def test_top_parent_share():
+    links = [
+        proposal("g1-a", "Buy AAPL on up days.", ["momo-a"]),
+        proposal("g1-b", "Buy KO on up days.", ["momo-a"]),
+        proposal("g1-c", "Buy KO on down days.", ["value-c"]),
+    ]
+    assert quality(TopParentShare(), links) == pytest.approx(2 / 3)
+    assert quality(TopParentShare(), links[:2]) == 1.0
+    assert quality(TopParentShare(), []) == 0.0
+
+
+def test_ticker_diversity_reads_tickers_as_the_gate_does():
+    same = [proposal(f"g1-{i}", "Buy AAPL when RSI < 30; sell AAPL after 3 days.") for i in "abc"]
+    assert quality(TickerDiversity(), same) == pytest.approx(1 / 6)  # RSI is not a ticker
+    spread = [
+        proposal("g1-a", "Buy AAPL on up days."),
+        proposal("g1-b", "Buy KO on up days."),
+        proposal("g1-c", "Buy $AAPL or KO on down days."),
+    ]
+    assert quality(TickerDiversity(), spread) == 0.5  # 2 distinct / 4 mentions
+    assert quality(TickerDiversity(), [proposal("g1-x", "Buy the top mover each day.")]) == 0.0
+
+
+def test_sector_diversity():
+    tech = [proposal(f"g1-{i}", "Buy AAPL on up days.") for i in "abc"]
+    assert quality(SectorDiversity(), tech) == 0.5  # 1 sector / min(3 proposals, 2 sectors)
+    both = [proposal("g1-a", "Buy AAPL on up days."), proposal("g1-b", "Buy KO on up days.")]
+    assert quality(SectorDiversity(), both) == 1.0
+    # The benchmark is its own bucket; the score is capped at 1.
+    spy = [proposal("g1-a", "Buy SPY and AAPL and KO on up days.")]
+    assert quality(SectorDiversity(), spy) == 1.0
+    assert quality(SectorDiversity(), []) == 0.0
+
+
+def test_parent_distance():
+    copy = proposal("g1-copy", MOMO)
+    fresh = proposal("g1-fresh", "Hold KO through earnings week and sell on the first gap down.")
+    orphan = proposal("g1-orphan", "Buy KO on up days.", ["no-text"])
+    assert quality(ParentDistance(), [copy]) == 0.0
+    far = quality(ParentDistance(), [fresh])
+    assert 0.5 < far < 1.0
+    # A proposal whose parents have no text is skipped, not counted as 0 or 1.
+    assert quality(ParentDistance(), [copy, fresh, orphan]) == pytest.approx(far / 2)
+    assert quality(ParentDistance(), [orphan]) == 0.0
+
+
+async def test_the_judge_scores_from_a_compact_prompt_without_the_universe():
+    prompts = []
+    universe = [
+        {"symbol": f"S{i:03d}", "name": f"Stock {i}", "sector": "Fixture Tech"} for i in range(500)
+    ]
+    case = CASE.model_copy(update={"universe": [*CASE.universe, *universe]})
+    accepted = [proposal("g1-a", "Buy AAPL on up days with 25% of cash.")]
+    ctx = EvaluatorContext(
+        name="case",
+        inputs=case,
+        metadata=META,
+        expected_output=None,
+        output=StrategistOutput(drafts=[], proposals=accepted, k=1),
+        duration=0.0,
+        _span_tree=None,
+        attributes={},
+        metrics={},
+    )
+    result = await LearnsFromTop(model=judge_returning(0.7, prompts)).evaluate(ctx)
+    assert result.value == 0.7 and result.reason == "Keeps the top's momentum trait."
+    (prompt,) = prompts
+    assert len(prompt) < 3000 and "S499" not in prompt and "Stock 1" not in prompt
+    assert "Apple Fixture" not in prompt and "UNTRUSTED" in prompt
+    assert MOMO in prompt and "Buy AAPL on up days with 25% of cash." in prompt
+    assert "keep what distinguishes the top performers" in prompt  # the rubric
+
+
+def test_a_judge_failure_is_recorded_and_the_experiment_goes_on(with_model):
+    async def boom(messages, info):
+        raise RuntimeError("upstream said sk-secret-value")
+
+    with_model(model_returning([GOOD, MIXED]))
+    report = dataset({"c": (CASE, META)}, judge_model=FunctionModel(boom)).evaluate_sync(
+        make_task(), progress=False
+    )
+    (case,) = report.cases
+    (failure,) = case.evaluator_failures
+    assert failure.name == "LearnsFromTop" and "RuntimeError" in failure.error_message
+    assert "sk-secret" not in failure.error_message + failure.error_stacktrace
+    # Every other score was still computed.
+    assert case.scores["TopParentShare"].value == 1.0 and "LearnsFromTop" not in case.scores
