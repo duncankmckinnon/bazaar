@@ -157,6 +157,9 @@ async def record_run(
     run_dir = runs_dir / str(spec.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     attributes = bazaar_attributes(spec, policy_ref, strategy_name, submission_id, handle)
+    # The run's bundle, so a brief can keep one window's runs: on runner.run and the scored log
+    # only, never baggage (the allow-list in bazaar_attributes is unchanged).
+    bundle = {"bazaar.data_version": spec.data_version}
     # The source's name only, never the role text; on the span, not in baggage.
     source = active_role_source()
     role = {"bazaar.trading_role_source": source} if source else {}
@@ -167,6 +170,7 @@ async def record_run(
             experiment_id=str(spec.experiment_id),
             policy_ref=policy_ref,
             **attributes,
+            **bundle,
             **role,
         ) as span,
         redacted_exceptions(),
@@ -182,7 +186,7 @@ async def record_run(
         (run_dir / "record.json").write_text(record.model_dump_json(indent=2))
         evaluation = _evaluate(evaluate, record) if evaluate else None
         if evaluation is not None:
-            logfire.info("bazaar.run scored", **attributes, **scored(record, evaluation))
+            logfire.info("bazaar.run scored", **attributes, **bundle, **scored(record, evaluation))
 
     if evaluation is not None:
         (run_dir / "evaluation.json").write_text(evaluation.model_dump_json(indent=2))
