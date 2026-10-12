@@ -125,9 +125,8 @@ def test_board_formats_percent_without_scaling():
 def test_board_escapes_server_text():
     script = BOARD.split("<script>", 1)[1]
     assert "setName(nm, r.name, safeUrl(r.logfire_url));" in script
-    assert "text.textContent = String(ev.text);" in script  # market wire
     # Server strings never reach an HTML string.
-    for field in ("r.name", "r.handle", "r.status", "r.day", "ev.text", "r.logfire_url",
+    for field in ("r.name", "r.handle", "r.status", "r.day", "r.logfire_url",
                   "s.name", "q.symbol", "day.date"):  # fmt: skip
         assert f"${{{field}}}" not in script
     assert 'innerHTML = \'<span class="rk">' in script  # static row skeleton only
@@ -139,7 +138,7 @@ def test_board_uses_the_arcade_design_on_the_podium_background():
     assert "<h1>TRADING AGENT FACTORY</h1>" in BOARD and "DASHBOARD" not in BOARD
     assert ".hd h1 { margin: 0; white-space: nowrap;" in BOARD  # one line at any width
     assert "PORTFOLIO VALUE BY TRADING DAY" in BOARD
-    assert "MARKET WIRE" in BOARD and "INSERT POLICY" in BOARD
+    assert "INSERT POLICY" in BOARD and "SCAN TO PLAY" in BOARD
     assert (
         "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
         "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, "
@@ -175,7 +174,7 @@ def test_board_defines_the_helpers_its_functions_call():
         assert f"const {helper} = " in script, helper
     for function in (
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
-        "renderBoard", "selectRows", "measureCapacity", "renderWire", "renderTape", "showTip", "applyFocus", "loadTickers",
+        "renderBoard", "selectRows", "measureCapacity", "renderTape", "showTip", "applyFocus", "loadTickers",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -247,10 +246,28 @@ def test_the_header_and_tape_take_the_window_from_the_data():
     assert '$("sub-a").textContent' in script and '$("sub-b").textContent' in script
 
 
-def test_the_conference_layout_puts_the_qr_bottom_right_and_the_wire_under_the_chart():
-    assert '"hd hd hd" "board chart chart" "board wire side" "tape tape tape"' in BOARD
+def test_the_conference_layout_puts_the_qr_strip_under_the_chart():
+    assert '"hd hd hd" "board chart chart" "board side side" "tape tape tape"' in BOARD
     body = BOARD.split("<main", 1)[1]
-    assert body.index('class="chart"') < body.index('class="wire"') < body.index('class="side"')
+    assert body.index('class="chart"') < body.index('class="side"')
+
+
+def test_the_board_has_no_market_wire():
+    # L3: the market wire panel is gone, markup, style and script. /api/board still sends
+    # "events"; the board just doesn't render them.
+    assert "wire" not in BOARD.lower()
+    script = BOARD.split("<script>", 1)[1]
+    assert "data.events" not in script and "ev.text" not in script
+
+
+def test_the_qr_keeps_a_four_module_quiet_zone_and_error_correction_h():
+    script = BOARD.split("<script>", 1)[1]
+    assert 'qrcode(0, "H")' in script
+    assert re.search(r"\bpad = 4, size = n \+ pad \* 2;", script)
+
+
+def test_the_legend_never_drops_below_12px():
+    assert re.search(r"\.legend \{[^}]*font: 500 max\(calc\(var\(--u\)\*\.63\), 12px\)", BOARD)
 
 
 def select_rows(rows, capacity):

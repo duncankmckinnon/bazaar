@@ -33,11 +33,11 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 @keyframes blink { 50% { opacity: 0; } }
 
 /* Layout for a half-width conference pane: header / leaderboard beside the chart, then the
-   market wire and the QR under the chart / ticker, on the podium background. */
+   QR strip under the chart / ticker, on the podium background. */
 .dash { position: fixed; inset: 0; overflow: hidden; color: var(--sugar);
   background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, rgba(255,101,80,0) 60%), #36182D;
   display: grid; grid-template-columns: calc(var(--u)*40) minmax(0,1fr) auto; grid-template-rows: auto minmax(0,1fr) auto auto;
-  grid-template-areas: "hd hd hd" "board chart chart" "board wire side" "tape tape tape";
+  grid-template-areas: "hd hd hd" "board chart chart" "board side side" "tape tape tape";
   gap: calc(var(--u)*1.2) calc(var(--u)*2); padding: calc(var(--u)*1.4) calc(var(--u)*2) 0; }
 .dash::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 2px, rgba(0,0,0,0) 2px 4px); mix-blend-mode: multiply; z-index: 4; }
 .hd { grid-area: hd; display: flex; align-items: center; gap: calc(var(--u)*2); }
@@ -90,26 +90,21 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .tip-box { position: absolute; pointer-events: none; z-index: 3; background: rgba(6,19,20,.92); border: 1px solid var(--pyai-cyan); padding: calc(var(--u)*.45) calc(var(--u)*.7); font: 500 calc(var(--u)*.8)/1.4 var(--mono); white-space: nowrap; }
 .tip-box[hidden] { display: none; }
 .tip-box b { display: block; color: var(--pyai-yellow); font-weight: 700; }
-.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: calc(var(--u)*.3) calc(var(--u)*1.2); font: 500 calc(var(--u)*.75)/1.4 var(--mono); }
+.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: calc(var(--u)*.25) calc(var(--u)*1); font: 500 max(calc(var(--u)*.63), 12px)/1.35 var(--mono); }
 .legend li { display: flex; align-items: center; gap: .45em; cursor: pointer; max-width: calc(var(--u)*16); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: .9; }
 .legend li.on { opacity: 1; text-decoration: underline; }
 .legend i { flex: 0 0 auto; width: 1.4em; height: .3em; border-radius: 2px; background: var(--c); }
 .legend li.baseline i { background: repeating-linear-gradient(90deg, var(--c) 0 .35em, transparent .35em .6em); }
 
-/* Bottom right: insert coin and the QR. */
-.side { grid-area: side; min-height: 0; display: flex; align-items: center; gap: calc(var(--u)*1.4); }
-.side .ins { display: flex; flex-direction: column; gap: calc(var(--u)*.8); max-width: calc(var(--u)*14); }
-.ar-coin { font: 400 calc(var(--u)*.95)/1.5 var(--pixel); color: var(--pyai-yellow); text-align: center; animation: blink 1.1s steps(1) infinite; }
-.ar-qr { background: var(--sugar); padding: calc(var(--u)*.9); border: calc(var(--u)*.35) solid var(--pyai-cyan); box-shadow: 0 0 0 calc(var(--u)*.35) var(--darkpurple), 0 0 0 calc(var(--u)*.7) var(--pyai-magenta); width: calc(var(--u)*12); flex: 0 0 auto; }
-.side p { font: 400 calc(var(--u)*.62)/1.8 var(--pixel); color: #e6cfe0; margin: 0; text-align: center; }
-.side .url { font: 500 calc(var(--u)*.7)/1.3 var(--mono); color: #c9a9bf; word-break: break-all; }
-/* Under the chart, left of the QR: the market wire. */
-/* contain: size, so the QR block sets the row's height and the wire shows what fits. */
-.wire { grid-area: wire; min-height: 0; contain: size; overflow: hidden; display: flex; flex-direction: column; border-top: 2px solid rgba(251,255,234,.18); padding-top: calc(var(--u)*.8); }
-.wire h3 { margin: 0 0 calc(var(--u)*.6); font: 400 calc(var(--u)*.7)/1 var(--pixel); color: var(--pyai-cyan); }
-.wire ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: calc(var(--u)*.45); overflow: hidden; }
-.wire li { font: 400 calc(var(--u)*.78)/1.35 var(--sans); color: #e6cfe0; display: grid; grid-template-columns: calc(var(--u)*4.2) 1fr; gap: .5em; }
-.wire li time { font: 400 calc(var(--u)*.68)/1.7 var(--mono); color: var(--muted); }
+/* Under the chart: the QR strip. The QR is its dominant element, with the call to action beside
+   it, sized to read across a room. The QR keeps a 4-module quiet zone (qrSVG) on the light
+   card, and error correction H for the logo in its centre. */
+.side { grid-area: side; min-height: 0; display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--u)*2.4); padding-bottom: calc(var(--u)*.6); }
+.side .ins { display: flex; flex-direction: column; align-items: flex-end; gap: calc(var(--u)*1.1); }
+.ar-coin { font: 400 calc(var(--u)*1.6)/1.4 var(--pixel); color: var(--pyai-yellow); text-align: right; animation: blink 1.1s steps(1) infinite; }
+.ar-qr { background: var(--sugar); border: calc(var(--u)*.4) solid var(--pyai-cyan); box-shadow: 0 0 0 calc(var(--u)*.4) var(--darkpurple), 0 0 0 calc(var(--u)*.8) var(--pyai-magenta); width: calc(var(--u)*19); flex: 0 0 auto; }
+.side p { font: 400 calc(var(--u)*1)/1.8 var(--pixel); color: #e6cfe0; margin: 0; text-align: right; }
+.side .url { font: 500 calc(var(--u)*1.15)/1.3 var(--mono); color: var(--sugar); word-break: break-all; }
 
 /* Bottom: the replay tape of each day's top movers. */
 .tape { grid-area: tape; margin: 0 calc(var(--u)*-2); display: flex; align-items: center; border-top: 2px solid rgba(251,255,234,.18); background: rgba(6,19,20,.55); overflow: hidden; white-space: nowrap; }
@@ -140,7 +135,6 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
   .ar-cols span:nth-child(4), .ar-row .rt { display: none; }
   .plot { height: 300px; flex: none; }
   .legend li { max-width: 46vw; }
-  .wire { contain: none; max-height: 260px; }
   .side { justify-content: center; }
   .tape { margin: 0 -14px; }
 }
@@ -169,7 +163,6 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
     <div class="plot" id="plot"><svg id="svg" role="img" aria-label="Portfolio value by trading day"></svg><div class="tip-box" id="tip" hidden></div></div>
     <ul class="legend" id="legend"></ul>
   </section>
-  <section class="wire" aria-label="Market wire"><h3>MARKET WIRE</h3><ol id="wire"></ol></section>
   <aside class="side">
     <div class="ins">
       <div class="ar-coin">INSERT POLICY</div>
@@ -277,7 +270,7 @@ function countTo(el, to, fmt) {
 function qrSVG(url, fg, mark) {
   if (typeof qrcode !== "function") return `<div class="qr-fallback">${esc(url)}</div>`;
   const q = qrcode(0, "H"); q.addData(url); q.make();
-  const n = q.getModuleCount(), pad = 2, size = n + pad * 2;
+  const n = q.getModuleCount(), pad = 4, size = n + pad * 2;  // a 4-module quiet zone
   const finder = (r, c) => (r < 7 && c < 7) || (r < 7 && c >= n - 7) || (r >= n - 7 && c < 7);
   const hole = Math.ceil(n * 0.24) | 1, h0 = (n - hole) / 2;
   const inHole = (r, c) => r >= h0 && r < h0 + hole && c >= h0 && c < h0 + hole;
@@ -292,7 +285,7 @@ function qrSVG(url, fg, mark) {
 /* ---------- page ---------- */
 const $ = (id) => document.getElementById(id);
 const list = $("list"), conn = $("conn"), plot = $("plot"), svg = $("svg"), tip = $("tip");
-const legend = $("legend"), wire = $("wire");
+const legend = $("legend");
 $("logo").innerHTML = LOGO_SVG;
 $("qr").innerHTML = qrSVG(SUBMIT_URL, "#36182D", "#E320E7");
 $("url").textContent = SUBMIT_URL.replace(/^https?:\/\//, "");
@@ -518,20 +511,6 @@ plot.addEventListener("mousemove", showTip);
 plot.addEventListener("mouseleave", () => { tip.hidden = true; const c = document.getElementById("cursor"); if (c) { c.setAttribute("x1", -10); c.setAttribute("x2", -10); } setFocus(null); });
 addEventListener("resize", () => { if (lastData) renderChart(lastData); });
 
-/* ---------- market wire (right) ---------- */
-function renderWire(data) {
-  const events = Array.isArray(data.events) ? data.events : [];
-  wire.replaceChildren(...events.slice(0, 12).map(ev => {
-    const li = document.createElement("li");
-    const time = document.createElement("time"), text = document.createElement("span");
-    const d = new Date(ev.t);
-    time.textContent = isNaN(d) ? "" : d.toTimeString().slice(0, 5);
-    text.textContent = String(ev.text);
-    li.append(time, text);
-    return li;
-  }));
-}
-
 /* ---------- the replay tape: each day's top movers (bottom) ---------- */
 const tape = $("tape"), track = $("track"), tapeLabel = $("tape-label");
 let tapeDays = [], tapeIndex = 0, tapeWindow = null;
@@ -591,7 +570,6 @@ function render(data) {
   renderHeader(data);
   renderBoard(data);
   renderChart(data);
-  renderWire(data);
 }
 
 async function poll() {
