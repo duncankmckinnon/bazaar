@@ -1164,13 +1164,18 @@ async def test_initial_reads_share_wall_time_budget_before_factory():
 async def test_initial_and_model_work_share_one_timeout_not_fresh_timeouts(monkeypatch):
     """One deadline covers the initial market reads AND the model: each phase alone fits the
     budget, their sum does not. Time is virtual (the loop's clock, which asyncio.timeout_at
-    uses), so the result never depends on how busy the machine is."""
+    uses), so the result never depends on how busy the machine is.
+
+    The cancel lands in the model STEP, not inside the model function. The function runs in a
+    pydantic_graph child task and finishes its virtual work, and the passed deadline then cancels
+    run_decision's task while it awaits that child."""
     loop = asyncio.get_running_loop()
     now = [loop.time()]
     monkeypatch.setattr(loop, "time", lambda: now[0])
 
     async def work(seconds):
-        # Virtual work: the clock moves on, then the loop runs any timeout now due.
+        # Virtual work: the clock moves on and the loop gets a turn. The yields are not where the
+        # cancel lands (see the docstring); they only let the loop run its due callbacks.
         now[0] += seconds
         await asyncio.sleep(0)
         await asyncio.sleep(0)
