@@ -216,6 +216,9 @@ def static_page(name: str, label: str) -> Response:
     return HTMLResponse(PLACEHOLDER.format(label))
 
 
+SLOW_BOARD_S = 2.0  # a /api/board slower than this logs its two phases (it is not traced)
+
+
 class BoardCache:
     """Stale-while-revalidate over the /api/board payload: a build parses run dirs and queries
     the store (about 97 s cold after a deploy, up to 8 s warm), so requests rarely wait on one.
@@ -560,20 +563,29 @@ def create_app(
 
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:
+        start = time.perf_counter()
         payload = request.app.state.board_cache.get()
+        cached = time.perf_counter()
         if payload is None:  # a first boot whose first build failed; the page retries
             raise HTTPException(503, "board not ready")
         store = request.app.state.store
         with logfire.suppress_instrumentation():  # polled; see submission_status
             # Cheap parts stay live on a cached board: the factory line, the trading window (the
-            # bundle source caches it) and moderation, so a stale or persisted payload never
-            # shows a hidden row.
+            # bundle source caches it), and moderation: the rows' hidden ids and the events
+            # (recent_events leaves hidden rows out), so a stale or persisted payload never
+            # names a hidden row.
             factory = board_factory(store, settings.house_enabled)
             cash = (payload.get("window") or {}).get("starting_cash", 10000.0)
             window = board_window(bundles.get(), cash)
             hidden = store.hidden_ids()
+            events = store.recent_events(20)
         rows = [r for r in payload.get("rows", []) if r.get("id") not in hidden]
-        return {**payload, "window": window, "rows": rows, "factory": factory}
+        done = time.perf_counter()
+        if done - start > SLOW_BOARD_S:
+            log.warning(
+                "slow /api/board: cache %.2f s, live parts %.2f s", cached - start, done - cached
+            )
+        return {**payload, "window": window, "rows": rows, "events": events, "factory": factory}
 
     @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
     def hide(submission_id: str, request: Request, token: AdminToken = None) -> Response:
