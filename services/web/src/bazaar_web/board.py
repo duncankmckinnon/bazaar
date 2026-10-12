@@ -56,7 +56,22 @@ def live_history(progress: list[tuple[int, str]]) -> list[dict[str, Any]] | None
         return None
 
 
-RunKey = tuple[int, int]  # (inode, mtime_ns) of the run dir
+# The run dir's inode and mtime_ns, then record.json's and evaluation.json's mtime_ns (-1 if
+# missing): an operator rewriting a baseline's files in place refreshes it.
+RunKey = tuple[int, int, int, int]
+Histories = dict[str, list[dict[str, Any]] | None]
+
+
+def run_key(path: Path) -> RunKey:
+    """OSError if the dir itself is gone."""
+    stat = path.stat()
+    files = []
+    for name in ("record.json", "evaluation.json"):
+        try:
+            files.append((path / name).stat().st_mtime_ns)
+        except OSError:
+            files.append(-1)
+    return (stat.st_ino, stat.st_mtime_ns, *files)
 
 
 class BoardSource:
@@ -65,8 +80,10 @@ class BoardSource:
 
     Published run dirs are immutable (the runner stages them and renames them into place), so
     each one is parsed once: its load_run result and mark history are kept by dir name, guarded
-    by the dir's inode and mtime. A rebuild lists the directory, parses only new or changed
-    dirs, drops removed ones, and ranks all of them again (cheap once parsed).
+    by run_key. A rebuild lists the directory, parses only new or changed dirs, drops removed
+    ones, and ranks all of them again (cheap once parsed). Dirs of hidden submissions are
+    never parsed (most of production's are hidden duplicates); a change to the hidden set
+    rebuilds at once, so an un-hidden row is back on the next poll.
     """
 
     def __init__(self, runs_dir: Path, ttl: float = 2.0) -> None:
@@ -74,21 +91,21 @@ class BoardSource:
         self.ttl = ttl
         self._lock = threading.Lock()
         self._runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
-        self._cached: tuple[float, Leaderboard, dict[str, list[dict[str, Any]] | None]] | None = (
-            None
-        )
+        self._cached: tuple[float, frozenset[str], Leaderboard, Histories] | None = None
 
     def invalidate(self) -> None:
         self._cached = None
 
-    def load(self) -> tuple[Leaderboard, dict[str, list[dict[str, Any]] | None]]:
+    def load(self, hidden: frozenset[str] = frozenset()) -> tuple[Leaderboard, Histories]:
+        """The board without the run dirs named in hidden."""
         with self._lock:  # sync routes run in a threadpool: one rebuild at a time
             now = time.monotonic()
-            if self._cached is None or now - self._cached[0] >= self.ttl:
-                self._cached = (now, *self._rebuild())
-            return self._cached[1], self._cached[2]
+            cached = self._cached
+            if cached is None or now - cached[0] >= self.ttl or cached[1] != hidden:
+                self._cached = cached = (now, hidden, *self._rebuild(hidden))
+            return cached[2], cached[3]
 
-    def _rebuild(self) -> tuple[Leaderboard, dict[str, list[dict[str, Any]] | None]]:
+    def _rebuild(self, hidden: frozenset[str]) -> tuple[Leaderboard, Histories]:
         if not self.runs_dir.is_dir():
             empty = Leaderboard(
                 header=None, reference_run_id=None, ranked=(), failed=(), not_comparable=(),
@@ -97,15 +114,16 @@ class BoardSource:
             return empty, {}
         # Dot-prefixed dirs (".tmp-<uuid>") are runs still being staged by the runner.
         dirs = sorted(
-            p for p in self.runs_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+            p
+            for p in self.runs_dir.iterdir()
+            if not p.name.startswith(".") and p.name not in hidden and p.is_dir()
         )
         runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
         for path in dirs:
             try:
-                stat = path.stat()
+                key = run_key(path)
             except OSError:
                 continue  # removed between the listing and now
-            key = (stat.st_ino, stat.st_mtime_ns)
             cached = self._runs.get(path.name)
             if cached is None or cached[0] != key:
                 cached = (key, load_run(path), history(path))
@@ -185,8 +203,8 @@ def board_rows(
     logfire_url: Callable[[str], str | None] = lambda _: None,
 ) -> tuple[list[dict[str, Any]], Decimal]:
     """Every row, ranked over all of them, with histories; and the starting cash."""
-    board, histories = source.load()
     by_dir = store.by_run_dir()
+    board, histories = source.load(frozenset(d for d, s in by_dir.items() if s["hidden"]))
     rows = []
     for status, entries in (("scored", board.ranked), ("failed", board.failed)):
         for entry in entries:

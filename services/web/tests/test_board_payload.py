@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import os
 import shutil
 import sqlite3
 import time
@@ -174,3 +175,72 @@ def test_the_payload_shape_is_json(big, helpers):
         body = client.get("/api/board").json()
     assert json.loads(json.dumps(body)) == body
     assert set(body) == {"window", "rows", "total", "events"}
+
+
+# ---------- hidden dirs and files rewritten in place ----------
+
+BASELINE_RUNS = (2500, 2600, 2700)
+
+
+def hide(config, run_ids):
+    """Hidden submission rows (like production's hidden house duplicates) for these run dirs."""
+    Store(config.web_db)  # the schema
+    rows = [
+        (f"h{run_id}", f"hidden-{run_id}", "Buy KO.", "house", "scored", "2026-10-11T00:00:00",
+         run_id, 1, "house")
+        for run_id in run_ids
+    ]  # fmt: skip
+    with sqlite3.connect(config.web_db) as conn:
+        conn.executemany(
+            "INSERT INTO submissions (id, name, instructions, ip_hash, status, created_at, "
+            "run_dir, hidden, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    conn.close()
+
+
+def test_a_cold_board_never_parses_hidden_dirs(big, helpers, monkeypatch):
+    hidden = [f"run-{i:04d}" for i in range(RUNS) if i not in BASELINE_RUNS][:2800]
+    hide(big, hidden)
+    calls = []
+    real = bazaar_web.board.load_run
+    monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
+    with TestClient(create_app(big, helpers.FakeRunner())) as client:
+        start = time.perf_counter()
+        cold = client.get("/api/board").json()
+        cold_s = time.perf_counter() - start
+        start = time.perf_counter()
+        client.get("/api/board")
+        warm_s = time.perf_counter() - start
+        parsed = len(calls)
+        with sqlite3.connect(big.web_db) as conn:  # un-hide the best run
+            conn.execute("UPDATE submissions SET hidden = 0 WHERE run_dir = 'run-0000'")
+        conn.close()
+        shown = client.get("/api/board").json()
+
+    print(f"\n2,800 of 3,000 hidden: parsed {parsed}, cold {cold_s:.3f} s, warm {warm_s:.3f} s")
+    assert parsed == RUNS - 2800  # 197 agents and the 3 baselines
+    assert not {p.name for p in calls[:parsed]} & set(hidden)
+    assert cold["total"]["rows"] == 200 and warm_s < 0.5
+    assert shown["rows"][0]["name"] == "hidden-run-0000" and shown["rows"][0]["rank"] == 1
+    assert [p.name for p in calls[parsed:]] == ["run-0000"]  # the next poll parsed it alone
+
+
+def test_a_record_rewritten_in_place_is_parsed_again(tmp_path, helpers):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    helpers.write_run(runs, "run-a", policy_ref="baseline-cash-only", period_return="0.01")
+    source = BoardSource(runs, ttl=0)
+    assert source.load()[0].ranked[0].period_return == helpers.Decimal("0.01")
+    dir_mtime = (runs / "run-a").stat().st_mtime_ns
+
+    # An operator re-seeds the baseline: the same dir, its files rewritten in place.
+    helpers.write_run(tmp_path, "run-a", policy_ref="baseline-cash-only", period_return="0.03")
+    for name in ("record.json", "evaluation.json"):
+        target = runs / "run-a" / name
+        before = target.stat().st_mtime_ns
+        target.write_bytes((tmp_path / "run-a" / name).read_bytes())
+        os.utime(target, ns=(before + 1_000_000, before + 1_000_000))  # coarse clocks too
+    os.utime(runs / "run-a", ns=(dir_mtime, dir_mtime))  # the dir itself looks untouched
+
+    assert source.load()[0].ranked[0].period_return == helpers.Decimal("0.03")
