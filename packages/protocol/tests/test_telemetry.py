@@ -365,3 +365,23 @@ async def test_instrumenting_clients_never_rewraps_a_shared_transport(capfire):
     # itself is never patched.
     assert "handle_async_request" not in vars(shared)
     assert len({id(client._transport) for client in clients}) == 3
+
+
+# The strategist's Logfire read token.
+
+READ_TOKEN = "pylf_v1_us_sentinelreadtoken0123456789"
+
+
+@pytest.mark.parametrize("name", ["logfire_read_token", "LOGFIRE_READ_TOKEN", "read-token"])
+def test_an_attribute_named_like_the_read_token_is_scrubbed(name):
+    scrubbed = scrub_attributes({name: READ_TOKEN, "gen_ai.usage.input_tokens": 12})
+    assert READ_TOKEN not in str(scrubbed) and scrubbed["gen_ai.usage.input_tokens"] == 12
+
+
+def test_the_read_token_value_is_redacted_from_an_exception(monkeypatch):
+    monkeypatch.setattr(telemetry, "_secrets", None)
+    monkeypatch.setenv("LOGFIRE_READ_TOKEN", READ_TOKEN)
+    with pytest.raises(telemetry.RedactedError) as caught, redacted_exceptions():
+        raise RuntimeError(f"401 from /v2/query for {READ_TOKEN}")
+    assert READ_TOKEN not in str(caught.value) and REDACTED in str(caught.value)
+    assert caught.value.__context__ is None

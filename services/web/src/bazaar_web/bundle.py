@@ -43,8 +43,9 @@ class Bundle:
     days: int
     universe_name: str | None = None  # e.g. "S&P 500"; null on demo-bundle-v1
     benchmark: str | None = None  # e.g. "SPY": tradable, but not part of the universe
-    # (symbol, sector) for each universe entry; empty when the bundle has no universe field.
-    sectors: tuple[tuple[str, str | None], ...] = ()
+    # (symbol, name, sector) for each universe entry; empty when the bundle has no universe
+    # field (demo-bundle-v1), and then the house lane has nothing to propose over.
+    members: tuple[tuple[str, str | None, str | None], ...] = ()
 
     @property
     def universe(self) -> str:
@@ -105,16 +106,20 @@ def parse(body: Any) -> Bundle:
         days=len(sessions),
         universe_name=(name or "").strip() or None,
         benchmark=(benchmark or "").strip() or None,
-        sectors=universe_sectors(body),
+        members=universe_members(body),
     )
 
 
-def universe_sectors(body: dict[str, Any]) -> tuple[tuple[str, str | None], ...]:
-    """(symbol, sector) from the universe [{symbol, name, sector}]; () without a universe."""
+def universe_members(
+    body: dict[str, Any],
+) -> tuple[tuple[str, str | None, str | None], ...]:
+    """(symbol, name, sector) from the universe [{symbol, name, sector}]; () without one."""
+
+    def text(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
     rows = body.get("universe") or ()
-    return tuple(
-        (u["symbol"], u.get("sector") if isinstance(u.get("sector"), str) else None) for u in rows
-    )
+    return tuple((u["symbol"], text(u.get("name")), text(u.get("sector"))) for u in rows)
 
 
 class BundleSource:

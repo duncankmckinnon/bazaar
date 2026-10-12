@@ -143,6 +143,7 @@ def entry_row(
         "name": submission["name"] if submission else entry.policy_ref or entry.run_id,
         "handle": submission["handle"] if submission else None,
         "lane": lane_of(submission),
+        "generation": generation_of(submission),
         "kind": entry.kind or "agent",
         "status": status,
         "day": submission["day"] if submission else None,
@@ -160,6 +161,13 @@ def lane_of(submission: dict[str, Any] | None) -> str | None:
     if submission is None:
         return None
     return submission.get("lane") or "human"
+
+
+def generation_of(submission: dict[str, Any] | None) -> int | None:
+    """The strategy factory's generation for a house row; None for every other row."""
+    if submission is None or lane_of(submission) != "house":
+        return None
+    return submission.get("generation")
 
 
 def provisional_return(submission: dict[str, Any], starting_cash: Decimal) -> float | None:
@@ -185,6 +193,7 @@ def submission_row(
         "name": submission["name"],
         "handle": submission["handle"],
         "lane": lane_of(submission),
+        "generation": generation_of(submission),
         "kind": "agent",
         "status": submission["status"],
         "day": submission["day"],

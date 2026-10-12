@@ -297,12 +297,37 @@ def test_pinned_rows_beyond_capacity_are_counted_not_dropped():
 def test_house_rows_get_a_dim_ai_tag_by_text_only():
     script = BOARD.split("<script>", 1)[1]
     assert 'if (r.lane === "house" || r.handle === "house") {' in script
-    assert 'tag.textContent = "AI";' in script and 'tag.className = "ai";' in script
-    # Removed before setName runs, so the name link is found and kept as before.
-    assert script.index('nm.querySelector(".ai")?.remove();') < script.index(
-        "setName(nm, r.name, safeUrl(r.logfire_url));"
+    house = script.split('if (r.lane === "house" || r.handle === "house") {', 1)[1]
+    house = house.split("\n    }\n", 1)[0]
+    # Every house row gets the AI chip, unconditionally; the G chip only for a generation > 0.
+    assert 'const chips = ["AI"];' in house
+    assert "const gen = Number(r.generation);" in house
+    assert "if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);" in house
+    assert 'tag.className = "ai";' in house and "tag.textContent = text;" in house
+    assert "nm.prepend(...chips.map(" in house  # AI first, then G<n>
+    assert "innerHTML" not in house
+    # All chips removed before setName runs, so re-renders don't stack them and the name
+    # link is found and kept as before.
+    assert script.index('nm.querySelectorAll(".ai").forEach((chip) => chip.remove());') < (
+        script.index("setName(nm, r.name, safeUrl(r.logfire_url));")
     )
     assert ".ar-row .nm .ai {" in BOARD and "color: var(--muted)" in BOARD
+
+
+def test_the_board_page_has_the_in_sample_footnote(settings, helpers):
+    from bazaar_web.app import create_app
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        page = client.get("/").text
+
+    assert (
+        '<p class="ar-note"><span class="ai">AI</span> = house strategy \u00b7 '
+        '<span class="ai">Gn</span> = bred from this window\'s results (in-sample)</p>'
+    ) in page
+    # Static markup under the table, never built by the script.
+    assert "ar-note" not in page.split("<script>", 1)[1]
+    assert page.index('id="list"') < page.index('class="ar-note"')
 
 
 def test_the_header_names_the_universe_from_the_board_data():

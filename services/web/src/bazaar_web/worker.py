@@ -1,8 +1,10 @@
 """Runs submissions in threads, in two lanes that never share slots.
 
 The human lane is a FIFO queue of attendee submissions on BAZAAR_MAX_CONCURRENT threads. The
-house lane has its own BAZAAR_HOUSE_CONCURRENT threads and keeps itself full with house
-strategies (bazaar_web.house) while it is enabled, not paused and under its hourly cap.
+house lane has its own BAZAAR_HOUSE_CONCURRENT threads and keeps itself full with strategies
+from the strategy factory (bazaar_web.house) while it is enabled, not paused and under its
+hourly cap. It waits, and never runs anything else, while the factory is not configured, the
+bundle has no universe or the strategist fails.
 """
 
 import asyncio
@@ -23,8 +25,8 @@ from bazaar_replay.leaderboard import Run, load_run
 from opentelemetry import trace
 
 from bazaar_web.board import BoardSource, percent
-from bazaar_web.bundle import BundleSource
-from bazaar_web.house import Catalog, catalog, catalog_for
+from bazaar_web.bundle import Bundle, BundleSource
+from bazaar_web.house import PROPOSE_K, Strategist, import_strategist, universe_of
 from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
 
@@ -45,6 +47,15 @@ HOUSE_IDLE_S = 5.0
 HOUSE_FAIL_BACKOFF_S = 5.0
 HOUSE_FAIL_BACKOFF_MAX_S = 300.0
 HOUSE_FAIL_NOTICE = 5
+# Why the house lane is waiting, for the admin status.
+FACTORY_OFF = "factory not configured"
+WAITING_FOR_BUNDLE = "waiting for bundle"
+NO_UNIVERSE = "no universe in the bundle"
+WAITING_FOR_STRATEGIST = "waiting for strategist"
+
+
+class NoProposals(Exception):
+    """The strategist answered, but no proposal survived the lane's own checks."""
 
 
 class RunSubmission(Protocol):
@@ -99,13 +110,19 @@ class Worker:
         run_submission: RunSubmission | None,
         on_scored: Callable[[], Callable[[str, Path], None] | None],
         bundles: BundleSource | None = None,
+        strategist: Strategist | None = None,
     ) -> None:
         self.store = store
-        # The house catalog follows the deploy's bundle (bazaar_web.house.catalog_for). Without
-        # a source (only direct test setups) the original 12-stock catalog is used.
+        # The factory proposes over the deploy's bundle universe; without a source (only
+        # direct test setups) the lane waits for a bundle.
         self.bundles = bundles
-        self.house_waiting = False  # True while the lane waits for the bundle route
-        self.house_catalog_size = 0
+        self.strategist = strategist  # None: bazaar_agent.strategist, imported when first needed
+        self.house_waiting: str | None = None  # why the lane can't get new strategies, if so
+        self.propose_failures = 0  # consecutive failed strategist calls
+        self.propose_retry_at: datetime | None = None  # wall time, for the admin status
+        self.last_propose_at: datetime | None = None
+        self.last_propose_error: str | None = None  # the exception's class name only
+        self._next_propose = 0.0  # loop time
         self.settings = settings
         self.board = board
         self.run_submission = run_submission
@@ -122,6 +139,10 @@ class Worker:
             if self.house_slots
             else None
         )
+        # Strategist calls get one thread of their own: they must never wait for a run slot.
+        self.propose_pool = (
+            ThreadPoolExecutor(1, thread_name_prefix="bazaar-propose") if self.house_slots else None
+        )
         self.house_resume: list[str] = []  # house runs interrupted by a restart, run first
         self.house_failures = 0  # consecutive failed house runs, lane-wide
         self.house_backoff_until: datetime | None = None  # wall time, for the admin status
@@ -130,6 +151,7 @@ class Worker:
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
         self.house_wake = asyncio.Event()
+        self.propose_lock = asyncio.Lock()
         await self._recover()
         await self._recover_house()
         self.tasks = [
@@ -186,8 +208,9 @@ class Worker:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.pool.shutdown(wait=False, cancel_futures=True)
-        if self.house_pool is not None:
-            self.house_pool.shutdown(wait=False, cancel_futures=True)
+        for pool in (self.house_pool, self.propose_pool):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
 
     def wake_house(self) -> None:
         """Safe from the threadpool that runs sync routes: idle house slots look again now. An
@@ -199,6 +222,10 @@ class Worker:
         self.house_failures = 0
         self.house_backoff_until = None
         self._house_backoff_deadline = 0.0
+        if self.propose_failures:  # an explicit "try again" asks the strategist again too
+            self.propose_failures = 0
+            self.propose_retry_at = None
+            self._next_propose = 0.0
 
     def _house_failed(self) -> None:
         """Count a failed house run and push the lane's next start out."""
@@ -212,29 +239,108 @@ class Worker:
                 f"house runs paused: runner failing; retrying in {delay:.0f}s", None
             )
 
-    async def _house_catalog(self) -> Catalog | None:
-        """This deploy's house catalog, or None while the bundle route has not answered."""
-        if self.bundles is None:
-            found: Catalog | None = catalog()
-        else:
+    async def _refill(self) -> None:
+        """Ask the strategist for a batch when fewer proposals wait than the lane has slots,
+        at most once per house_propose_interval_s while it succeeds, and with the lane's
+        doubling backoff while it fails. Never anything but wait on a failure."""
+        async with self.propose_lock:  # one call at a time, whichever slot asks
+            if self.settings.house_since is None:
+                self.house_waiting = FACTORY_OFF
+                return
+            with logfire.suppress_instrumentation():
+                unused = self.store.unused_proposals()
+            if unused >= self.house_slots:
+                self.house_waiting = None
+                return
+            if self.loop.time() < self._next_propose:
+                return
             # Off the event loop: an unreachable market can take the fetch's whole timeout.
-            bundle = await asyncio.to_thread(self.bundles.get, fallback=False)
-            found = catalog_for(bundle)
-        self.house_waiting = found is None
-        self.house_catalog_size = len(found) if found else 0
-        return found
+            bundle = (
+                await asyncio.to_thread(self.bundles.get, fallback=False) if self.bundles else None
+            )
+            if bundle is None or not bundle.members:
+                self.house_waiting = NO_UNIVERSE if bundle else WAITING_FOR_BUNDLE
+                return
+            try:
+                await self.loop.run_in_executor(self.propose_pool, self._propose, bundle)
+            except Exception as exc:  # noqa: BLE001 - any failure means wait
+                self._propose_failed(exc)
+                return
+            self.propose_failures = 0
+            self.propose_retry_at = None
+            self.last_propose_error = None
+            self._next_propose = self.loop.time() + self.settings.house_propose_interval_s
+            self.house_waiting = None
 
-    def _next_house(self, strategies: Catalog | None) -> str | None:
-        """The next house run to start: an interrupted one first, else a new strategy from
-        strategies; None while paused, capped or waiting for the bundle."""
+    def _propose(self, bundle: Bundle) -> None:
+        """brief() then propose() in this one worker thread; the proposals that pass the
+        lane's checks are queued. Raises on any failure, and NoProposals when none pass."""
+        strategist = self.strategist or import_strategist()
+        exclude, existing, generation = self.store.factory_inputs()
+        self.last_propose_at = self.store.now()
+        with logfire.span("house propose", **{"bazaar.generation": generation}) as span:
+            brief = strategist.brief(
+                bundle_id=bundle.bundle_id,
+                since=self.settings.house_since,
+                exclude_names=exclude,
+                data_version=self.settings.data_bundle,
+                # Only these names' trailing -<n> copies are grouped as one strategy.
+                house_names=self.store.house_names(),
+            )
+            names = list(brief.names)  # the brief is otherwise opaque here
+            # The window's length, from the bundle route's sessions; left out (the strategist's
+            # default) when the route lists none.
+            window = {"trading_days": bundle.days} if bundle.days > 0 else {}
+            proposals = strategist.propose(
+                brief=brief,
+                k=PROPOSE_K,
+                generation=generation,
+                instructions_by_name=self.store.instructions_for(names),
+                existing_instructions=existing,
+                universe=universe_of(bundle),
+                benchmark=bundle.benchmark,
+                **window,
+            )
+            allowed = {symbol for symbol, _, _ in bundle.members} | {bundle.benchmark or ""}
+            outcome = self.store.add_proposals(
+                proposals, generation=generation, allowed=allowed - {""}, parents=names
+            )
+            parents = sorted({p for x in proposals for p in (x.parents or ()) if p in names})
+            span.set_attribute("bazaar.parents", parents)
+            span.set_attribute("bazaar.proposals_added", outcome["added"])
+        # Counts only: a proposal's text never reaches a log line.
+        log.info("house proposals for generation %d: %s", generation, dict(sorted(outcome.items())))
+        if not outcome["added"]:
+            raise NoProposals
+
+    def _propose_failed(self, exc: Exception) -> None:
+        self.propose_failures += 1
+        delay = min(
+            HOUSE_FAIL_BACKOFF_S * 2 ** (self.propose_failures - 1), HOUSE_FAIL_BACKOFF_MAX_S
+        )
+        self._next_propose = self.loop.time() + delay
+        self.propose_retry_at = self.store.now() + timedelta(seconds=delay)
+        self.last_propose_error = type(exc).__name__
+        self.house_waiting = WAITING_FOR_STRATEGIST
+        # The class only: a strategist error's text could quote a response.
+        log.warning(
+            "house strategist failed (%s, %d in a row); next try in %.0f s",
+            type(exc).__name__,
+            self.propose_failures,
+            delay,
+        )
+
+    async def _next_house(self) -> str | None:
+        """The next house run to start: an interrupted one first, else the next proposal (the
+        strategist is asked for more when they run low); None while paused, capped or waiting."""
         with logfire.suppress_instrumentation():
             if self.store.house_state()["paused"]:
                 return None
-            if self.house_resume:
-                return self.house_resume.pop(0)
-            if strategies is None:
-                return None
-            created = self.store.create_house(strategies, self.settings.house_max_per_hour)
+        if self.house_resume:
+            return self.house_resume.pop(0)
+        await self._refill()
+        with logfire.suppress_instrumentation():
+            created = self.store.create_house(self.settings.house_max_per_hour)
         return created[0] if created else None
 
     async def _house_wait(self, seconds: float) -> None:
@@ -252,7 +358,7 @@ class Worker:
                 await self._house_wait(wait)
                 continue
             try:
-                submission_id = self._next_house(await self._house_catalog())
+                submission_id = await self._next_house()
             except Exception:  # a store error must not end the slot
                 log.exception("house lane could not start a run")
                 submission_id = None
