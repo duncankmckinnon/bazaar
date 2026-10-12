@@ -565,3 +565,19 @@ def test_bad_factory_settings_are_refused(monkeypatch, name, raw):
 def test_the_tag_shows_the_generation_as_text():
     page = (STATIC / "board.html").read_text()
     assert "if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);" in page
+
+
+def test_paused_means_no_proposals_and_no_house_runs(lane, helpers, monkeypatch):
+    fake = helpers.FakeStrategist()
+    monkeypatch.setattr(bazaar_web.worker, "import_strategist", lambda: fake)
+    Store(lane.web_db).set_house_paused(True)  # paused from the board's factory control
+    runner = AutoRunner(helpers)
+    with TestClient(create_app(lane, runner)) as client:
+        time.sleep(0.3)  # many idle rounds of every house slot
+        paused = (list(fake.calls), list(runner.started), status(client)["paused"])
+        client.post("/api/admin/house/resume", headers=ADMIN)
+        helpers.wait_for(lambda: len(runner.started) >= 1)  # and resume starts it again
+        client.post("/api/admin/house/pause", headers=ADMIN)
+
+    assert paused == ([], [], True)  # no brief(), no propose(), no run while paused
+    assert [kind for kind, _ in fake.calls][:2] == ["brief", "propose"]

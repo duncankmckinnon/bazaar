@@ -23,6 +23,7 @@ IGNORES = (
     r"/\/api\/board(\?|$)/",
     r"/\/api\/tickers(\?|$)/",
     r"/\/api\/submissions\/[^/?]+/",
+    r"/\/api\/admin\//",
 )
 
 
@@ -109,7 +110,9 @@ def test_the_route_is_not_traced_by_the_backend():
         ("/api/board", True), ("/api/board?since=1", True), ("/api/tickers", True),
         ("/api/submissions/abc", True), ("/api/submissions/abc?x=1", True),
         ("/api/submissions", False), ("/api/submissions/", False),
-        ("/api/admin/submissions/abc/rerun", False), ("/api/admin/stats", False),
+        # The factory control's admin requests carry the admin token header: never traced.
+        ("/api/admin/house", True), ("/api/admin/house/pause", True),
+        ("/api/admin/submissions/abc/rerun", True), ("/api/administer", False),
         ("/api/boards", False),
     ],
 )  # fmt: skip
@@ -236,7 +239,8 @@ def test_the_module_runs_in_node_against_a_stub(settings, helpers, tmp_path):
         const [o, onSubmit, plain] = globalThis.options;
         const r = o.sessionReplay;
         const fetchIgnore = o.autoInstrumentations["@opentelemetry/instrumentation-fetch"].ignoreUrls;
-        const paths = ["/api/board", "/api/submissions/abc", "/api/submissions", "/api/admin/x"];
+        const paths = ["/api/board", "/api/submissions/abc", "/api/submissions",
+                       "/api/admin/house", "/api/leaderboard"];
         console.log(JSON.stringify({
           keys: Object.keys(o).sort(), traceUrl: o.traceUrl, headers: o.traceExporterHeaders(),
           rum: o.rum, replayKeys: Object.keys(r).sort(), replayUrl: r.replayUrl,
@@ -271,5 +275,5 @@ def test_the_module_runs_in_node_against_a_stub(settings, helpers, tmp_path):
         # "/": masked.
         "masked": [False, True, True],
         "sameXhr": True,
-        "ignored": [True, True, False, False],
+        "ignored": [True, True, False, True, False],
     }

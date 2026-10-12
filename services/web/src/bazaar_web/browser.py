@@ -26,6 +26,7 @@ IGNORE_URLS = (
     r"/api/board(\?|$)",
     r"/api/tickers(\?|$)",
     r"/api/submissions/[^/?]+",
+    r"/api/admin/",  # the factory control: its requests carry the admin token header
 )
 
 OFF = "// Browser telemetry is off (BAZAAR_LOGFIRE_BROWSER_TOKEN is not set).\n"
