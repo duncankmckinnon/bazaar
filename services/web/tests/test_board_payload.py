@@ -44,8 +44,11 @@ def big_runs(tmp_path_factory, helpers):
 
 @pytest.fixture
 def big(settings, big_runs, tmp_path):
+    """Each test's own runs dir over the shared 3,000: its dirs are new, but its files are hard
+    links (no new inodes; /tmp is an inode-capped tmpfs). Tests only add or remove run dirs
+    here, never rewrite a file, so the links never change the shared copy."""
     runs = tmp_path / "runs"
-    shutil.copytree(big_runs, runs)
+    shutil.copytree(big_runs, runs, copy_function=os.link)
     return dataclasses.replace(settings, runs_dir=runs)
 
 
