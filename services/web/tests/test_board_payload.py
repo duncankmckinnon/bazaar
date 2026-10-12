@@ -130,7 +130,12 @@ def test_ranks_are_over_every_row(big, helpers):
     assert status["rank"] == 1500 and status["return_pct"] == pytest.approx(
         ret(1499) * 100, abs=0.05
     )
-    assert sid not in {r["id"] for r in board}  # ranked > 100: not sent, still ranked
+    # Ranked > 100 overall, but the Human tab's best: sent for that tab, with its overall rank.
+    sent = next(r for r in board if r["id"] == sid)
+    assert (sent["rank"], sent["lane_rank"]) == (1500, 1)
+    assert {
+        r["id"] for r in board if r["rank"] and r["rank"] > 100 and r["kind"] != "baseline"
+    } == {sid}
 
 
 def test_each_run_dir_is_parsed_once(big, helpers, monkeypatch):
@@ -181,7 +186,116 @@ def test_the_payload_shape_is_json(big, helpers):
     with TestClient(create_app(big, helpers.FakeRunner())) as client:
         body = client.get("/api/board").json()
     assert json.loads(json.dumps(body)) == body
-    assert set(body) == {"window", "rows", "total", "events"}
+    assert set(body) == {"window", "rows", "total", "events", "factory"}
+
+
+# ---------- tabs: each lane's top 15, per-tab chart lines, the factory state ----------
+
+HOUSE_RUNS = range(300)  # the 300 best agents are the factory's
+HUMAN_RUNS = range(1000, 1020)  # 20 humans, all ranked about 1,000th overall
+
+
+def lanes(config, house=HOUSE_RUNS, human=HUMAN_RUNS):
+    """Scored submissions in each lane for these run dirs."""
+    Store(config.web_db)  # the schema
+    rows = [
+        (f"{lane}{i}", f"{lane}-{i:04d}", "Buy KO.", lane, "scored", "2026-10-11T00:00:00",
+         f"run-{i:04d}", 0, lane)
+        for lane, runs in (("house", house), ("human", human))
+        for i in runs
+    ]  # fmt: skip
+    with sqlite3.connect(config.web_db) as conn:
+        conn.executemany(
+            "INSERT INTO submissions (id, name, instructions, ip_hash, status, created_at, "
+            "run_dir, hidden, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    conn.close()
+
+
+def test_each_tab_gets_its_top_15_and_a_warm_request_still_parses_nothing(
+    big, helpers, monkeypatch
+):
+    lanes(big)
+    calls, reads = [], []
+    real = bazaar_web.board.load_run
+    monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
+    real_history = bazaar_web.board.history
+    monkeypatch.setattr(
+        bazaar_web.board, "history", lambda path: reads.append(path) or real_history(path)
+    )
+    with TestClient(create_app(big, helpers.FakeRunner())) as client:
+        client.get("/api/board")
+        cold_parsed, cold_read = len(calls), len(reads)
+        client.app.state.board.invalidate()
+        warm = client.get("/api/board")
+
+    rows = warm.json()["rows"]
+    assert len(calls) == cold_parsed and len(reads) == cold_read  # the warm rebuild read nothing
+    assert len(warm.content) < 100_000
+    # The overall top 100 are all factory rows; the humans, ranked ~1,000th, still fill the
+    # Human tab: its top 15, ranked 1..15 within the lane, and no more.
+    human = [r for r in rows if r["lane"] == "human"]
+    assert [(r["name"], r["lane_rank"]) for r in human] == [
+        (f"human-{i:04d}", n) for n, i in enumerate(HUMAN_RUNS[:15], start=1)
+    ]
+    assert all(r["rank"] > 1000 for r in human)
+    house = [r for r in rows if r["lane"] == "house"]
+    assert [r["lane_rank"] for r in house] == list(range(1, 101))  # the top 100, overall too
+    assert [r["rank"] for r in house] == list(range(1, 101))
+
+
+def test_rows_are_unique_by_id(big, helpers):
+    lanes(big)  # the factory's top 15 are also the overall top 15
+    with TestClient(create_app(big, helpers.FakeRunner())) as client:
+        rows = client.get("/api/board").json()["rows"]
+
+    ids = [r["id"] for r in rows]
+    assert len(ids) == len(set(ids)) == 100 + 15 + len(BASELINES)
+
+
+def test_each_tab_has_its_own_chart_lines(big, helpers):
+    lanes(big)
+    with TestClient(create_app(big, helpers.FakeRunner())) as client:
+        rows = client.get("/api/board").json()["rows"]
+
+    def lines(tab):
+        return [(r["name"], r["chart_tabs"][tab]) for r in rows if (r["chart_tabs"] or {}).get(tab)]
+
+    # Neighbours share a line in threes (as in test_history_is_sent_only_for_the_chart).
+    assert lines("both") == lines("factory") == [(f"house-{3 * i:04d}", 3) for i in range(10)]
+    assert lines("human") == [(f"human-{1000 + 3 * i:04d}", 3) for i in range(5)]
+    assert [r["name"] for r in rows if r["chart_members"]] == [n for n, _ in lines("both")]
+    charted = {n for tab in ("both", "human", "factory") for n, _ in lines(tab)} | set(BASELINES)
+    assert {r["name"] for r in rows if r["history"] is not None} == charted
+
+
+def factory(config, *, enabled, paused=False, running=0):
+    store = Store(config.web_db)
+    store.set_house_paused(paused)
+    with sqlite3.connect(config.web_db) as conn:
+        conn.executemany(
+            "INSERT INTO submissions (id, name, instructions, ip_hash, status, created_at, lane) "
+            "VALUES (?, ?, 'Buy KO.', 'house', 'running', '2026-10-11T00:00:00', 'house')",
+            [(f"r{i}", f"running-{i}") for i in range(running)],
+        )
+    conn.close()
+    source = BoardSource(config.runs_dir)
+    return bazaar_web.board.build_board(source, store, house_enabled=enabled)["factory"]
+
+
+@pytest.mark.parametrize(
+    ("enabled", "paused", "running", "expected"),
+    [
+        (False, False, 0, {"state": "off", "running": 0}),
+        (True, False, 2, {"state": "running", "running": 2}),
+        (True, False, 0, {"state": "running", "running": 0}),
+        (True, True, 1, {"state": "paused", "running": 1}),
+    ],
+)
+def test_the_factory_state_is_public_and_small(settings, enabled, paused, running, expected):
+    settings.runs_dir.mkdir(parents=True)
+    assert factory(settings, enabled=enabled, paused=paused, running=running) == expected
 
 
 # ---------- hidden dirs and files rewritten in place ----------
