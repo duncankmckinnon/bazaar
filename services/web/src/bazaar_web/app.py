@@ -24,6 +24,7 @@ from pydantic_core import PydanticCustomError
 from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, board_rows, build_board
 from bazaar_web.bundle import BundleSource
+from bazaar_web.house import Strategist
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
     LOCK_ERRORS,
@@ -38,7 +39,7 @@ from bazaar_web.store import (
     Store,
 )
 from bazaar_web.tickers import TickerSource
-from bazaar_web.worker import RunSubmission, Worker
+from bazaar_web.worker import WAITING_FOR_BUNDLE, RunSubmission, Worker
 
 STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
@@ -159,6 +160,7 @@ def create_app(
     on_scored: Callable[[str, Path], None] | None = None,
     now: Now | None = None,
     bundle_source: BundleSource | None = None,
+    strategist: Strategist | None = None,
 ) -> FastAPI:
     """Build the app. Nothing touches disk until the lifespan starts, nor the market until a
     request needs the trading window."""
@@ -178,6 +180,7 @@ def create_app(
             run_submission,
             on_scored=lambda: app.state.on_scored,
             bundles=bundles,
+            strategist=strategist,
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
         await worker.start()
@@ -426,18 +429,20 @@ def create_app(
 
     def house_status(store: Store, worker: Worker) -> dict[str, Any]:
         state = store.house_state()
-        until = worker.house_backoff_until
+        factory = store.factory_state()
+        until, retry = worker.house_backoff_until, worker.propose_retry_at
         cap = settings.house_max_per_hour
         return {
             "enabled": settings.house_enabled and settings.house_concurrent > 0,
             "paused": state["paused"],
             "slots": settings.house_concurrent if settings.house_enabled else 0,
             "running": state["running"],
-            "cursor": state["cursor"],
-            "cycle": state["cycle"],
-            "catalog_size": worker.house_catalog_size,
-            "waiting_for_bundle": worker.house_waiting,
-            "state": "waiting for bundle" if worker.house_waiting else None,
+            **factory,
+            "last_propose_at": at.isoformat() if (at := worker.last_propose_at) else None,
+            "last_error_class": worker.last_propose_error,
+            "strategist_retry_at": retry.isoformat() if retry and retry > store.now() else None,
+            "waiting_for_bundle": worker.house_waiting == WAITING_FOR_BUNDLE,
+            "state": worker.house_waiting,
             "total_started": state["total_started"],
             "started_last_hour": state["last_hour"],
             "max_per_hour": cap,

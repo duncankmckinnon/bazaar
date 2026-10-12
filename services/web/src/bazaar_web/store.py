@@ -3,10 +3,12 @@
 Each operation opens its own connection, so worker threads can report progress safely.
 """
 
+import json
 import logging
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,7 +19,7 @@ from uuid import uuid4
 
 import logfire
 
-from bazaar_web.house import house_name
+from bazaar_web.house import Proposal, check_proposal, normalize
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS submissions (
@@ -43,14 +45,18 @@ CREATE TABLE IF NOT EXISTS submissions (
     -- sent to the runner, traced or logged. Null on house runs and on rows from before them.
     email TEXT,
     company TEXT,
-    role TEXT
+    role TEXT,
+    -- House rows from the strategy factory: its generation and parent names (a JSON list).
+    generation INTEGER,
+    parents TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
     text TEXT NOT NULL,
     submission_id TEXT
 );
--- The house lane's place in the house strategy list, and whether an admin paused it.
+-- Whether an admin paused the house lane, and how many runs it started. cursor and cycle are
+-- left from the fixed catalog the strategy factory replaced; nothing reads them.
 CREATE TABLE IF NOT EXISTS house_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     cursor INTEGER NOT NULL,
@@ -59,6 +65,18 @@ CREATE TABLE IF NOT EXISTS house_state (
     total_started INTEGER NOT NULL
 );
 INSERT OR IGNORE INTO house_state (id, cursor, cycle, paused, total_started) VALUES (1, 0, 1, 0, 0);
+-- The strategy factory's proposals, waiting for a house slot (used_at NULL) or already run. A
+-- proposal's normalized text is unique here and matches no submission when it is added.
+CREATE TABLE IF NOT EXISTS house_proposals (
+    name TEXT PRIMARY KEY,
+    instructions TEXT NOT NULL,
+    normalized_instructions TEXT NOT NULL UNIQUE,
+    parents TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    idea TEXT,
+    created_at TEXT NOT NULL,
+    used_at TEXT
+);
 -- Marked portfolio value after each session of a running submission, for the live chart.
 CREATE TABLE IF NOT EXISTS submission_progress (
     submission_id TEXT NOT NULL,
@@ -203,6 +221,10 @@ class Store:
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
             if "lane" not in columns:  # existing rows are all human submissions
                 conn.execute("ALTER TABLE submissions ADD COLUMN lane TEXT DEFAULT 'human'")
+            if "generation" not in columns:  # catalog-era house rows have no generation
+                conn.execute("ALTER TABLE submissions ADD COLUMN generation INTEGER")
+            if "parents" not in columns:
+                conn.execute("ALTER TABLE submissions ADD COLUMN parents TEXT")
 
     def _connect(self) -> "TracedConnection":
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -288,20 +310,129 @@ class Store:
             self._event(conn, f"{name} joined the queue", submission_id)
         return submission_id
 
-    def create_house(
-        self, catalog: Sequence[tuple[str, str]], max_per_hour: int | None
-    ) -> tuple[str, str] | None:
-        """Insert the next house strategy as a queued house-lane row; (id, name), or None when
-        the lane is paused or has started max_per_hour runs in the last hour.
+    def factory_inputs(self) -> tuple[frozenset[str], list[str], int]:
+        """What the strategist is told: names it must leave out (hidden rows and operator
+        rows), the normalized instructions of every submission so far (house and human, hidden
+        included) and the next generation (one past the highest on any row or proposal)."""
+        with closing(self._connect()) as conn:
+            excluded = conn.execute(
+                "SELECT name FROM submissions WHERE hidden = 1 OR lower(email) = ?",
+                (OPERATOR_CONTACT_EMAIL,),
+            ).fetchall()
+            texts = conn.execute("SELECT instructions FROM submissions").fetchall()
+            (highest,) = conn.execute(
+                "SELECT MAX(g) FROM (SELECT MAX(generation) AS g FROM submissions "
+                "UNION ALL SELECT MAX(generation) FROM house_proposals)"
+            ).fetchone()
+        existing = sorted({normalize(row["instructions"]) for row in texts})
+        return frozenset(row["name"] for row in excluded), existing, (highest or 0) + 1
 
-        The cursor walks the catalog; past its end the cycle goes up. The catalog follows the
-        deploy's bundle, so its length can change between runs: the stored cursor is taken
-        modulo the current length. A name already taken (an attendee's, or the same slug from
-        an earlier catalog) gets the next free cycle number instead, so the lane never stops on
-        a UNIQUE name.
+    def house_names(self) -> frozenset[str]:
+        """Names of every house row, any status: lane 'house', or the reserved handle 'house'
+        (rows older than the lane column were migrated as 'human'). Attendees can't take the
+        handle, so no attendee name is ever here, whatever it looks like."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT name FROM submissions WHERE lane = 'house' OR handle = 'house'"
+            ).fetchall()
+        return frozenset(row["name"] for row in rows)
+
+    def instructions_for(self, names: Iterable[str]) -> dict[str, str]:
+        """{name: instructions} for the visible submissions among names (names are unique)."""
+        names = list(names)
+        if not names:
+            return {}
+        marks = ", ".join("?" * len(names))
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"SELECT name, instructions FROM submissions WHERE hidden = 0 AND name IN ({marks})",
+                names,
+            ).fetchall()
+        return {row["name"]: row["instructions"] for row in rows}
+
+    def add_proposals(
+        self,
+        proposals: Sequence[Proposal],
+        *,
+        generation: int,
+        allowed: Iterable[str],
+        parents: Iterable[str],
+    ) -> Counter[str]:
+        """Queue the proposals that pass check_proposal and repeat nothing: no name and no
+        normalized instructions already on a submission or proposal (or earlier in the batch).
+        Returns how many were added and why the rest were dropped, never their text."""
+        allowed, parents = set(allowed), set(parents)
+        outcome: Counter[str] = Counter()
+        stamp = self._stamp()
+        with self._tx() as conn:
+            taken = {row["name"] for row in conn.execute("SELECT name FROM submissions")}
+            taken |= {row["name"] for row in conn.execute("SELECT name FROM house_proposals")}
+            seen = {
+                normalize(row["instructions"])
+                for row in conn.execute("SELECT instructions FROM submissions")
+            }
+            seen |= {
+                row["normalized_instructions"]
+                for row in conn.execute("SELECT normalized_instructions FROM house_proposals")
+            }
+            for proposal in proposals:
+                reason = check_proposal(
+                    proposal, generation=generation, allowed=allowed, parents=parents
+                )
+                text = proposal.instructions.strip() if reason is None else ""
+                if reason is None and proposal.name in taken:
+                    reason = "name taken"
+                if reason is None and normalize(text) in seen:
+                    reason = "duplicate instructions"
+                if reason is not None:
+                    outcome[reason] += 1
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT INTO house_proposals (name, instructions, "
+                        "normalized_instructions, parents, generation, idea, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            proposal.name,
+                            text,
+                            normalize(text),
+                            json.dumps(list(proposal.parents or [])),
+                            generation,
+                            proposal.idea if isinstance(proposal.idea, str) else None,
+                            stamp,
+                        ),
+                    )
+                except sqlite3.IntegrityError:  # the UNIQUE backstop: skip this one only
+                    outcome["conflict"] += 1
+                    continue
+                taken.add(proposal.name)
+                seen.add(normalize(text))
+                outcome["added"] += 1
+        return outcome
+
+    def unused_proposals(self) -> int:
+        with closing(self._connect()) as conn:
+            (count,) = conn.execute(
+                "SELECT COUNT(*) FROM house_proposals WHERE used_at IS NULL"
+            ).fetchone()
+        return count
+
+    def factory_state(self) -> dict[str, Any]:
+        """The newest generation proposed and how many proposals wait for a slot."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT MAX(generation) AS generation, "
+                "SUM(used_at IS NULL) AS waiting FROM house_proposals"
+            ).fetchone()
+        return {"generation": row["generation"], "proposals_waiting": row["waiting"] or 0}
+
+    def create_house(self, max_per_hour: int | None) -> tuple[str, str] | None:
+        """Start the oldest unused proposal as a queued house-lane row; (id, name), or None when
+        the lane is paused, has started max_per_hour runs in the last hour, or has no proposal.
+
+        A proposal whose name or instructions a submission has taken since it was added (an
+        attendee posted the same text) is used up without a run: the lane never repeats one.
         """
-        if not catalog:
-            return None
         now = self.now()
         with self._tx() as conn:
             state = conn.execute("SELECT * FROM house_state WHERE id = 1").fetchone()
@@ -314,28 +445,41 @@ class Store:
                 ).fetchone()
                 if recent >= max_per_hour:
                     return None
-            cursor, cycle = state["cursor"] % len(catalog), state["cycle"]
-            slug, instructions = catalog[cursor]
-            bump = cycle
-            name = house_name(slug, bump)
-            while conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
-                bump += 1
-                name = house_name(slug, bump)
-            cursor += 1
-            if cursor == len(catalog):
-                cursor, cycle = 0, cycle + 1
-            submission_id = uuid4().hex
-            conn.execute(
-                "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, lane) VALUES (?, ?, 'house', ?, 'house', 'queued', ?, 'house')",
-                (submission_id, name, instructions, now.isoformat()),
-            )
-            conn.execute(
-                "UPDATE house_state SET cursor = ?, cycle = ?, total_started = total_started + 1 "
-                "WHERE id = 1",
-                (cursor, cycle),
-            )
-        return submission_id, name
+            texts = {
+                normalize(row["instructions"])
+                for row in conn.execute("SELECT instructions FROM submissions")
+            }
+            for proposal in conn.execute(
+                "SELECT * FROM house_proposals WHERE used_at IS NULL ORDER BY rowid"
+            ).fetchall():
+                conn.execute(
+                    "UPDATE house_proposals SET used_at = ? WHERE name = ?",
+                    (now.isoformat(), proposal["name"]),
+                )
+                name = proposal["name"]
+                taken = conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone()
+                if taken or proposal["normalized_instructions"] in texts:
+                    log.info("house proposal skipped: taken since it was proposed")
+                    continue
+                submission_id = uuid4().hex
+                conn.execute(
+                    "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
+                    "created_at, lane, generation, parents) "
+                    "VALUES (?, ?, 'house', ?, 'house', 'queued', ?, 'house', ?, ?)",
+                    (
+                        submission_id,
+                        name,
+                        proposal["instructions"],
+                        now.isoformat(),
+                        proposal["generation"],
+                        proposal["parents"],
+                    ),
+                )
+                conn.execute(
+                    "UPDATE house_state SET total_started = total_started + 1 WHERE id = 1"
+                )
+                return submission_id, name
+        return None
 
     def house_state(self) -> dict[str, Any]:
         """The lane's cursor, cycle, pause flag and counts (running, started in the last hour)."""

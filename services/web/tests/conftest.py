@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -197,7 +198,8 @@ def drain_background_work(monkeypatch):
     yield
     for worker in workers:
         release(worker.run_submission)
-        for pool in (worker.pool, getattr(worker, "house_pool", None)):
+        pools = ("pool", "house_pool", "propose_pool")
+        for pool in (getattr(worker, name, None) for name in pools):
             if pool is not None:
                 pool.shutdown(wait=True, cancel_futures=True)
 
@@ -245,9 +247,87 @@ def seeded(settings) -> Settings:
     return settings
 
 
+@dataclass(frozen=True)
+class FakeProposal:
+    name: str
+    instructions: str
+    parents: list[str] = field(default_factory=list)
+    idea: str = "an idea"
+
+
+@dataclass(frozen=True)
+class FakeBrief:
+    """Opaque to the lane, which reads only .names (like PerformanceBrief.names)."""
+
+    names: list[str]
+
+
+OMITTED = object()  # an argument the caller left out
+
+
+class FakeStrategist:
+    """bazaar_agent.strategist's brief() and propose(), with the agreed F1/F2 signatures.
+
+    By default each propose() returns k fresh proposals named g<generation>-s<n> over KO and
+    MSFT, with the brief's first name as parent; batches (lists of proposals) replace that, one
+    per call. fail, when set, is raised by brief().
+    """
+
+    def __init__(self, *, names=("parent-a", "parent-b"), batches=None, fail=None):
+        self.names = list(names)
+        self.batches = list(batches or [])
+        self.fail = fail
+        self.lock = threading.Lock()
+        self.calls: list[tuple[str, dict]] = []
+        self.proposed: list[str] = []  # every name returned, in order
+        self.count = 0
+
+    def brief(
+        self, *, bundle_id, since, environment="production", top=10, bottom=5,
+        exclude_names=frozenset(), data_version=None, house_names=OMITTED,
+    ):  # fmt: skip
+        with self.lock:
+            self.calls.append(("brief", {
+                "bundle_id": bundle_id, "since": since, "environment": environment,
+                "exclude_names": exclude_names, "data_version": data_version,
+                **({} if house_names is OMITTED else {"house_names": house_names}),
+            }))  # fmt: skip
+        if self.fail is not None:
+            raise self.fail
+        return FakeBrief(list(self.names))
+
+    def propose(
+        self, *, brief, k, generation, instructions_by_name, existing_instructions, universe,
+        benchmark, trading_days=OMITTED,
+    ):  # fmt: skip
+        with self.lock:
+            self.calls.append(("propose", {
+                "brief": brief, "k": k, "generation": generation,
+                "instructions_by_name": instructions_by_name,
+                "existing_instructions": existing_instructions, "universe": universe,
+                "benchmark": benchmark,
+                **({} if trading_days is OMITTED else {"trading_days": trading_days}),
+            }))  # fmt: skip
+            if self.batches:
+                batch = list(self.batches.pop(0))
+            else:
+                batch = []
+                for _ in range(k):
+                    self.count += 1
+                    batch.append(FakeProposal(
+                        f"g{generation}-s{self.count:03d}",
+                        f"Buy KO on day 1, then put {self.count} percent into MSFT on day 2.",
+                        parents=brief.names[:1],
+                    ))  # fmt: skip
+            self.proposed += [p.name for p in batch]
+        return batch
+
+
 @pytest.fixture
 def helpers():
     class H:
+        FakeStrategist = FakeStrategist
+        FakeProposal = FakeProposal
         FakeRunner = FakeRunner
         Clock = Clock
         wait_for = staticmethod(wait_for)
