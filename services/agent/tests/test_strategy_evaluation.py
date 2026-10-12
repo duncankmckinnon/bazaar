@@ -600,3 +600,13 @@ async def test_the_real_judge_never_sends_an_input_over_its_budget(monkeypatch):
         await judge.decide(DecisionRequest(state="x" * 500, questions={}), {})
     assert caught.value.size == 502 and sent == []  # the JSON string, quotes included
     await client.aclose()
+
+
+def test_judge_model_needs_the_callers_traced_client():
+    """No default client: one could go untraced (no traceparent) or never be closed."""
+    import inspect
+
+    from bazaar_agent import strategy_evaluation
+
+    parameter = inspect.signature(strategy_evaluation.judge_model).parameters["http_client"]
+    assert parameter.default is inspect.Parameter.empty

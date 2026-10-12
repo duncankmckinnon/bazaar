@@ -244,12 +244,13 @@ async def fit_evidence(
     return None
 
 
-def judge_model(http_client: httpx2.AsyncClient | None = None) -> ProbabilityJudgeModel:
+def judge_model(http_client: httpx2.AsyncClient) -> ProbabilityJudgeModel:
     """Only the harness operator selects the judge; strategy text cannot select a model.
 
     Jev is reached through a Pydantic AI Gateway route with the Gateway key, the same base URL
-    resolution as `gateway/...` models; the Gateway provider has no Jev upstream. The provider
-    uses http_client, else a new judge_http_client(); a client passed in is the caller's to close.
+    resolution as `gateway/...` models; the Gateway provider has no Jev upstream. http_client is
+    required (a judge_http_client(), traced) and is the caller's to close: there is no default
+    client that could go untraced or unclosed.
     """
     route, _, model_name = (os.environ.get(JUDGE_MODEL_ENV) or DEFAULT_JUDGE_MODEL).partition(":")
     if not re.fullmatch(r"[a-zA-Z0-9._-]+", route) or not model_name:
@@ -267,7 +268,7 @@ def judge_model(http_client: httpx2.AsyncClient | None = None) -> ProbabilityJud
         provider=TypeSafeProvider(
             api_key=api_key,
             base_url=f"{base_url.rstrip('/')}/{route}",
-            http_client=http_client or judge_http_client(),
+            http_client=http_client,
         ),
     )
 
