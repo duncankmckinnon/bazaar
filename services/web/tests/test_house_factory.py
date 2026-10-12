@@ -485,4 +485,4 @@ def test_bad_factory_settings_are_refused(monkeypatch, name, raw):
 
 def test_the_tag_shows_the_generation_as_text():
     page = (STATIC / "board.html").read_text()
-    assert 'tag.textContent = Number.isInteger(gen) && gen > 0 ? `G${gen}` : "AI";' in page
+    assert "if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);" in page
