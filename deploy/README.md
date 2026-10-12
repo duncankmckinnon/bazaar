@@ -30,7 +30,7 @@ The Modal secret `bazaar-live`, which Anthony creates. Nobody prints its values.
 - `LOGFIRE_TOKEN`
 - `PUBLIC_URL`, the Modal web endpoint URL. Add it after the first deploy prints the URL, then redeploy.
 
-The caps (`BAZAAR_MAX_QUEUE`, `BAZAAR_MAX_SUBMISSIONS_PER_DAY`, `BAZAAR_MAX_PER_IP_PER_HOUR`) can go in the same secret.
+The caps (`BAZAAR_MAX_QUEUE`, `BAZAAR_MAX_SUBMISSIONS_PER_DAY`, `BAZAAR_MAX_PER_IP_PER_HOUR`, and `BAZAAR_MAX_LEADS_PER_IP_PER_HOUR` for the form's email step, default 60) can go in the same secret.
 Without them the web app uses its defaults.
 
 ## The market data bundle

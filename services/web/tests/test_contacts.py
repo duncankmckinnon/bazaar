@@ -95,17 +95,33 @@ def test_company_and_role_are_stripped_and_100_characters_fit(settings, helpers)
     assert (row["company"], row["role"]) == ("c" * 100, "Quant")
 
 
-@pytest.mark.parametrize("field", ["email", "company", "role"])
-def test_each_contact_field_is_required(settings, helpers, field):
+def test_email_is_required(settings, helpers):
     payload = body()
-    del payload[field]
+    del payload["email"]
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         response = client.post("/api/submissions", json=payload)
 
     assert response.status_code == 422
     [error] = response.json()["detail"]
-    assert (error["loc"], error["msg"]) == (["body", field], "Field required")
+    assert (error["loc"], error["msg"]) == (["body", "email"], "Field required")
     assert set(error) == {"type", "loc", "msg"}  # no "input" echo of the whole body
+
+
+@pytest.mark.parametrize("left_out", [("company",), ("role",), ("company", "role")])
+def test_company_and_role_are_optional_and_stored_null(settings, helpers, left_out):
+    payload = body()
+    for field in left_out:
+        del payload[field]
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        response = client.post("/api/submissions", json=payload)
+        nulls = client.post("/api/submissions", json=body("null-bot", company=None, role=None))
+
+    assert (response.status_code, nulls.status_code) == (201, 201)
+    row = Store(settings.web_db).get(response.json()["id"])
+    for field in ("company", "role"):
+        assert row[field] == (None if field in left_out else CONTACT[field])
+    row = Store(settings.web_db).get(nulls.json()["id"])
+    assert (row["company"], row["role"]) == (None, None)
 
 
 # ---------- storage ----------
@@ -307,7 +323,9 @@ def test_contact_details_reach_no_span_log_response_runner_or_run_file(
 ):
     """The only way out of the web DB is the admin CSV."""
     caplog.set_level(logging.DEBUG)
-    config = dataclasses.replace(seeded, max_queue=2, max_per_ip_hour=3, max_per_day=4)
+    config = dataclasses.replace(
+        seeded, max_queue=2, max_per_ip_hour=3, max_per_day=4, max_leads_per_ip_hour=2
+    )
     spy = Spy(helpers.FakeRunner(fail={"failing-bot"}))
     responses = []
 
@@ -321,22 +339,23 @@ def test_contact_details_reach_no_span_log_response_runner_or_run_file(
         helpers.wait_for(lambda: status(client, sid)["status"] == "scored")
         bad = record(client.post("/api/submissions", json=body("failing-bot", **SENTINEL_CONTACT)))
         helpers.wait_for(lambda: status(client, bad.json()["id"])["status"] == "failed")
+        # A taken name is renamed, not refused (v11).
+        dup = record(client.post("/api/submissions", json=body("sentinel-bot", **SENTINEL_CONTACT)))
+        assert dup.status_code == 201 and dup.json()["renamed"], dup.text
         # Every error path of the submit route, carrying the sentinels.
         errors = [
-            body("sentinel-bot", **SENTINEL_CONTACT),  # name taken
             body("x-bot", **(SENTINEL_CONTACT | {"email": "zz-sentinel@@example.com"})),
             body("x-bot", **(SENTINEL_CONTACT | {"company": SENTINELS[1] * 10})),
             body("x-bot", **(SENTINEL_CONTACT | {"role": SENTINELS[2] * 10})),
             {k: v for k, v in body("x-bot", **SENTINEL_CONTACT).items() if k != "email"},
-            body("X BOT", **SENTINEL_CONTACT),  # bad name, valid contacts
+            body("!!", **SENTINEL_CONTACT),  # bad name, valid contacts
             body("x-bot", instructions="short", **SENTINEL_CONTACT),
         ]
         for payload in errors:
             response = record(client.post("/api/submissions", json=payload))
             assert response.status_code == 422, response.text
-        # The caps: three from one address fill its hourly cap; a fourth from another address
-        # fills the day; the queue cap is below, in a second app with the runner held.
-        assert record(client.post("/api/submissions", json=body("cap-0", **SENTINEL_CONTACT)))
+        # The caps: the three above from one address fill its hourly cap; a fourth from another
+        # address fills the day; the queue cap is below, in a second app with the runner held.
         caps = [
             client.post("/api/submissions", json=body("ip-capped", **SENTINEL_CONTACT)),
             client.post(
@@ -352,6 +371,17 @@ def test_contact_details_reach_no_span_log_response_runner_or_run_file(
         ]
         responses += caps
         assert [r.status_code for r in caps] == [429, 201, 429]
+        # The email step: a known email, a new one (which fills this address's lead cap of 2,
+        # with the submissions' lead), then the refused, the invalid and the extra-field paths.
+        leads = [
+            client.post("/api/leads", json={"email": SENTINELS[0]}),
+            client.post("/api/leads", json={"email": "other-person@example.com"}),
+            client.post("/api/leads", json={"email": SENTINELS[0]}),
+            client.post("/api/leads", json={"email": "zz-sentinel@@example.com"}),
+            client.post("/api/leads", json={"email": SENTINELS[0], "company": SENTINELS[1]}),
+        ]
+        responses += leads
+        assert [r.status_code for r in leads] == [204, 204, 429, 422, 422]
         for path in ("/", "/submit", "/api/board", "/api/tickers", f"/api/submissions/{sid}"):
             record(client.get(path))
         record(client.get("/api/admin/whoami", headers=ADMIN))

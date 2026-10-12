@@ -93,6 +93,9 @@ class Settings:
     max_queue: int = 30
     max_per_day: int = 150
     max_per_ip_hour: int = 5
+    # New emails at POST /api/leads per network per hour: its own bucket, and higher, since a
+    # venue puts many people behind one address.
+    max_leads_per_ip_hour: int = 60
     admin_token: str | None = None
     fonts_dir: Path | None = None
     logfire_dashboard_url: str | None = None  # template with "{strategy}"
@@ -158,6 +161,7 @@ class Settings:
             max_queue=int(env.get("BAZAAR_MAX_QUEUE", "30")),
             max_per_day=int(env.get("BAZAAR_MAX_SUBMISSIONS_PER_DAY", "150")),
             max_per_ip_hour=int(env.get("BAZAAR_MAX_PER_IP_PER_HOUR", "5")),
+            max_leads_per_ip_hour=int(env.get("BAZAAR_MAX_LEADS_PER_IP_PER_HOUR", "60")),
             admin_token=env.get("BAZAAR_ADMIN_TOKEN") or None,
             fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
             logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
