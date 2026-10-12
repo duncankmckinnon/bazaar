@@ -26,6 +26,7 @@ from opentelemetry import trace
 
 from bazaar_web.board import BoardSource, percent
 from bazaar_web.bundle import Bundle, BundleSource
+from bazaar_web.dataset import ClientFactory, DatasetSync
 from bazaar_web.house import PROPOSE_K, Strategist, import_strategist, universe_of
 from bazaar_web.settings import SECRET_ENV_VARS, Settings
 from bazaar_web.store import Store
@@ -111,6 +112,7 @@ class Worker:
         on_scored: Callable[[], Callable[[str, Path], None] | None],
         bundles: BundleSource | None = None,
         strategist: Strategist | None = None,
+        dataset_client: ClientFactory | None = None,
     ) -> None:
         self.store = store
         # The factory proposes over the deploy's bundle universe; without a source (only
@@ -143,6 +145,9 @@ class Worker:
         self.propose_pool = (
             ThreadPoolExecutor(1, thread_name_prefix="bazaar-propose") if self.house_slots else None
         )
+        # Strategies to the Logfire dataset: a loop on a thread of its own, off every request.
+        self.dataset = DatasetSync(store, dataset_client)
+        self.dataset_pool = ThreadPoolExecutor(1, thread_name_prefix="bazaar-dataset")
         self.house_resume: list[str] = []  # house runs interrupted by a restart, run first
         self.house_failures = 0  # consecutive failed house runs, lane-wide
         self.house_backoff_until: datetime | None = None  # wall time, for the admin status
@@ -158,6 +163,7 @@ class Worker:
             asyncio.create_task(self._consume()) for _ in range(self.settings.max_concurrent)
         ]
         self.tasks += [asyncio.create_task(self._house_slot()) for _ in range(self.house_slots)]
+        self.dataset_pool.submit(self.dataset.run)
 
     async def _recover(self) -> None:
         """Pick up after a restart without paying for a run twice.
@@ -204,11 +210,12 @@ class Worker:
                 self.house_resume.append(submission_id)
 
     async def stop(self) -> None:
+        self.dataset.stop()  # ends its wait at once; a push in flight finishes on its own
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         self.pool.shutdown(wait=False, cancel_futures=True)
-        for pool in (self.house_pool, self.propose_pool):
+        for pool in (self.house_pool, self.propose_pool, self.dataset_pool):
             if pool is not None:
                 pool.shutdown(wait=False, cancel_futures=True)
 

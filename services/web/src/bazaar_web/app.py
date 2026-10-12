@@ -25,6 +25,7 @@ from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, board_rows, build_board
 from bazaar_web.browser import telemetry_module
 from bazaar_web.bundle import BundleSource
+from bazaar_web.dataset import ClientFactory
 from bazaar_web.house import Strategist
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
@@ -162,6 +163,7 @@ def create_app(
     now: Now | None = None,
     bundle_source: BundleSource | None = None,
     strategist: Strategist | None = None,
+    dataset_client: ClientFactory | None = None,
 ) -> FastAPI:
     """Build the app. Nothing touches disk until the lifespan starts, nor the market until a
     request needs the trading window."""
@@ -182,6 +184,7 @@ def create_app(
             on_scored=lambda: app.state.on_scored,
             bundles=bundles,
             strategist=strategist,
+            dataset_client=dataset_client,
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
         await worker.start()

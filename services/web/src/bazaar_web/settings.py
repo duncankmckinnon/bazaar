@@ -27,6 +27,7 @@ SECRET_ENV_VARS = (
     "BAZAAR_ADMIN_TOKEN",
     "LOGFIRE_TOKEN",
     "LOGFIRE_READ_TOKEN",
+    "LOGFIRE_API_WRITE_KEY",  # the strategy dataset's key, read by bazaar_web.dataset
     "BAZAAR_LOGFIRE_BROWSER_TOKEN",  # public by design, but only in /browser-telemetry.js
 )
 MAX_CONCURRENT_RANGE = range(1, 33)
