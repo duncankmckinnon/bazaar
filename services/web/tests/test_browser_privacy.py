@@ -4,18 +4,27 @@ Serves the real web app, drives headless Chromium through a submission with a se
 field, captures what the page exports to Logfire (the export is intercepted, never sent) and
 checks that no sentinel leaves the browser. Needs Playwright and its Chromium:
 
-    uv run --with playwright pytest services/web/tests/test_browser_privacy.py
+    uv run --with playwright==1.63.0 python -m pytest services/web/tests/test_browser_privacy.py
 
-Without Playwright or a launchable Chromium (plain `uv run pytest`, CI) every test here SKIPS
-with a named reason; it never passes silently.
+(`python -m pytest`: a venv whose pytest entry point is a shell shim would otherwise run pytest
+outside the --with overlay, and the proof would skip.)
+
+Without Playwright or a launchable Chromium (plain `uv run pytest`, the CI test job) every test
+here SKIPS with a named reason; it never passes silently. With BAZAAR_REQUIRE_BROWSER_PROOF=1
+(the CI browser-privacy job) a missing browser FAILS instead.
+
+Email, company, role and instructions are private: any trace of them in an export fails. Name
+and handle are public (the board shows them): a trace of them is reported as a NOTE warning.
 """
 
 import gzip
 import json
+import os
 import re
 import socket
 import threading
 import time
+import warnings
 from urllib.parse import quote, quote_plus, urlparse
 
 import pytest
@@ -30,7 +39,7 @@ except ImportError:
 
 RUN_LOCALLY = (
     "browser privacy proof: run locally with "
-    "uv run --with playwright pytest services/web/tests/test_browser_privacy.py"
+    "uv run --with playwright==1.63.0 python -m pytest services/web/tests/test_browser_privacy.py"
 )
 
 
@@ -47,11 +56,32 @@ def browser_unavailable() -> str | None:
 
 
 UNAVAILABLE = browser_unavailable()
-pytestmark = pytest.mark.skipif(UNAVAILABLE is not None, reason=f"{RUN_LOCALLY}: {UNAVAILABLE}")
+REQUIRED = os.environ.get("BAZAAR_REQUIRE_BROWSER_PROOF") == "1"
+pytestmark = pytest.mark.skipif(
+    UNAVAILABLE is not None and not REQUIRED, reason=f"{RUN_LOCALLY}: {UNAVAILABLE}"
+)
+
+
+@pytest.fixture(autouse=True)
+def browser_required():
+    """Reached without a browser only when the proof is required: then it fails, never skips."""
+    if UNAVAILABLE is not None:
+        pytest.fail(
+            f"BAZAAR_REQUIRE_BROWSER_PROOF=1 but the browser privacy proof cannot run: "
+            f"{UNAVAILABLE}",
+            pytrace=False,
+        )
+
+
+class PublicFieldNote(UserWarning):
+    """A public field (name or handle) seen in an export: reported, not a failure."""
+
 
 TOKEN_ENV = "BAZAAR_LOGFIRE_BROWSER_TOKEN"
 TOKEN = "test-browser-token-SENTINEL-77"  # fake; never a real token
 EXPORT_URL = "https://logfire-us.pydantic.dev/v1/traces"
+# As on prod: the page then links each run to its dashboard, with the name in the href's query.
+DASHBOARD_URL = "https://logfire-us.pydantic.dev/logfire/bazaar-demo/dashboards/strategy?var-strategy={strategy}"
 REPLAY_URL = "https://logfire-us.pydantic.dev/v1/replay"
 # Replay uploads start after 10 s of session, then every 5 s while active, plus on pagehide.
 SECOND_INTERACTION_AT = 11.0
@@ -59,6 +89,7 @@ STAY_ON_PAGE = 16.0
 # Text that session replay must mask on /submit (maskAllText is on everywhere but the board).
 UNMASKED_TEXT = ("Enter your trading agent", "use your email only to contact you")
 
+PRIVATE = ("email", "company", "role", "instructions")
 FIELDS = {
     "name": "name-sentinel-53",
     "handle": "HandleSentinel-29",
@@ -84,6 +115,7 @@ def serve(tmp_path, monkeypatch, helpers):
         monkeypatch.setenv("BAZAAR_RUNNER_TOKEN", "runner-token")
         monkeypatch.setenv("BAZAAR_RUNS_DIR", str(tmp_path / "runs"))
         monkeypatch.setenv("BAZAAR_WEB_DB", str(tmp_path / "data" / "web.sqlite3"))
+        monkeypatch.setenv("BAZAAR_LOGFIRE_DASHBOARD_URL", DASHBOARD_URL)
         if token is None:
             monkeypatch.delenv(TOKEN_ENV, raising=False)
         else:
@@ -277,6 +309,12 @@ def test_no_sentinel_leaves_the_browser_and_the_proof_is_not_vacuous(serve, brow
     page.on("response", lambda response: responses.append(response))
 
     submission_id, loaded = fill_and_submit(page, base)
+    # The riskiest attribute is really in the DOM while replay records: the dashboard link,
+    # whose href carries the name sentinel in its query.
+    link = page.locator("#logfire a.logfire")
+    link.wait_for(state="visible", timeout=10_000)
+    href = link.get_attribute("href") or ""
+    assert f"var-strategy={quote(FIELDS['name'], safe='')}" in href, href
     stay(page, loaded)
     bodies = response_bodies(responses)
     flush(page, traffic)
@@ -324,12 +362,17 @@ def test_no_sentinel_leaves_the_browser_and_the_proof_is_not_vacuous(serve, brow
                 export["body"].decode("utf-8", errors="replace"),
             ]
         ).lower()
+        kind = "replay chunk" if export in traffic.replays else "trace export"
         for field, value in FIELDS.items():
             for form in forms_of(value):
-                assert form not in haystack, (
-                    f"BLOCKER: {field} sentinel {form!r} in {export['url']}: "
+                if form not in haystack:
+                    continue
+                where = (
+                    f"{kind} {export['url']}: "
                     f"{locate(export, form) or 'URL, headers or non-JSON body'}"
                 )
+                assert field not in PRIVATE, f"BLOCKER: {field} sentinel {form!r} in {where}"
+                warnings.warn(f"NOTE: public {field} {form!r} in {where}", PublicFieldNote)
 
     # (c) The token authorises exports and is served only by the telemetry module.
     for export in traffic.exports:
