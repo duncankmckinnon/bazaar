@@ -30,6 +30,8 @@ EMAIL_SCRUBBED = "[Scrubbed email]"
 EXTRA_SCRUB_PATTERNS = (
     r"runner[._ -]?token",
     r"admin[._ -]?token",
+    # The strategist's Logfire query token (LOGFIRE_READ_TOKEN, logfire_read_token, read-token).
+    r"read[._ -]?token",
     r"x[._ -]?bazaar[._ -]?approval",
     # Email addresses (submitters' contact details), as defence in depth: the web app never puts
     # them in a span. Logfire matches patterns against attribute names AND string values, so any
@@ -78,6 +80,7 @@ SECRET_ENV = (
     "BAZAAR_ADMIN_TOKEN",
     "LOGFIRE_API_KEY",
     "LOGFIRE_TOKEN",
+    "LOGFIRE_READ_TOKEN",
 )
 REDACTED = "[REDACTED]"
 # Shorter values are not credentials and would redact ordinary text.
