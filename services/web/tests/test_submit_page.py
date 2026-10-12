@@ -40,11 +40,12 @@ def test_no_external_scripts_and_only_google_font_urls():
     assert hosts <= {"fonts.googleapis.com", "fonts.gstatic.com"}
 
 
-def test_uses_the_submission_api_and_reads_the_board_once_for_its_window():
+def test_uses_the_submission_and_leads_apis_and_never_reads_the_board():
     html = page()
 
     assert "/api/submissions" in html
-    assert html.count("/api/board") == 1  # a single fetch on load, for the trading window
+    assert '"/api/leads"' in html
+    assert "/api/board" not in html  # the v11 lede has no dates, so no window fetch
     assert "setInterval" not in html
 
 
@@ -52,6 +53,7 @@ def test_validates_the_name_slug_and_strategy_length():
     html = page()
 
     assert "^[a-z0-9-]{3,40}$" in html
+    assert "Use 3 to 40 letters, digits or hyphens" in html  # the server's 422 msg, verbatim
     assert re.search(r"MIN_CHARS = 20\b", html)
     assert re.search(r"MAX_CHARS = 4000\b", html)
 
@@ -64,31 +66,35 @@ def test_never_writes_html_from_data():
     assert not re.search(r"\beval\s*\(|new Function\s*\(", html)
 
 
-def test_dwight_is_loaded_from_the_server_not_embedded():
+def test_headings_use_silkscreen_from_google_fonts():
     html = page()
 
-    assert "data:font" not in html
-    assert "/fonts/DwightMedium.woff2" in html
+    assert "family=Silkscreen" in html
+    assert re.search(r"--display:\s*\"Silkscreen\"", html)
 
 
-def run_page_function(name, calls):
-    """Run a small helper from the page's inline script in node and return its results."""
+MARKED = ("safeLogfireUrl", "names", "emailOk", "builder")
+
+
+def run_page(expression):
+    """Evaluate an expression in node with the page's pure helpers loaded; return it as JSON."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
     sources = re.findall(
         r"^  function (?:toNumber|percent|rankLabel)\(.*?^  }$", page(), re.MULTILINE | re.DOTALL
     )
-    sources += re.findall(r"// safeLogfireUrl:start(.*?)// safeLogfireUrl:end", page(), re.DOTALL)
-    sources += re.findall(r"// contactErrors:start(.*?)// contactErrors:end", page(), re.DOTALL)
-    sources += re.findall(r"// windowText:start(.*?)// windowText:end", page(), re.DOTALL)
-    script = (
-        "\n".join(sources) + f"\nconsole.log(JSON.stringify([{', '.join(calls)}].map({name})));"
-    )
+    for marker in MARKED:
+        sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", page(), re.DOTALL)
+    script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
     result = subprocess.run(
         [node, "-e", script], capture_output=True, text=True, timeout=30, check=True
     )
     return json.loads(result.stdout)
+
+
+def run_page_function(name, calls):
+    return run_page(f"[{', '.join(calls)}].map(function (x) {{ return {name}(x); }})")
 
 
 def test_percent_formats_numbers_and_decimal_strings():
@@ -163,10 +169,10 @@ def test_logfire_link_is_labelled_and_opens_safely():
     assert "// safeLogfireUrl:start" in html and "// safeLogfireUrl:end" in html
 
 
-PAGE_BACKGROUNDS = ("#36182D", "#6a1a65", "#6b1b66")  # base and the blended magenta peak
-FIELD_FILL = "#24101d"
-TEXT_TOKENS = ("sugar", "aqua", "dim", "soft", "faint", "error")
-PLACEHOLDER_TOKEN = "faint"
+PAGE_BACKGROUNDS = ("#5a1d5e", "#2a1230", "#1c1220")  # the gradient's stops, lightest first
+FIELD_FILL = "#22121f"
+TEXT_TOKENS = ("text", "muted", "dim", "lime", "aqua", "error")
+PLACEHOLDER_TOKEN = "dim"
 
 
 def css_tokens():
@@ -193,6 +199,7 @@ def test_text_tokens_meet_wcag_aa_on_the_page_and_the_input_fill():
     for name in TEXT_TOKENS:
         for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
             assert contrast(tokens[name], background) >= 4.5, (name, background)
+    assert contrast(tokens["ink"], tokens["lime"]) >= 4.5  # the button and the pressed chips
 
 
 def test_placeholder_uses_a_pinned_token_that_meets_wcag_aa_on_the_fill():
@@ -203,7 +210,7 @@ def test_placeholder_uses_a_pinned_token_that_meets_wcag_aa_on_the_fill():
     assert contrast(css_tokens()[PLACEHOLDER_TOKEN], FIELD_FILL) >= 4.5
 
 
-def test_input_border_meets_non_text_contrast_against_page_and_field():
+def test_input_and_chip_borders_meet_non_text_contrast_against_page_and_field():
     tokens = css_tokens()
 
     for background in (*PAGE_BACKGROUNDS, FIELD_FILL):
@@ -212,118 +219,247 @@ def test_input_border_meets_non_text_contrast_against_page_and_field():
         r"input\[type=\"text\"\], input\[type=\"email\"\], textarea \{[^}]*border: 1px solid var\(--field-line\)",
         page(),
     )
+    assert re.search(r"\.chip \{[^}]*border: 1px solid var\(--field-line\)", page())
 
 
-def test_page_uses_the_board_background_and_no_low_contrast_text_colours():
+def test_page_uses_the_prototype_background_and_no_decorative_text_colours():
     html = page()
 
     assert (
-        "background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, "
-        "rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, "
-        "rgba(255,101,80,0) 60%), #36182D;"
+        "background: radial-gradient(120% 60% at 50% 0%, #5a1d5e 0%, #2a1230 55%, #1c1220 100%)"
     ) in html
-    assert not re.search(r"(?<![-\w])color:\s*var\(--(?:calcium|lithium)\)", html)
+    assert not re.search(r"(?<![-\w])color:\s*var\(--(?:card-line|field-line)\)", html)
 
 
-GICS_SECTORS = (
-    "Communication Services",
-    "Consumer Discretionary",
-    "Consumer Staples",
-    "Energy",
-    "Financials",
-    "Health Care",
-    "Industrials",
-    "Information Technology",
-    "Materials",
-    "Real Estate",
-    "Utilities",
-)
+def text_of(html):
+    return " ".join(re.sub(r"<[^>]+>", " ", html).replace("&amp;", "&").split())
 
 
-def examples():
-    """Each example's title and text, joined."""
-    block = re.search(r"var EXAMPLES = \[(.*?)\n  \];", page(), re.DOTALL).group(1)
-    return [" ".join(re.findall(r'"([^"]*)"', chunk)) for chunk in block.split("title:")[1:]]
+def test_prototype_copy_is_verbatim():
+    text = text_of(page())
+
+    for copy in (
+        "Enter your trading agent",
+        "Trade any S&P 500 stock for 10 days, starting with $10,000. Two fields, then pick a style.",
+        "Strategy name",
+        "Lowercase is automatic. Spaces become hyphens.",
+        "Work email",
+        "We save your email as soon as you leave this field, and use it only to contact winners.",
+        "Saved. You're on the list even if you don't submit.",
+        "Build your strategy",
+        "no typing needed",
+        "Aggressiveness",
+        "Hold positions for",
+        "Stop-loss",
+        "Signal",
+        "Sectors",
+        "Your strategy",
+        "Use the example",
+        "Written from your choices above. Edit freely; moving a slider rewrites it.",
+        (
+            "Example of a decent strategy: Each morning, buy about $2,000 of the tech stock with "
+            "the strongest 5-day gain, if it is beating SPY. Sell anything that falls 4% below "
+            "what you paid. One order a day."
+        ),
+        "Insert policy",
+    ):
+        assert copy in text, copy
+    assert 'placeholder="e.g. tech-momentum"' in page()
+    assert 'placeholder="you@company.com"' in page()
 
 
-def test_lede_offers_the_s_and_p_500_without_ticker_chips():
+def test_the_example_button_uses_the_example_text_shown_in_the_box():
+    box = re.search(r'<div class="example-box">(.*?)</div>', page(), re.DOTALL).group(1)
+    shown = text_of(box).removeprefix("Example of a decent strategy: ")
+
+    assert run_page("EXAMPLE") == shown
+    assert run_page("next(DEFAULTS, {type: 'example'}).custom") == shown
+
+
+def test_the_rename_note_is_the_prototypes_and_keyed_on_renamed():
     html = page()
-    lede_html = re.search(r'<p class="lede">(.*?)</p>', html, re.DOTALL).group(1)
-    lede = re.sub(r"<[^>]+>", "", lede_html).replace("&amp;", "&")
 
-    assert lede.startswith(
-        "Your agent can trade any S&P 500 stock, using prices, news and filings, over "
-    )
-    assert 'class="ticker"' not in html and 'class="tickers"' not in html
-    assert ".ticker" not in html
-    assert "12 large US stocks" not in html
-
-
-def test_examples_work_by_sector_or_screen_and_name_only_spy():
-    found = examples()
-
-    assert len(found) == 3
-    for example in found:
-        assert any(name in example for name in (*GICS_SECTORS, "S&P 500")), example
-    words = re.findall(r"\b[A-Z]{1,5}\b", " ".join(found).replace("S&P 500", ""))
-    assert set(words) <= {"SPY"}, set(words) - {"SPY"}
+    assert "That name is taken, so you'll play as " in html
+    assert ". No need to change it." in html
+    assert "body.renamed === true" in html
 
 
 def input_tag(field_id):
     return re.search(rf'<input id="{field_id}"[^>]*>', page()).group(0)
 
 
-def test_contact_inputs_are_required_with_autocomplete_and_limits():
-    email, company, role = input_tag("email"), input_tag("company"), input_tag("role")
+def test_only_the_name_and_email_fields_remain():
+    html = page()
 
-    for tag in (email, company, role):
-        assert " required" in tag
-    assert 'type="email"' in email and 'inputmode="email"' in email
-    assert 'autocomplete="email"' in email and 'maxlength="254"' in email
-    assert 'autocomplete="organization"' in company and 'maxlength="100"' in company
-    assert 'autocomplete="organization-title"' in role and 'maxlength="100"' in role
-    for field_id in ("email", "company", "role"):
-        assert f'<label for="{field_id}">' in page()
-        assert f'aria-describedby="contact-purpose {field_id}-error"' in input_tag(field_id)
-
-
-def test_contact_purpose_line_is_shown():
-    assert (
-        "We'll use your email only to contact you if your strategy wins. Your company and role "
-        "are used the same way and are never shown publicly."
-    ) in " ".join(page().split())
+    for gone in ("handle", "company", "role", "contact-purpose", "examples", "window"):
+        assert f'id="{gone}"' not in html, gone
+    email = input_tag("email")
+    for attribute in (
+        'type="email"',
+        'inputmode="email"',
+        'autocomplete="email"',
+        'maxlength="254"',
+        " required",
+    ):
+        assert attribute in email, attribute
+    assert 'maxlength="40"' in input_tag("name")
 
 
-def test_contact_errors_accepts_valid_contact_details():
-    calls = [
-        json.dumps({"email": "  ada@example.com ", "company": " Pydantic ", "role": "Engineer"}),
-        json.dumps({"email": "a@b.co", "company": "x" * 100, "role": "y" * 100}),
-        json.dumps({"email": "x" * 240 + "@example.com", "company": "C", "role": "R"}),
+def test_email_never_reaches_the_url_and_422_input_is_never_shown():
+    html = page()
+
+    assert '<form id="submit-form" method="post"' in html
+    assert " name=" not in input_tag("email")
+    leads = re.search(r'fetch\("/api/leads", \{(.*?)\n    \}\)', html, re.DOTALL).group(1)
+    assert 'method: "POST"' in leads and "body: JSON.stringify({ email: email })" in leads
+    assert not re.search(r"/api/leads\?|encodeURIComponent\(email", html)
+    show_detail = re.search(r"function showDetail\(.*?\n  \}\n", html, re.DOTALL).group(0)
+    assert set(re.findall(r"\bitem\.(\w+)", show_detail)) == {"msg", "loc"}
+    assert not re.search(r"\.input\b", html)
+
+
+def test_server_field_errors_map_to_the_three_fields():
+    fields = re.search(r"var fields = \{([^}]*)\}", page()).group(1)
+
+    assert sorted(re.findall(r"\b(\w+): ", fields)) == ["email", "instructions", "name"]
+
+
+def test_names_normalise_like_the_server():
+    cases = {
+        " --a  b-- ": ("-a-b-", "a-b"),
+        "Tech Momentum": ("tech-momentum", "tech-momentum"),
+        "a ": ("a-", "a"),
+        "A b!c": ("a-bc", "a-bc"),
+        "x\t\ny": ("x-y", "x-y"),
+        "--": ("-", ""),
+        "dip_buyer 2": ("dipbuyer-2", "dipbuyer-2"),
+    }
+    calls = [json.dumps(raw) for raw in cases]
+
+    assert run_page_function("nameAsTyped", calls) == [typed for typed, _ in cases.values()]
+    assert run_page_function("nameFinal", calls) == [final for _, final in cases.values()]
+
+
+def test_email_ok_needs_one_at_no_spaces_and_a_dot_in_the_domain():
+    good = ["ada@example.com", "a@b.co", "x" * 242 + "@example.com"]
+    bad = [
+        "ada.example.com",
+        "ada @example.com",
+        "ada@example",
+        "a@@b.co",
+        "",
+        "x" * 243 + "@example.com",
     ]
 
-    assert (
-        run_page_function("contactErrors", calls) == [{"email": "", "company": "", "role": ""}] * 3
+    assert run_page_function("emailOk", [json.dumps(v) for v in good]) == [True] * len(good)
+    assert run_page_function("emailOk", [json.dumps(v) for v in bad]) == [False] * len(bad)
+
+
+def compose(**changes):
+    return run_page(f"composed(Object.assign({{}}, DEFAULTS, {json.dumps(changes)}))")
+
+
+def test_composed_matches_the_prototype_with_gics_sector_names():
+    assert run_page("composed(DEFAULTS)") == (
+        "Each morning, look at Information Technology stocks and pick the one with the strongest "
+        "5-day gain. Buy about $2,500 of it. Hold each position for about 3 days, then sell. Sell "
+        "a position if it falls 4% below what you paid. Keep at least 25% in cash. One order a day."
+    )
+    assert compose(aggr=5, hold=1, stop=0, signal="dip", sectors=["Energy", "Healthcare"]) == (
+        "Each morning, look at Energy, Health Care stocks and pick the one with the biggest "
+        "one-day drop (buy the dip). Buy about $5,000 of it. Hold each position for about 1 day, "
+        "then sell. Stay fully invested. One order a day."
+    )
+    assert compose(aggr=1, hold=10, stop=10, signal="news", sectors=[]) == (
+        "Each morning, look at any S&P 500 stock and pick the one with the most positive news "
+        "that day. Buy about $1,000 of it. Hold each position for about 10 days, then sell. Sell "
+        "a position if it falls 10% below what you paid. Keep at least 60% in cash. One order a "
+        "day."
+    )
+    assert compose(aggr=4, sectors=["Consumer", "Tech", "Financials", "Industrials"]) == (
+        "Each morning, look at Consumer Discretionary or Consumer Staples, Information "
+        "Technology, Financials, Industrials stocks and pick the one with the strongest 5-day "
+        "gain. Buy about $3,500 of it. Hold each position for about 3 days, then sell. Sell a "
+        "position if it falls 4% below what you paid. Keep at least 10% in cash. One order a day."
+    )
+    assert compose(aggr=2, stop=2) == (
+        "Each morning, look at Information Technology stocks and pick the one with the strongest "
+        "5-day gain. Buy about $1,500 of it. Hold each position for about 3 days, then sell. Sell "
+        "a position if it falls 2% below what you paid. Keep at least 40% in cash. One order a day."
     )
 
 
-def test_contact_errors_rejects_invalid_contact_details():
-    long_email = "x" * 243 + "@example.com"  # 255 characters
-    calls = [
-        json.dumps({"email": "ada.example.com", "company": "C", "role": "R"}),
-        json.dumps({"email": "ada @example.com", "company": "C", "role": "R"}),
-        json.dumps({"email": "ada@example", "company": "C", "role": "R"}),
-        json.dumps({"email": long_email, "company": "C", "role": "R"}),
-        json.dumps({"email": "", "company": "   ", "role": ""}),
-        json.dumps({"email": "a@b.co", "company": "x" * 101, "role": "y" * 101}),
-        "{}",
-    ]
-    results = run_page_function("contactErrors", calls)
+GICS_SECTORS = (
+    "Communication Services", "Consumer Discretionary", "Consumer Staples", "Energy",
+    "Financials", "Health Care", "Industrials", "Information Technology", "Materials",
+    "Real Estate", "Utilities",
+)  # fmt: skip
 
-    for result in results[:4]:
-        assert result["email"] and not result["company"] and not result["role"]
-    assert all(results[4].values())
-    assert not results[5]["email"] and results[5]["company"] and results[5]["role"]
-    assert all(results[6].values())
+
+def test_chip_labels_stay_the_prototypes_and_map_to_real_gics_sectors():
+    where = run_page("SECTOR_WHERE")
+
+    assert run_page("SECTORS") == [
+        "Tech",
+        "Energy",
+        "Healthcare",
+        "Financials",
+        "Consumer",
+        "Industrials",
+    ]
+    assert sorted(where) == sorted(run_page("SECTORS"))
+    for label, phrase in where.items():
+        assert set(phrase.split(" or ")) <= set(GICS_SECTORS), (label, phrase)
+    assert run_page("SIGNALS") == [
+        ["momentum", "Momentum"],
+        ["dip", "Buy the dip"],
+        ["news", "News"],
+    ]
+    assert run_page("AGGRESSIVENESS") == ["Very cautious", "Cautious", "Balanced", "Bold", "All in"]
+    assert run_page("DEFAULTS") == {
+        "aggr": 3, "hold": 3, "stop": 4, "signal": "momentum", "sectors": ["Tech"], "custom": None
+    }  # fmt: skip
+
+
+def test_controls_rewrite_the_text_and_typing_keeps_it():
+    steps = run_page(
+        """(function () {
+          var s = next(DEFAULTS, {type: "text", value: "my own words, at least twenty"});
+          var typed = strategyText(s);
+          var slid = next(s, {type: "set", key: "hold", value: "1"});
+          var signal = next(next(DEFAULTS, {type: "signal", id: "news"}), {type: "signal", id: "dip"});
+          var a = next(DEFAULTS, {type: "sector", label: "Energy"});
+          var b = next(a, {type: "sector", label: "Tech"});
+          var order = next(next(DEFAULTS, {type: "sector", label: "Industrials"}),
+                           {type: "sector", label: "Energy"});
+          var c = next(next(DEFAULTS, {type: "text", value: "x"}), {type: "sector", label: "Tech"});
+          return {typed: typed, slid: [slid.hold, slid.custom, strategyText(slid) === composed(slid)],
+                  signal: signal.signal, a: a.sectors, b: b.sectors, c: [c.sectors, c.custom],
+                  order: order.sectors,
+                  unchanged: DEFAULTS.sectors};
+        })()"""
+    )
+
+    assert steps["typed"] == "my own words, at least twenty"
+    assert steps["slid"] == [1, None, True]  # a slider value is a number; the text is rewritten
+    assert steps["signal"] == "dip"  # single-select
+    assert steps["a"] == ["Tech", "Energy"]  # toggled on, in toggle order
+    assert steps["b"] == ["Energy"]  # toggled off
+    assert steps["order"] == [
+        "Tech",
+        "Industrials",
+        "Energy",
+    ]  # the prototype's order, not the chips'
+    assert steps["c"] == [[], None]  # any control drops custom text
+    assert steps["unchanged"] == ["Tech"]  # the reducer never mutates its input
+
+
+def test_chips_are_buttons_with_aria_pressed():
+    html = page()
+
+    assert re.search(r'button\.type = "button";', html)
+    assert 'setAttribute("aria-pressed", String(' in html
+    assert re.search(r"min-height: 44px", re.search(r"\.chip \{[^}]*\}", html).group(0))
 
 
 def test_local_storage_keeps_only_id_name_and_position():
@@ -342,73 +478,6 @@ def test_local_storage_keeps_only_id_name_and_position():
     )
     assert not re.search(r"email|company|role", store)
     assert "console." not in html
-
-
-def test_contact_details_never_reach_the_url_and_422_input_is_never_shown():
-    html = page()
-
-    assert '<form id="submit-form" method="post"' in html
-    for field_id in ("email", "company", "role"):
-        assert " name=" not in input_tag(field_id), field_id
-    show_detail = re.search(r"function showDetail\(.*?\n  \}\n", html, re.DOTALL).group(0)
-    assert set(re.findall(r"\bitem\.(\w+)", show_detail)) == {"msg", "loc"}
-    assert not re.search(r"\.input\b", html)
-
-
-def test_server_field_errors_map_to_the_contact_fields():
-    fields = re.search(r"var fields = \{([^}]*)\}", page()).group(1)
-
-    for name in ("name", "handle", "instructions", "email", "company", "role"):
-        assert re.search(rf"\b{name}: ", fields), name
-
-
-def test_window_text_formats_the_api_window():
-    calls = [
-        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 10}),
-        json.dumps({"start": "2025-12-29", "end": "2026-01-09", "days": 10}),
-        json.dumps({"start": "2026-09-28", "end": "2026-10-09"}),
-        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 5}),
-        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": 0}),
-        json.dumps({"start": "2026-09-28", "end": "2026-10-09", "days": "7"}),
-        json.dumps({"start": "2026-10-09", "end": "2026-10-09", "days": 1}),
-        json.dumps({"start": "2024-02-29", "end": "2024-03-01", "days": 2}),
-    ]
-
-    assert run_page_function("windowText", calls) == [
-        "10 trading days, Sep 28 to Oct 9 2026",
-        "10 trading days, Dec 29 2025 to Jan 9 2026",
-        "10 trading days, Sep 28 to Oct 9 2026",
-        "5 trading days, Sep 28 to Oct 9 2026",
-        "10 trading days, Sep 28 to Oct 9 2026",
-        "10 trading days, Sep 28 to Oct 9 2026",
-        "1 trading day, Oct 9 to Oct 9 2026",
-        "2 trading days, Feb 29 to Mar 1 2024",
-    ]
-
-
-def test_window_text_rejects_invalid_windows():
-    calls = [
-        "null",
-        "{}",
-        json.dumps({"start": "2026-13-01", "end": "2026-12-31"}),
-        json.dumps({"start": "2026-02-01", "end": "2026-02-30"}),
-        json.dumps({"start": "2025-02-29", "end": "2025-03-01"}),
-        json.dumps({"start": "2026-10-09", "end": "2026-09-28"}),
-        json.dumps({"start": 20260928, "end": "2026-10-09"}),
-        json.dumps({"start": "2026-9-28", "end": "2026-10-09"}),
-        json.dumps({"start": "2026-09-28T00:00:00Z", "end": "2026-10-09"}),
-        '"2026-09-28"',
-    ]
-
-    assert run_page_function("windowText", calls) == [None] * len(calls)
-
-
-def test_lede_markup_has_no_hard_coded_dates():
-    lede = re.search(r'<p class="lede">(.*?)</p>', page(), re.DOTALL).group(1)
-
-    assert "Feb 2" not in lede and "2026" not in lede
-    assert "10 recent trading days" in lede
-    assert "// windowText:start" in page() and "// windowText:end" in page()
 
 
 BRAND = PAGE.parent / "brand"

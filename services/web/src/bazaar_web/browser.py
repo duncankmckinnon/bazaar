@@ -26,6 +26,7 @@ IGNORE_URLS = (
     r"/api/board(\?|$)",
     r"/api/tickers(\?|$)",
     r"/api/submissions/[^/?]+",
+    r"/api/leads(\?|$)",  # personal data: an email and nothing else
     r"/api/admin/",  # the factory control: its requests carry the admin token header
 )
 

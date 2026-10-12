@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -18,7 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic_core import PydanticCustomError
 
 from bazaar_web import stats, telemetry
@@ -47,10 +48,32 @@ STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
 FONT_NAME = re.compile(r"^[A-Za-z0-9_-]+\.woff2$")
 
+log = logging.getLogger("bazaar_web.app")
+
 
 # A conservative check, not RFC 5322 (no email-validator dependency): one "@", no whitespace, a
 # local part, and a dotted domain with no empty label.
 EMAIL = re.compile(r"^[^@\s]+@(?!\.)[^@\s]*[^@\s.]\.[^@\s]*(?<!\.)$")
+
+
+def clean_email(value: str) -> str:
+    """Stripped and lowercased; a 422 with the form's message when it isn't a valid address."""
+    value = value.strip().lower()
+    if len(value) > 254 or not EMAIL.match(value) or ".." in value.split("@")[-1]:
+        raise PydanticCustomError("value_error", "Enter a valid email address")
+    return value
+
+
+# A strategy name as the form shows it ("you'll play as"); the server normalises it the same way.
+NAME = re.compile(r"[a-z0-9-]{3,40}")
+NAME_MESSAGE = "Use 3 to 40 letters, digits or hyphens"
+
+
+def normalize_name(value: str) -> str:
+    """Lowercase; each whitespace run becomes "-"; anything else outside [a-z0-9-] is dropped;
+    runs of "-" collapse to one and are trimmed from both ends; cut to 40 characters."""
+    name = re.sub(r"[^a-z0-9-]", "", re.sub(r"\s+", "-", value.lower()))
+    return re.sub(r"-+", "-", name).strip("-")[:40].rstrip("-")
 
 
 def contact_text(value: str, *, limit: int, message: str) -> str:
@@ -77,34 +100,44 @@ def reserved_handle() -> HTTPException:
 class SubmissionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: Annotated[str, Field(pattern=r"^[a-z0-9-]{3,40}$")]
+    name: str  # any text up to 200 characters, normalised (normalize_name)
     handle: str | None = None
     instructions: str
-    # Personal data, stored in the web DB only: see Store's email column.
+    # Personal data, stored in the web DB only: see Store's email column. Company and role are
+    # optional (v11): validated when given, NULL when left out.
     email: str
-    company: str
-    role: str
+    company: str | None = None
+    role: str | None = None
 
     def __repr_args__(self):  # keep contact details out of any repr, log or traceback
         hidden = {"email", "company", "role"}
         return [(k, "..." if k in hidden else v) for k, v in super().__repr_args__()]
 
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        name = normalize_name(value) if len(value) <= 200 else ""
+        if not NAME.fullmatch(name):
+            raise PydanticCustomError("value_error", NAME_MESSAGE)
+        return name
+
     @field_validator("email")
     @classmethod
     def clean_email(cls, value: str) -> str:
-        value = value.strip().lower()
-        if len(value) > 254 or not EMAIL.match(value) or ".." in value.split("@")[-1]:
-            raise PydanticCustomError("value_error", "Enter a valid email address")
-        return value
+        return clean_email(value)
 
     @field_validator("company")
     @classmethod
-    def clean_company(cls, value: str) -> str:
+    def clean_company(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return contact_text(value, limit=100, message="Enter your company (up to 100 characters)")
 
     @field_validator("role")
     @classmethod
-    def clean_role(cls, value: str) -> str:
+    def clean_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return contact_text(value, limit=100, message="Enter your role (up to 100 characters)")
 
     def contact(self) -> Contact:
@@ -129,7 +162,25 @@ class SubmissionIn(BaseModel):
         return value
 
 
-CONTACT_COLUMNS = ["name", "handle", "email", "company", "role", "created_at", "return_pct", "rank"]
+class LeadIn(BaseModel):
+    """The form's first step: an email, kept even if its owner never submits a strategy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str  # personal data, as on SubmissionIn
+
+    def __repr_args__(self):
+        return [("email", "...")]
+
+    @field_validator("email")
+    @classmethod
+    def clean_email(cls, value: str) -> str:
+        return clean_email(value)
+
+
+CONTACT_COLUMNS = [
+    "name", "handle", "email", "company", "role", "created_at", "return_pct", "rank", "source",
+]  # fmt: skip
 # A spreadsheet runs a cell starting with these as a formula (CSV injection).
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 
@@ -161,6 +212,7 @@ def create_app(
     run_submission: RunSubmission | None = None,
     on_scored: Callable[[str, Path], None] | None = None,
     now: Now | None = None,
+    on_saved: Callable[[], None] | None = None,
     bundle_source: BundleSource | None = None,
     strategist: Strategist | None = None,
     dataset_client: ClientFactory | None = None,
@@ -203,6 +255,19 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detail)})
 
     app.state.on_scored = on_scored
+    # Called after a new lead or submission has committed (modal_app.py: a debounced volume
+    # commit). It must return at once; a failure is logged by class and never fails the request.
+    app.state.on_saved = on_saved
+
+    def saved(request: Request) -> None:
+        hook = request.app.state.on_saved
+        if hook is None:
+            return
+        try:
+            hook()
+        except Exception as exc:  # noqa: BLE001 - the row is already committed
+            log.warning("on_saved hook failed (%s)", type(exc).__name__)
+
     tickers = TickerSource(settings.market_db)
     bundles = bundle_source or BundleSource(settings.market_url, settings.data_bundle)
 
@@ -288,13 +353,42 @@ def create_app(
                 trace_context=json.dumps(carrier) if carrier else None,
                 contact=body.contact(),
             )
-        except NameTaken:
+        except NameTaken:  # 20 random suffixes all taken: not expected to happen
             raise HTTPException(422, "that name is taken") from None
         except CapReached as cap:
             raise HTTPException(429, cap.detail) from None
+        # Committed: Store.create returns after its transaction. A taken name got a random
+        # suffix there, so the final name is the stored one.
+        saved(request)
+        name = store.get(submission_id)["name"]
         position = store.position(submission_id)  # read before a worker can pick it up
         request.app.state.worker.enqueue(submission_id)
-        return {"id": submission_id, "status": "queued", "position": position}
+        return {
+            "id": submission_id,
+            "status": "queued",
+            "position": position,
+            "name": name,
+            "renamed": name != body.name,
+        }
+
+    @app.post("/api/leads", status_code=204)
+    def lead(body: LeadIn, request: Request) -> Response:
+        """Keep an email from the form's first step. Personal data: untraced (EXCLUDED_URLS and
+        suppressed here, so the sqlite spans go too) and never logged. 204 even for an email
+        already kept, so the reply says nothing about who signed up."""
+        no_store = {"Cache-Control": "no-store"}
+        with logfire.suppress_instrumentation():
+            ip_hash = hashlib.sha256(client_ip(request).encode()).hexdigest()
+            try:
+                request.app.state.store.add_lead(
+                    email=body.email,
+                    ip_hash=ip_hash,
+                    max_per_ip_hour=settings.max_leads_per_ip_hour,
+                )
+            except CapReached as cap:
+                raise HTTPException(429, cap.detail, headers=no_store) from None
+        saved(request)  # add_lead returns after its transaction has committed
+        return Response(status_code=204, headers=no_store)
 
     @app.get("/api/submissions/{submission_id}")
     def submission_status(submission_id: str, request: Request) -> dict[str, Any]:
@@ -364,8 +458,10 @@ def create_app(
 
     @app.get("/api/admin/contacts")
     def contacts(request: Request, token: AdminToken = None) -> Response:
-        """CSV of the submitters who left contact details, to reach winners. Admin only and
-        untraced: it is the one place personal data leaves the web DB."""
+        """CSV of the submitters who left contact details, to reach winners, then the emails
+        left at the form's first step that never submitted (source "lead": email and time only).
+        A submission's created_at is its email's earliest (its lead's, when that came first).
+        Admin only and untraced: it is the one place personal data leaves the web DB."""
         require_admin(token)
         with logfire.suppress_instrumentation():
             store: Store = request.app.state.store
@@ -384,6 +480,7 @@ def create_app(
                     person["created_at"],
                     "" if not scored or row["return_pct"] is None else row["return_pct"],
                     row["rank"] if scored else "",
+                    person["source"],
                 ]
             )
         return Response(

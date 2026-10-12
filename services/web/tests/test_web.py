@@ -53,9 +53,9 @@ def test_submit_returns_queued_with_position(settings, helpers):
 @pytest.mark.parametrize(
     "body",
     [
-        {"name": "Bad Name"},
+        {"name": "!!!"},
         {"name": "ab"},
-        {"name": "x" * 41},
+        {"name": "x" * 201},
         {"instructions": "too short"},
         {"instructions": "  " + "x" * 19 + "  "},
         {"instructions": "x" * 4001},
@@ -68,13 +68,13 @@ def test_invalid_submissions_are_422(settings, helpers, body):
         assert submit(client, **body).status_code == 422
 
 
-def test_duplicate_name_is_422(settings, helpers):
+def test_a_duplicate_name_is_renamed_not_refused(settings, helpers):
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
-        submit(client)
+        first = submit(client)
         response = submit(client, ip="10.9.9.9")
 
-    assert response.status_code == 422
-    assert response.json() == {"detail": "that name is taken"}
+    assert first.status_code == response.status_code == 201
+    assert first.json()["renamed"] is False and response.json()["renamed"] is True
 
 
 def test_blank_handle_becomes_null(settings, helpers):
