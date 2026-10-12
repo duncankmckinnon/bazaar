@@ -13,6 +13,7 @@ import os
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 import logfire
 from pydantic import BaseModel, ConfigDict
@@ -64,13 +65,26 @@ class StrategistCase(BaseModel):
     trading_days: int | None = None
 
 
+class StrategistCaseMeta(BaseModel):
+    """Where a case's inputs came from, so a reader of the experiment knows what was real."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Real brief stats may come with parent texts written for the eval ("synthetic") until real
+    # strategy texts are available to freeze.
+    parent_texts: Literal["synthetic", "real"]
+    source: (
+        str  # e.g. "brief: production since 2026-10-11T20:14Z; parent texts: written for the eval"
+    )
+
+
 class StrategistOutput(BaseModel):
     drafts: list[Draft]
     proposals: list[Proposal]
     k: int  # the K this run asked for (the case's, or the task's override)
 
 
-Context = EvaluatorContext[StrategistCase, StrategistOutput, None]
+Context = EvaluatorContext[StrategistCase, StrategistOutput, StrategistCaseMeta]
 
 
 def _fraction(drafts: list[Draft], passes: Callable[[Draft], bool]) -> float:
@@ -78,7 +92,7 @@ def _fraction(drafts: list[Draft], passes: Callable[[Draft], bool]) -> float:
 
 
 @dataclass
-class Executable(Evaluator[StrategistCase, StrategistOutput, None]):
+class Executable(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     """A trader can run it under the runtime constraints: length, claim, ticker, multi_position."""
 
     def evaluate(self, ctx: Context) -> float:
@@ -97,13 +111,13 @@ class Executable(Evaluator[StrategistCase, StrategistOutput, None]):
 
 
 @dataclass
-class NoMultiPosition(Evaluator[StrategistCase, StrategistOutput, None]):
+class NoMultiPosition(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     def evaluate(self, ctx: Context) -> float:
         return _fraction(ctx.output.drafts, lambda d: not is_multi_position(d.instructions))
 
 
 @dataclass
-class DistinctNames(Evaluator[StrategistCase, StrategistOutput, None]):
+class DistinctNames(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     """A valid name, unique in the batch and not a brief name."""
 
     def evaluate(self, ctx: Context) -> float:
@@ -120,7 +134,7 @@ class DistinctNames(Evaluator[StrategistCase, StrategistOutput, None]):
 
 
 @dataclass
-class ParentsInBrief(Evaluator[StrategistCase, StrategistOutput, None]):
+class ParentsInBrief(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     """At least one parent, and EVERY listed parent is a brief name."""
 
     def evaluate(self, ctx: Context) -> float:
@@ -131,7 +145,7 @@ class ParentsInBrief(Evaluator[StrategistCase, StrategistOutput, None]):
 
 
 @dataclass
-class NoParentCopy(Evaluator[StrategistCase, StrategistOutput, None]):
+class NoParentCopy(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     """Not a near-duplicate of any brief strategy's instructions shown to the model."""
 
     def evaluate(self, ctx: Context) -> float:
@@ -146,7 +160,7 @@ class NoParentCopy(Evaluator[StrategistCase, StrategistOutput, None]):
 
 
 @dataclass
-class DeliveredK(Evaluator[StrategistCase, StrategistOutput, None]):
+class DeliveredK(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     def evaluate(self, ctx: Context) -> bool:
         return len(ctx.output.proposals) >= ctx.output.k
 
@@ -187,21 +201,28 @@ def make_task(
     return strategist_task
 
 
-def dataset(cases: Mapping[str, StrategistCase]) -> Dataset[StrategistCase, StrategistOutput, None]:
-    """The named cases as the bazaar-strategist dataset, with every evaluator attached."""
-    return Dataset[StrategistCase, StrategistOutput, None](
+def dataset(
+    cases: Mapping[str, tuple[StrategistCase, StrategistCaseMeta]],
+) -> Dataset[StrategistCase, StrategistOutput, StrategistCaseMeta]:
+    """The named (case, meta) pairs as the bazaar-strategist dataset, every evaluator attached.
+
+    pydantic-evals 2.54.0's Dataset has no description: push_dataset takes it."""
+    return Dataset[StrategistCase, StrategistOutput, StrategistCaseMeta](
         name=DATASET_NAME,
-        cases=[Case(name=name, inputs=case) for name, case in cases.items()],
+        cases=[Case(name=name, inputs=case, metadata=meta) for name, (case, meta) in cases.items()],
         evaluators=list(EVALUATORS),
     )
 
 
 def push_dataset(
-    ds: Dataset[StrategistCase, StrategistOutput, None],
+    ds: Dataset[StrategistCase, StrategistOutput, StrategistCaseMeta],
     *,
-    description: str = "Frozen strategist cases for the house lane (v10 D1).",
+    description: str,
 ) -> str:
     """Publish the dataset to Logfire with $LOGFIRE_API_WRITE_KEY, read only here.
+
+    description is required: it says where the cases came from (e.g. real brief stats with
+    synthetic parent texts), as each case's StrategistCaseMeta does.
 
     No key: skipped (logged and returned), never an error. A failure raises StrategistError
     naming only the error's type: never the key or a response."""

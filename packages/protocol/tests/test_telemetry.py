@@ -385,3 +385,24 @@ def test_the_read_token_value_is_redacted_from_an_exception(monkeypatch):
         raise RuntimeError(f"401 from /v2/query for {READ_TOKEN}")
     assert READ_TOKEN not in str(caught.value) and REDACTED in str(caught.value)
     assert caught.value.__context__ is None
+
+
+# The strategist eval's Logfire API write key (dataset push).
+
+WRITE_KEY = "pylf_v1_us_sentinelwritekey0123456789"
+
+
+@pytest.mark.parametrize("name", ["logfire_api_write_key", "LOGFIRE_API_WRITE_KEY", "api-key"])
+def test_an_attribute_named_like_the_write_key_is_scrubbed(name):
+    scrubbed = scrub_attributes({name: WRITE_KEY, "gen_ai.usage.input_tokens": 12})
+    assert WRITE_KEY not in str(scrubbed) and scrubbed["gen_ai.usage.input_tokens"] == 12
+
+
+def test_the_write_key_value_is_redacted_from_an_exception(monkeypatch):
+    assert "LOGFIRE_API_WRITE_KEY" in telemetry.SECRET_ENV
+    monkeypatch.setattr(telemetry, "_secrets", None)
+    monkeypatch.setenv("LOGFIRE_API_WRITE_KEY", WRITE_KEY)
+    with pytest.raises(telemetry.RedactedError) as caught, redacted_exceptions():
+        raise RuntimeError(f"401 from /v1/datasets for {WRITE_KEY}")
+    assert WRITE_KEY not in str(caught.value) and REDACTED in str(caught.value)
+    assert caught.value.__context__ is None

@@ -23,6 +23,7 @@ from bazaar_agent.strategist_eval import (
     NoParentCopy,
     ParentsInBrief,
     StrategistCase,
+    StrategistCaseMeta,
     StrategistOutput,
     dataset,
     make_task,
@@ -69,6 +70,13 @@ CASE = StrategistCase(
     ],
     benchmark="SPY",
 )
+
+
+META = StrategistCaseMeta(
+    parent_texts="synthetic",
+    source="brief: production since 2026-10-11T20:14Z; parent texts: written for the eval",
+)
+DESCRIPTION = "Real brief stats with SYNTHETIC parent texts (written for the eval)."
 
 
 def draft(name, instructions, parents=("momo-a",)):
@@ -198,7 +206,7 @@ async def test_the_task_k_overrides_the_cases(with_model):
 def test_an_experiment_never_looks_like_a_run_or_a_proposal(with_model, capfire):
     """PM: experiment output must never reach dashboards or brief()."""
     with_model(model_returning([MULTI, GOOD, MIXED]))
-    report = dataset({"two-strategies": CASE}).evaluate_sync(
+    report = dataset({"two-strategies": (CASE, META)}).evaluate_sync(
         make_task(), name="role-baseline", progress=False
     )
     (case,) = report.cases
@@ -245,17 +253,20 @@ def fake_client(monkeypatch):
 
 def test_push_without_a_key_skips_and_builds_no_client(fake_client, monkeypatch):
     monkeypatch.delenv(strategist_eval.WRITE_KEY_ENV, raising=False)
-    assert push_dataset(dataset({"c": CASE})) == "skipped: LOGFIRE_API_WRITE_KEY not set"
+    assert (
+        push_dataset(dataset({"c": (CASE, META)}), description=DESCRIPTION)
+        == "skipped: LOGFIRE_API_WRITE_KEY not set"
+    )
     assert fake_client.instances == []
 
 
 def test_push_with_a_key_sends_the_dataset(fake_client, monkeypatch):
     monkeypatch.setenv(strategist_eval.WRITE_KEY_ENV, "fake-write-key-for-tests")
-    ds = dataset({"c": CASE})
-    result = push_dataset(ds, description="d")
+    ds = dataset({"c": (CASE, META)})
+    result = push_dataset(ds, description=DESCRIPTION)
     (client,) = fake_client.instances
     assert client.api_key == "fake-write-key-for-tests" and client.pushed == [
-        (ds, {"description": "d"})
+        (ds, {"description": DESCRIPTION})
     ]
     assert result == "pushed bazaar-strategist (1 cases)" and "fake-write-key" not in result
 
@@ -268,12 +279,13 @@ def test_a_push_failure_names_only_its_type(fake_client, monkeypatch):
 
     monkeypatch.setattr(FakeClient, "push_dataset", boom)
     with pytest.raises(StrategistError, match=r"\(RuntimeError\)$") as caught:
-        push_dataset(dataset({"c": CASE}))
+        push_dataset(dataset({"c": (CASE, META)}), description=DESCRIPTION)
     assert "fake-write-key" not in str(caught.value) and caught.value.__context__ is None
 
 
 def test_the_dataset_carries_every_evaluator_and_named_cases():
-    ds = dataset({"a": CASE, "b": CASE.model_copy(update={"k": 3})})
+    real = StrategistCaseMeta(parent_texts="real", source="parent texts: bazaar-strategies")
+    ds = dataset({"a": (CASE, META), "b": (CASE.model_copy(update={"k": 3}), real)})
     assert ds.name == "bazaar-strategist" and [c.name for c in ds.cases] == ["a", "b"]
     assert {type(e).__name__ for e in ds.evaluators} == {
         "Executable",
@@ -283,3 +295,20 @@ def test_the_dataset_carries_every_evaluator_and_named_cases():
         "NoParentCopy",
         "DeliveredK",
     }
+
+
+def test_case_meta_round_trips_through_the_dataset(tmp_path):
+    real = StrategistCaseMeta(parent_texts="real", source="parent texts: bazaar-strategies")
+    ds = dataset({"synthetic-parents": (CASE, META), "real-parents": (CASE, real)})
+    assert [c.metadata for c in ds.cases] == [META, real]
+    assert [c.inputs for c in ds.cases] == [CASE, CASE]
+    # Through a file and back, typed again by the dataset's generics.
+    path = tmp_path / "bazaar-strategist.json"
+    evaluator_types = [type(e) for e in ds.evaluators]
+    ds.to_file(path, custom_evaluator_types=evaluator_types)
+    again = type(ds).from_file(path, custom_evaluator_types=evaluator_types)
+    assert [c.metadata for c in again.cases] == [META, real]
+    assert isinstance(again.cases[0].metadata, StrategistCaseMeta)
+    assert again.cases[0].inputs == CASE
+    with pytest.raises(ValueError):
+        StrategistCaseMeta(parent_texts="made-up", source="x")
