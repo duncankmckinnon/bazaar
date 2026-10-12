@@ -277,7 +277,11 @@ def create_app(
 
     def board_payload(request: Request) -> dict[str, Any]:
         return build_board(
-            request.app.state.board, request.app.state.store, settings.logfire_url, bundles.get()
+            request.app.state.board,
+            request.app.state.store,
+            settings.logfire_url,
+            bundles.get(),
+            house_enabled=settings.house_enabled,
         )
 
     @app.get("/", include_in_schema=False)

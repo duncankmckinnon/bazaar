@@ -20,6 +20,11 @@ STATUS_ORDER = {"scored": 0, "running": 1, "queued": 2, "failed": 3}
 # /api/board sends the top TOP_ROWS scored rows (plus every running, queued and baseline row);
 # ranks are always over every row. Histories go only to what the chart draws.
 TOP_ROWS = 100
+# The board's tabs: Both lists every row; Human and Agent factory list one lane each, showing
+# their top TAB_ROWS scored. The payload always holds each lane's top TAB_ROWS, however deep.
+TABS = ("both", "human", "factory")
+LANE_TABS = {"human": "human", "house": "factory"}
+TAB_ROWS = 15
 # The chart draws CHART_LINES distinct lines: scored rows whose day-by-day values all agree
 # within CLOSE_DOLLARS share one line, drawn once for the best of them and labelled "+N".
 CHART_LINES = 10
@@ -252,22 +257,25 @@ def same_path(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> bool:
     )
 
 
-def chart_lines(rows: list[dict[str, Any]]) -> dict[str, int]:
-    """{representative row id: group size} for the chart's distinct lines.
+def chart_lines(rows: list[dict[str, Any]], tab: str = "both") -> dict[str, int]:
+    """{representative row id: group size} for one tab's distinct chart lines.
 
-    Walks the scored, non-baseline rows on the board in rank order. Each joins the first earlier
-    group whose representative's path it matches (same_path), else starts a new group with
-    itself as the representative (its best member). It stops at the first row that would need
-    a group past CHART_LINES, so the last line's "+N" still counts the identical rows right
-    after it. Rows without a history never count as a line. Histories come from BoardSource's per-dir
-    cache, so grouping reads no run dir.
+    Walks the tab's scored, non-baseline rows in rank order: on Both, those ranked within
+    TOP_ROWS; on a lane's tab, every row of that lane given. Each joins the first earlier group
+    whose representative's path it matches (same_path), else starts a new group with itself as
+    the representative (its best member). It stops at the first row that would need a group past
+    CHART_LINES, so the last line's "+N" still counts the identical rows right after it. Rows
+    without a history never count as a line. Histories come from BoardSource's per-dir cache, so
+    grouping reads no run dir.
     """
     groups: list[tuple[str, list[dict[str, Any]]]] = []
     members: dict[str, int] = {}
     for row in rows:
         if row["status"] != "scored" or row["kind"] == "baseline" or not row["history"]:
             continue
-        if row["rank"] is None or row["rank"] > TOP_ROWS:
+        if tab == "both" and (row["rank"] is None or row["rank"] > TOP_ROWS):
+            continue
+        if tab != "both" and LANE_TABS.get(row.get("lane")) != tab:
             continue
         for rep_id, path in groups:
             if same_path(path, row["history"]):
@@ -281,28 +289,41 @@ def chart_lines(rows: list[dict[str, Any]]) -> dict[str, int]:
     return members
 
 
+def lane_ranks(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """{row id: rank within its lane} for the scored, non-baseline rows of each lane."""
+    counts: Counter[str] = Counter()
+    ranks = {}
+    for row in rows:
+        lane = row.get("lane")
+        if row["status"] == "scored" and row["kind"] != "baseline" and lane in LANE_TABS:
+            counts[lane] += 1
+            ranks[row["id"]] = counts[lane]
+    return ranks
+
+
 def page_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """What the page draws: the top TOP_ROWS scored, every running, queued and baseline row
-    (failed runs are not on the board). History only for the chart: each line's representative
-    (chart_lines; it also carries chart_members, its group size), the baselines and the running
-    rows. Group members keep their table rows, without history."""
-    lines = chart_lines(rows)
+    """What the page draws, each row once: the top TOP_ROWS scored, each lane's top TAB_ROWS
+    (lane_rank), and every running, queued and baseline row (failed runs are not on the board).
+    History only for the chart: every tab's line representatives (chart_tabs {tab: group size};
+    chart_members is Both's), the baselines and the running rows. Group members keep their table
+    rows, without history."""
+    ranks = lane_ranks(rows)
     shown = []
     for row in rows:
-        baseline = row["kind"] == "baseline"
+        lane_rank = ranks.get(row["id"])
         top = row["status"] == "scored" and row["rank"] is not None and row["rank"] <= TOP_ROWS
-        if not (top or baseline or row["status"] in ("running", "queued")):
-            continue
+        lane_top = lane_rank is not None and lane_rank <= TAB_ROWS
+        if top or lane_top or row["kind"] == "baseline" or row["status"] in ("running", "queued"):
+            shown.append({**row, "lane_rank": lane_rank})
+    lines = {tab: chart_lines(shown, tab) for tab in TABS}
+    for row in shown:
+        tabs = {tab: lines[tab][row["id"]] for tab in TABS if row["id"] in lines[tab]}
         charted = row["status"] == "running" or (
-            row["status"] == "scored" and (baseline or row["id"] in lines)
+            row["status"] == "scored" and (row["kind"] == "baseline" or bool(tabs))
         )
-        shown.append(
-            {
-                **row,
-                "history": row["history"] if charted else None,
-                "chart_members": lines.get(row["id"]),
-            }
-        )
+        row["history"] = row["history"] if charted else None
+        row["chart_members"] = tabs.get("both")
+        row["chart_tabs"] = tabs or None
     return shown
 
 
@@ -311,8 +332,15 @@ def build_board(
     store: Store,
     logfire_url: Callable[[str], str | None] = lambda _: None,
     bundle: Bundle | None = None,
+    house_enabled: bool = False,
 ) -> dict[str, Any]:
     rows, starting_cash = board_rows(source, store, logfire_url)
+    house = store.house_state()
+    # Public: the lane's state and how many of its runs are in flight; nothing an admin sees.
+    factory = {
+        "state": "off" if not house_enabled else "paused" if house["paused"] else "running",
+        "running": house["running"],
+    }
 
     # The window and universe are the data bundle's; without one the board shows neither.
     window = {
@@ -328,4 +356,5 @@ def build_board(
         "rows": page_rows(rows),
         "total": {"rows": len(rows), **Counter(row["status"] for row in rows)},
         "events": store.recent_events(20),
+        "factory": factory,
     }
