@@ -564,7 +564,21 @@ def test_a_short_secret_is_not_a_pattern(monkeypatch):
         ("apikey", True),
         ("password", True),
         ("secret", True),
-        ("secret_sauce", False),
+        ("secret_sauce", True),  # a KEY naming a secret (key-only rule, SC1b)
+        ("client_secret", True),
+        ("private_key", True),
+        ("private-key", True),
+        ("credential", True),
+        ("aws_credentials", True),
+        ("jwt", True),
+        ("token", True),
+        ("logfire.token", True),
+        ("apca-api-secret-key", True),
+        ("authorization-foreign", True),
+        ("db_passwd", True),
+        ("gen_ai.request.max_tokens", False),
+        ("gen_ai.usage.details.reasoning_tokens", False),
+        ("token_count", False),
         ("logfire_read_token", True),
         ("refresh-token", True),
     ],
@@ -574,3 +588,42 @@ def test_credential_keys_and_counts(key, credential):
     # A count reaching the callback (e.g. under a key Logfire matched) is kept as the number.
     if not credential:
         assert precise_scrub(logfire.ScrubMatch(("attributes", key), 512, None)) == 512
+
+
+SC1B_KEYS = [
+    "client_secret",
+    "private_key",
+    "credential",
+    "jwt",
+    "token",
+    "logfire.token",
+    "apca-api-secret-key",
+    "authorization-foreign",
+]
+
+
+def test_credential_named_keys_are_redacted_in_an_exported_span(exported):
+    """SC1b: a key NAMING a secret has its value redacted, whatever the value says."""
+    values = {key: f"plain-value-{i}" for i, key in enumerate(SC1B_KEYS)}
+    usage = {
+        "gen_ai.usage.details.cache_read_tokens": 512,
+        "gen_ai.usage.input_tokens": 1200,
+        "gen_ai.usage.output_tokens": 80,
+        "input_tokens": 9,
+    }
+    prose = (
+        "The secret sauce is patience; a private key insight from the desk; the jwt rollout "
+        "and a token gesture."
+    )
+    with logfire.span("keys probe", note=prose, **values, **usage):
+        pass
+    attributes = by_name(exported, "keys probe")
+    assert {k: attributes[k] for k in SC1B_KEYS} == dict.fromkeys(SC1B_KEYS, REDACTED)
+    assert {k: attributes[k] for k in usage} == usage
+    assert attributes["note"] == prose
+    dumped = json.dumps(exported.exported_spans_as_dict(), default=str)
+    assert "plain-value-" not in dumped
+
+
+def test_more_secret_env_names_are_loaded():
+    assert {"PAIG_API_KEY", "BAZAAR_CURSOR_SECRET"} <= set(telemetry.SECRET_ENV)
