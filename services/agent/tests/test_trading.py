@@ -1161,17 +1161,30 @@ async def test_initial_reads_share_wall_time_budget_before_factory():
     assert len(trace) == 2 and result.usage.tool_calls == result.usage.model_requests == 0
 
 
-async def test_initial_and_model_work_share_one_timeout_not_fresh_timeouts():
+async def test_initial_and_model_work_share_one_timeout_not_fresh_timeouts(monkeypatch):
+    """One deadline covers the initial market reads AND the model: each phase alone fits the
+    budget, their sum does not. Time is virtual (the loop's clock, which asyncio.timeout_at
+    uses), so the result never depends on how busy the machine is."""
+    loop = asyncio.get_running_loop()
+    now = [loop.time()]
+    monkeypatch.setattr(loop, "time", lambda: now[0])
+
+    async def work(seconds):
+        # Virtual work: the clock moves on, then the loop runs any timeout now due.
+        now[0] += seconds
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
     trace, model_calls = [], []
 
     async def handler(request):
         trace.append(request)
-        await asyncio.sleep(0.03)
+        await work(0.03)
         return httpx.Response(200, json=account() if len(trace) == 1 else portfolio())
 
     async def model(messages, info):
         model_calls.append(messages)
-        await asyncio.sleep(0.09)
+        await work(0.09)  # 0.03 + 0.03 + 0.09 > 0.12, yet 0.09 alone would fit
         return ModelResponse([output(info)])
 
     async with httpx.AsyncClient(
