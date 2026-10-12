@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 
 import bazaar_web.board
 import pytest
@@ -64,9 +65,13 @@ def link(config, run_id: str, name: str) -> str:
 
 
 def test_the_payload_is_small_and_a_warm_request_parses_nothing(big, helpers, monkeypatch):
-    calls = []
+    calls, reads = [], []
     real = bazaar_web.board.load_run
     monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
+    real_history = bazaar_web.board.history
+    monkeypatch.setattr(
+        bazaar_web.board, "history", lambda path: reads.append(path) or real_history(path)
+    )
     runner = helpers.FakeRunner()
     runner.gate.clear()
     with TestClient(create_app(big, runner)) as client:
@@ -77,16 +82,20 @@ def test_the_payload_is_small_and_a_warm_request_parses_nothing(big, helpers, mo
         ).json()["id"]  # fmt: skip
         helpers.wait_for(lambda: client.get(f"/api/submissions/{sid}").json()["day"] == 10)
         cold = client.get("/api/board")
-        cold_parsed = len(calls)
+        cold_parsed, cold_read = len(calls), len(reads)
         # A rebuild, as after the 2 s TTL or a scored run: it lists every dir again.
         client.app.state.board.invalidate()
+        start = time.perf_counter()
         warm = client.get("/api/board")
+        warm_s = time.perf_counter() - start  # reported only; CI asserts no timing
         runner.gate.set()
 
     body = warm.json()
-    print(f"\n3,000 runs: {len(cold.content)} bytes")
-    assert cold_parsed == RUNS  # each dir parsed once, by the first build
-    assert len(calls) == cold_parsed  # the warm rebuild parsed nothing
+    print(f"\n3,000 runs: {len(cold.content)} bytes, warm rebuild {warm_s:.3f} s (not asserted)")
+    assert cold_parsed == RUNS and cold_read == RUNS  # each dir parsed once, by the first build
+    # The warm rebuild, chart grouping included, parsed nothing and read no history.
+    assert len(calls) == cold_parsed and len(reads) == cold_read
+    assert sum(r["chart_members"] is not None for r in body["rows"]) == 10
     assert len(warm.content) < 100_000
     assert body["total"]["rows"] == RUNS + 1 and body["total"]["scored"] == RUNS
     scored = [r for r in body["rows"] if r["status"] == "scored"]
@@ -101,13 +110,13 @@ def test_history_is_sent_only_for_the_chart(big, helpers):
     with TestClient(create_app(big, helpers.FakeRunner())) as client:
         rows = client.get("/api/board").json()["rows"]
 
-    charted = {
-        r["id"] for r in rows
-        if r["kind"] == "baseline" or r["status"] == "running"
-        or (r["status"] == "scored" and r["rank"] <= 10)
-    }  # fmt: skip
+    # Neighbouring runs' values differ by $0.05 x day ($0.50 on day 10), so ranks 1-3 share a
+    # line (all within $1 of rank 1), 4-6 the next, and so on: 10 lines, each "+2".
+    reps = [r for r in rows if r["chart_members"] is not None]
+    assert [(r["rank"], r["chart_members"]) for r in reps] == [(1 + 3 * i, 3) for i in range(10)]
+    charted = {r["id"] for r in reps} | {r["id"] for r in rows if r["kind"] == "baseline"}
     assert {r["id"] for r in rows if r["history"] is not None} == charted
-    assert len(charted) == 10 + len(BASELINES)  # the top 10 and the baselines; none running
+    assert len(charted) == 10 + len(BASELINES)  # 10 lines and the baselines; none running
     assert all(len(r["history"]) == 10 for r in rows if r["id"] in charted)
 
 

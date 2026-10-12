@@ -186,8 +186,10 @@ const NEW_MS = 8000;
 const POLL_MS = 2000;
 const TAPE_MS = 6000;
 const COLORS = ["#D0FF71", "#00FFEB", "#E320E7", "#FBFFEA"];
-// Chart lines by rank; baselines are drawn dashed in a muted tone.
-const PALETTE = ["#D0FF71", "#00FFEB", "#E320E7", "#FF6550", "#9B77FF", "#77FFD8", "#FFC857", "#5BC0EB", "#F28FAD", "#FBFFEA"];
+// Chart lines by rank; baselines are drawn dashed in a muted tone. The brand colours come first;
+// the rest were picked so that no two of the 12 are near-identical (CIE76 distance >= 30), with
+// room for running rows after the 10 lines.
+const PALETTE = ["#D0FF71", "#00FFEB", "#E320E7", "#FF6550", "#3E8BFF", "#FF9BD2", "#FBFFEA", "#FFC857", "#5BC0EB", "#6BFF3D", "#C77DFF", "#FF4DA6"];
 const BASELINE_COLORS = ["#b48fa8", "#8fa8b4", "#a8b48f", "#c9a9bf"];
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -391,11 +393,12 @@ function renderBoard(data) {
 
 /* ---------- chart (center) ---------- */
 function chartSeries(rows) {
-  // Top 10 scored by rank, every baseline, and running submissions with values so far.
+  // One line per distinct path (the server groups rows whose values agree within $1 a day and
+  // marks each group's best row with chart_members), every baseline, and running submissions.
   const valid = (h) => Array.isArray(h) && h.some(p => p && Number.isFinite(p.day) && Number.isFinite(p.value));
   const picked = [], seen = new Set();
   const add = (r) => { const id = String(r.id); if (!seen.has(id) && valid(r.history)) { seen.add(id); picked.push(r); } };
-  rows.filter(r => r.status === "scored").slice(0, 10).forEach(add);
+  rows.filter(r => r.status === "scored" && r.kind !== "baseline" && Number.isInteger(r.chart_members)).forEach(add);
   rows.filter(r => r.kind === "baseline" && r.status === "scored").forEach(add);
   rows.filter(r => r.status === "running").forEach(add);
   let rank = 0, base = 0;
@@ -403,7 +406,8 @@ function chartSeries(rows) {
     const baseline = r.kind === "baseline";
     const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : PALETTE[rank++ % PALETTE.length];
     const pts = r.history.filter(p => p && Number.isFinite(p.day) && Number.isFinite(p.value)).map(p => ({ day: p.day, value: p.value }));
-    return { id: String(r.id), name: String(r.name), color, baseline, running: r.status === "running", pts };
+    const more = Number.isInteger(r.chart_members) && r.chart_members > 1 ? ` +${r.chart_members - 1}` : "";
+    return { id: String(r.id), name: String(r.name) + more, color, baseline, running: r.status === "running", pts };
   });
 }
 
