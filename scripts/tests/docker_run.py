@@ -38,7 +38,8 @@ def grade(messages, info):
 
 
 os.environ["BAZAAR_STRATEGY_EVAL_ENABLED"] = "1"
-strategy_evaluation.judge_model = lambda: FunctionModel(grade)
+# The production _judge passes its traced HTTP client; the stub takes it and ignores it.
+strategy_evaluation.judge_model = lambda http_client=None: FunctionModel(grade)
 days = []
 run_dir = submission.run_submission(
     submission_id=f"docker-smoke-{uuid4()}",

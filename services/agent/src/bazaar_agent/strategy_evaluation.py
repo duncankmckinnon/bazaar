@@ -1,6 +1,7 @@
 """Online strategy adherence: ephemeral evidence in, Logfire evaluation events out."""
 
 import asyncio
+import logging
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -34,6 +35,8 @@ from pydantic_evals.evaluators import (
 from pydantic_evals.online import OnlineEvalConfig
 
 from bazaar_agent.redaction import RedactingModel
+
+logger = logging.getLogger(__name__)
 
 JUDGE_MODEL_ENV = "BAZAAR_JUDGE_MODEL"
 # `<Gateway route>:<Jev model>`: requests go to {gateway}/proxy/<route>/v1/systemone.
@@ -205,13 +208,22 @@ def evaluate_strategy[**P, R](function: Callable[P, Awaitable[R]]) -> Callable[P
         done = asyncio.Event()
 
         def completed(results, failures, context):
+            if failures:
+                # pydantic-evals records each failure on its evaluator span; say so in the
+                # process log too. Names and exception types only: a message can quote a secret.
+                logger.warning(
+                    "strategy judge: %d evaluator failure(s): %s",
+                    len(failures),
+                    ", ".join(f"{f.name} ({f.error_type or 'unknown error'})" for f in failures),
+                )
             done.set()
             if pending is not None:
                 pending.discard(done)
 
         if pending is not None:
             pending.add(done)
-            config.default_sink = completed
+        # Sinks run in addition to the SDK's own OTel evaluation events.
+        config.default_sink = completed
         evaluated = config.evaluate(
             StrategyAdherence(),
             target="trading.decision",
