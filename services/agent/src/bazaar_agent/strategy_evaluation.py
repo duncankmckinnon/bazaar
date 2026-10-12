@@ -9,8 +9,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import wraps
 
+import httpx2
+import logfire
 from bazaar_protocol.telemetry import redacted_exceptions
 from pydantic_ai.exceptions import UserError
+from pydantic_ai.models import create_async_httpx2_client
 from pydantic_ai.models.decision import (
     DecisionModelSettings,
     DecisionRequest,
@@ -76,11 +79,36 @@ class ProbabilityJudgeModel(TypeSafeModel):
         return response
 
 
-def judge_model() -> ProbabilityJudgeModel:
+# Pydantic AI's default client (timeouts, limits, user agent); tests swap in a MockTransport one.
+_new_http_client = create_async_httpx2_client
+
+
+def judge_http_client() -> httpx2.AsyncClient:
+    """The judge's HTTP client, traced so its requests carry traceparent: the Gateway's spans for
+    Jev then join the run's trace instead of starting their own. TypeSafeProvider's own client
+    is httpx2, which Bazaar's httpx instrumentation never reaches.
+
+    Per client, never process-wide (as instrument_market_client), and never headers or bodies:
+    the Gateway key travels in a header. The httpx redacting transport does not fit httpx2;
+    redacted_exceptions around the judge and the shared scrubbing cover its errors instead.
+    """
+    client = _new_http_client()
+    logfire.instrument_httpx(
+        client,
+        capture_all=False,
+        capture_headers=False,
+        capture_request_body=False,
+        capture_response_body=False,
+    )
+    return client
+
+
+def judge_model(http_client: httpx2.AsyncClient | None = None) -> ProbabilityJudgeModel:
     """Only the harness operator selects the judge; strategy text cannot select a model.
 
     Jev is reached through a Pydantic AI Gateway route with the Gateway key, the same base URL
-    resolution as `gateway/...` models; the Gateway provider has no Jev upstream.
+    resolution as `gateway/...` models; the Gateway provider has no Jev upstream. The provider
+    uses http_client, else a new judge_http_client(); a client passed in is the caller's to close.
     """
     route, _, model_name = (os.environ.get(JUDGE_MODEL_ENV) or DEFAULT_JUDGE_MODEL).partition(":")
     if not re.fullmatch(r"[a-zA-Z0-9._-]+", route) or not model_name:
@@ -95,7 +123,11 @@ def judge_model() -> ProbabilityJudgeModel:
     )
     return ProbabilityJudgeModel(
         model_name,
-        provider=TypeSafeProvider(api_key=api_key, base_url=f"{base_url.rstrip('/')}/{route}"),
+        provider=TypeSafeProvider(
+            api_key=api_key,
+            base_url=f"{base_url.rstrip('/')}/{route}",
+            http_client=http_client or judge_http_client(),
+        ),
     )
 
 
@@ -117,8 +149,9 @@ class StrategyAdherence(Evaluator):
             return await self._judge(judge_context)
 
     async def _judge(self, judge_context: EvaluatorContext) -> EvaluatorOutput:
-        judge = judge_model()
-        async with asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
+        # One traced client per judge call, closed with it, as the provider's own client was.
+        async with judge_http_client() as client, asyncio.timeout(JUDGE_TIMEOUT_SECONDS):
+            judge = judge_model(client)
             results = await LLMJudge(
                 rubric=STRATEGY_RUBRIC,
                 # pydantic-evals' shared judge agents are not instrumented; an InstrumentedModel
