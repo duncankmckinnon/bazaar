@@ -441,7 +441,9 @@ def judged_submission(monkeypatch, tmp_path, grade):
     from bazaar_agent import strategy_evaluation
 
     monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    monkeypatch.setattr(
+        strategy_evaluation, "judge_model", lambda http_client=None: FunctionModel(grade)
+    )
     market = GrantingMarket()
     transport = market.transport()
     monkeypatch.setattr(submission, "_transport_for", lambda url: transport)
@@ -526,7 +528,9 @@ def judged_run(monkeypatch, capfire, tmp_path):
     for name, value in SENTINELS.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
-    monkeypatch.setattr(strategy_evaluation, "judge_model", lambda: FunctionModel(grade))
+    monkeypatch.setattr(
+        strategy_evaluation, "judge_model", lambda http_client=None: FunctionModel(grade)
+    )
     market = GrantingMarket()
     transport = market.transport()
     monkeypatch.setattr(submission, "_transport_for", lambda url: transport)

@@ -44,20 +44,18 @@ def verdict(probability):
 
 
 def route_judge(monkeypatch, handler):
-    """Serve the Gateway's Jev route locally; everything else is the production judge."""
+    """Serve the Gateway's Jev route locally; everything else is the production judge (its
+    client is still built, instrumented and closed by judge_http_client)."""
     from bazaar_agent import strategy_evaluation
 
-    provider = strategy_evaluation.TypeSafeProvider
     monkeypatch.setenv("BAZAAR_STRATEGY_EVAL_ENABLED", "1")
     monkeypatch.delenv("BAZAAR_JUDGE_MODEL", raising=False)
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_API_KEY", "test-gateway-key")
     monkeypatch.setenv("PYDANTIC_AI_GATEWAY_BASE_URL", GATEWAY)
     monkeypatch.setattr(
         strategy_evaluation,
-        "TypeSafeProvider",
-        lambda **kwargs: provider(
-            **kwargs, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
-        ),
+        "_new_http_client",
+        lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
     )
 
 
@@ -320,3 +318,51 @@ async def test_the_judge_sees_the_summary_and_trading_day_the_agent_saw(judge, c
     assert "trading day 1 of 10 (first day 2026-02-02)" in prompt
     # The runner-side summary reads are context, not research the agent chose to do.
     assert '"research_observations":[]' in prompt
+
+
+async def test_the_judges_gateway_call_carries_the_runs_trace(monkeypatch, capfire):
+    """T3: the Gateway's Jev spans must join the run's trace, so the judge's httpx2 client sends
+    traceparent for the active span; the Gateway key reaches no span."""
+    import logfire
+
+    seen = []
+
+    def grade(request):
+        seen.append(request)
+        return httpx2.Response(200, json=verdict(0.9))
+
+    route_judge(monkeypatch, grade)
+    model, _ = script(lambda info: [output(info)])
+    with logfire.span("runner.decision") as active:
+        result, _ = await invoke(model)
+        await wait_for_evaluations()
+    assert result.error is None and len(seen) == 1
+    traceparent = seen[0].headers.get("traceparent")
+    assert traceparent is not None
+    trace_id = f"{active.get_span_context().trace_id:032x}"
+    assert traceparent.split("-")[1] == trace_id
+    spans = capfire.exporter.exported_spans_as_dict()
+    assert "test-gateway-key" not in json.dumps(spans, default=str)
+    # The judge's own HTTP span is in the same trace.
+    http = [s for s in spans if s["name"] == "POST"]
+    assert http and all(f"{s['context']['trace_id']:032x}" == trace_id for s in http)
+
+
+async def test_the_judges_client_is_closed_after_its_call(monkeypatch, capfire):
+    from bazaar_agent import strategy_evaluation
+
+    clients = []
+
+    def new_client():
+        client = httpx2.AsyncClient(
+            transport=httpx2.MockTransport(lambda r: httpx2.Response(200, json=verdict(0.9)))
+        )
+        clients.append(client)
+        return client
+
+    route_judge(monkeypatch, lambda request: None)
+    monkeypatch.setattr(strategy_evaluation, "_new_http_client", new_client)
+    model, _ = script(lambda info: [output(info)])
+    await invoke(model)
+    await wait_for_evaluations()
+    assert len(clients) == 1 and clients[0].is_closed
