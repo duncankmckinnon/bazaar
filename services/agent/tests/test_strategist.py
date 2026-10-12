@@ -291,60 +291,149 @@ def test_the_logged_excess_and_benchmark_win_and_older_runs_fall_back(logfire_ap
     assert stats["news-b"].excess_vs_benchmark_pct == 3.0
 
 
-def test_copies_differing_by_a_trailing_number_are_one_entry(logfire_api):
-    records = [
-        scored("e1", "house-energy-top-gainers-10", 5.4423, fills=2),
-        scored("e2", "house-energy-top-gainers-13", 5.4423, fills=4),
-        scored("e3", "house-energy-top-gainers-14", 5.4423, fills=6),
-        scored("e4", "house-energy-top-gainers-14", 5.4423, fills=0),
-        # House generations are never grouped, even with a trailing number.
-        scored("g1", "g3-foo-2", 1.0),
-        scored("g2", "g3-foo-3", 2.0),
-        # Mixed adherence: only the judged runs count. Unjudged everywhere: unknown.
-        scored("m1", "mixed-1", 0.5),
-        scored("m2", "mixed-2", 0.4),
-        scored("m3", "mixed-3", 0.3),
-        judged("m1", 1.0),
-        judged("m3", 0.5),
-        scored("u1", "unjudged-1", -1.0),
-        scored("u2", "unjudged-2", -2.0),
-        # An excluded member is removed before grouping; its siblings stay.
-        scored("x1", "hidden-1", 9.0),
-        scored("x2", "hidden-2", -9.0),
-    ]
-    logfire_api(FakeLogfire(records))
+HOUSE = frozenset(
+    {
+        "house-energy-top-gainers-10",
+        "house-energy-top-gainers-13",
+        "house-energy-top-gainers-14",
+        "house-mixed-1",
+        "house-mixed-2",
+        "house-mixed-3",
+        "house-unjudged-1",
+        "house-unjudged-2",
+        "house-hidden-1",
+        "house-hidden-2",
+        "house-steady",
+        "g2-foo-1",
+        "g2-foo-2",
+    }
+)
+GROUPING = [
+    scored("e1", "house-energy-top-gainers-10", 5.4423, fills=2),
+    scored("e2", "house-energy-top-gainers-13", 5.4423, fills=4),
+    scored("e3", "house-energy-top-gainers-14", 5.4423, fills=6),
+    scored("e4", "house-energy-top-gainers-14", 5.4423, fills=0),
+    # Generated names are never grouped, even when listed as house names.
+    scored("g1", "g2-foo-1", 1.5),
+    scored("g2", "g2-foo-2", 2.5),
+    # Attendee names (not in house_names) are never merged or renamed, whatever their prefix.
+    scored("d1", "house-dip-2", 0.7, fills=1),
+    scored("d2", "house-dip-3", 0.9, fills=3),
+    # A house name without a numeric suffix is its own entry, untouched.
+    scored("h1", "house-steady", 0.2),
+    # Mixed adherence: only the judged runs count. Unjudged everywhere: unknown.
+    scored("m1", "house-mixed-1", 0.5),
+    scored("m2", "house-mixed-2", 0.4),
+    scored("m3", "house-mixed-3", 0.3),
+    judged("m1", 1.0),
+    judged("m3", 0.5),
+    scored("u1", "house-unjudged-1", -1.0),
+    scored("u2", "house-unjudged-2", -2.0),
+    # An excluded member is removed before grouping; its siblings stay.
+    scored("x1", "house-hidden-1", 9.0),
+    scored("x2", "house-hidden-2", -9.0),
+]
+
+
+def grouped(house_names):
     result = brief(
         bundle_id="demo-bundle-v2",
         since=SINCE,
-        top=10,
+        top=20,
         bottom=0,
-        exclude_names=frozenset({"hidden-1"}),
+        exclude_names=frozenset({"house-hidden-1"}),
+        house_names=house_names,
     )
-    stats = by_name(result.top)
+    return by_name(result.top)
+
+
+def test_house_copies_differing_by_a_trailing_number_are_one_entry(logfire_api):
+    logfire_api(FakeLogfire(GROUPING))
+    stats = grouped(HOUSE)
     assert set(stats) == {
         "house-energy-top-gainers-10",
-        "g3-foo-2",
-        "g3-foo-3",
-        "mixed-1",
-        "unjudged-1",
-        "hidden-2",
+        "g2-foo-1",
+        "g2-foo-2",
+        "house-dip-2",
+        "house-dip-3",
+        "house-steady",
+        "house-mixed-1",
+        "house-unjudged-1",
+        "house-hidden-2",
     }
     energy = stats["house-energy-top-gainers-10"]  # equal returns: the first name wins the tie
     assert (energy.runs, energy.return_pct, energy.fills) == (4, 5.4423, 3.0)
-    assert stats["mixed-1"].runs == 3 and stats["mixed-1"].return_pct == pytest.approx(0.4)
-    assert stats["mixed-1"].adherence == pytest.approx(0.75)
-    assert stats["unjudged-1"].adherence is None and stats["unjudged-1"].return_pct == -1.5
-    assert stats["hidden-2"].runs == 1 and stats["hidden-2"].return_pct == -9.0
+    mixed = stats["house-mixed-1"]
+    assert mixed.runs == 3 and mixed.return_pct == pytest.approx(0.4)
+    assert mixed.adherence == pytest.approx(0.75)
+    unjudged = stats["house-unjudged-1"]
+    assert unjudged.adherence is None and unjudged.return_pct == -1.5
+    assert stats["house-hidden-2"].runs == 1 and stats["house-hidden-2"].return_pct == -9.0
+    dip2, dip3 = stats["house-dip-2"], stats["house-dip-3"]
+    assert (dip2.runs, dip2.return_pct, dip2.fills) == (1, 0.7, 1)
+    assert (dip3.runs, dip3.return_pct, dip3.fills) == (1, 0.9, 3)
+    assert stats["house-steady"].runs == 1 and stats["house-steady"].return_pct == 0.2
+
+
+@pytest.mark.parametrize("house_names", [None, frozenset()])
+def test_no_house_names_means_no_grouping(logfire_api, house_names):
+    logfire_api(FakeLogfire(GROUPING))
+    stats = grouped(house_names)
+    # Every scored name but the excluded one is its own entry under its own name.
+    names = {
+        r["attributes"]["bazaar.strategy_name"] for r in GROUPING if "return_pct" in r["attributes"]
+    }
+    assert set(stats) == names - {"house-hidden-1"}
+    assert stats["house-energy-top-gainers-14"].runs == 2 and stats["house-mixed-1"].runs == 1
 
 
 def test_a_group_is_named_for_its_best_member(logfire_api):
     records = [
-        scored("a1", "momo-1", 1.0),
-        scored("a2", "momo-2", 4.0),
-        scored("a3", "momo-2", 0.0),
-        scored("a3b", "momo-3", 3.0),
+        scored("a1", "house-momo-1", 1.0),
+        scored("a2", "house-momo-2", 4.0),
+        scored("a3", "house-momo-2", 0.0),
+        scored("a3b", "house-momo-3", 3.0),
     ]
     logfire_api(FakeLogfire(records))
-    (entry,) = brief(bundle_id="demo-bundle-v2", since=SINCE).top
-    # momo-3 (mean 3.0) beats momo-2 (mean 2.0) and momo-1; the stats cover all four runs.
-    assert entry.name == "momo-3" and entry.runs == 4 and entry.return_pct == 2.0
+    house = frozenset({"house-momo-1", "house-momo-2", "house-momo-3"})
+    (entry,) = brief(bundle_id="demo-bundle-v2", since=SINCE, house_names=house).top
+    # house-momo-3 (mean 3.0) beats -2 (mean 2.0) and -1; the stats cover all four runs.
+    assert entry.name == "house-momo-3" and entry.runs == 4 and entry.return_pct == 2.0
+
+
+def test_real_shaped_house_records_group_without_any_handle(logfire_api):
+    """The scored log's real attribute set (PM 15:07Z): no handle, no data_version."""
+
+    def real(run_id, name, return_pct):
+        return {
+            "kind": "log",
+            "span_name": "bazaar.run scored",
+            "attributes": {
+                "bazaar.experiment_id": f"exp-{run_id}",
+                "bazaar.policy_kind": "agent",
+                "bazaar.run_id": run_id,
+                "bazaar.strategy_name": name,
+                "bazaar.submission_id": f"sub-{run_id}",
+                "ending_value": 10000 * (1 + return_pct / 100),
+                "fills": 3,
+                "return_pct": return_pct,
+                "decisions_exhausted": 0,
+            },
+        }
+
+    records = [
+        real("r1", "house-energy-top-gainers-10", 5.4423),
+        real("r2", "house-energy-top-gainers-13", 5.4423),
+        real("r3", "house-energy-top-gainers-14", 5.4423),
+        real("r4", "house-dip-2", 1.0),
+        real("r5", "house-dip-3", 2.0),
+    ]
+    assert not any("handle" in key for r in records for key in r["attributes"])
+    logfire_api(FakeLogfire(records))
+    house = frozenset(r["attributes"]["bazaar.strategy_name"] for r in records[:3])
+    result = brief(bundle_id="demo-bundle-v2", since=SINCE, house_names=house)
+    assert [(s.name, s.runs) for s in result.top] == [
+        ("house-energy-top-gainers-10", 3),
+        ("house-dip-3", 1),
+        ("house-dip-2", 1),
+    ]

@@ -27,7 +27,8 @@ READ_TOKEN_ENV = "LOGFIRE_READ_TOKEN"
 BENCHMARK_NAME = "baseline-buy-and-hold-spy"
 ROW_LIMIT = 10_000
 GENERATION = re.compile(r"^g(\d+)-")
-# Re-submissions of one strategy differ only by a trailing "-<number>" and share one brief entry.
+# House-lane catalog copies (named by the caller in house_names) differ only by a trailing
+# "-<number>" and share one brief entry. Any other name is never merged or renamed.
 COPY_SUFFIX = re.compile(r"-\d+$")
 # Tests replace this with an httpx.MockTransport; production uses the network.
 _TRANSPORT: httpx.AsyncBaseTransport | None = None
@@ -142,8 +143,10 @@ def aggregate(
     bottom: int = 5,
     exclude_names: frozenset[str] = frozenset(),
     data_version: str | None = None,
+    house_names: frozenset[str] | None = None,
 ) -> PerformanceBrief:
     """Rank the strategies of one window from the three queries' rows (pure; no Logfire)."""
+    house_names = house_names or frozenset()
     cost_by_run = {r.get("run_id"): _number(r.get("cost_usd")) for r in costs}
     adherence_by_run = {r.get("run_id"): _number(r.get("adherence")) for r in adherence}
     runs: dict[str, Mapping[str, Any]] = {}
@@ -173,7 +176,10 @@ def aggregate(
         return None if derived is None else _number(row.get("return_pct")) - derived
 
     def stem(name: str) -> str:
-        return name if GENERATION.match(name) else COPY_SUFFIX.sub("", name)
+        # Only names the caller's store lists as house lane; never a generated g<N>- name.
+        if name not in house_names or GENERATION.match(name):
+            return name
+        return COPY_SUFFIX.sub("", name)
 
     by_stem: dict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)
     for run_id, row in runs.items():
@@ -245,13 +251,15 @@ def brief(
     bottom: int = 5,
     exclude_names: frozenset[str] = frozenset(),
     data_version: str | None = None,
+    house_names: frozenset[str] | None = None,
 ) -> PerformanceBrief:
     """The window's performance brief: runs scored at or after `since` in `environment`.
 
     data_version, when given, keeps runs whose bazaar.data_version equals it or is absent.
-    exclude_names are removed before any aggregate or rank. Names differing only by a trailing
-    "-<number>" (never a g<N>- house name) are one entry over all their runs, named for the
-    best member. No read token is an error, never an empty brief."""
+    exclude_names are removed before any aggregate or rank. Names in house_names (the house
+    lane's, from the caller's store) differing only by a trailing "-<number>" are one entry
+    over all their runs, named for the best member; every other name, and every name when
+    house_names is None or empty, is its own entry. g<N>- names are never grouped. No read token is an error, never an empty brief."""
     token = os.environ.get(READ_TOKEN_ENV)
     if not token:
         raise StrategistError(f"${READ_TOKEN_ENV} is not set")
@@ -278,6 +286,7 @@ def brief(
             bottom=bottom,
             exclude_names=frozenset(exclude_names),
             data_version=data_version,
+            house_names=house_names,
         )
 
 
