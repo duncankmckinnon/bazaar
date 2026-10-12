@@ -178,6 +178,7 @@ def test_board_defines_the_helpers_its_functions_call():
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
         "renderBoard", "renderTape", "showTip", "applyFocus", "loadTickers", "tabFromHash",
         "onTab", "tabView", "factoryText", "renderTabs", "makeRow", "fillRow", "chartSeries",
+        "fitPending", "qrFit", "placeQR",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -255,6 +256,44 @@ def test_the_conference_layout_puts_the_qr_strip_under_the_chart():
     assert body.index('class="chart"') < body.index('class="side"')
 
 
+def test_a_tall_window_moves_the_qr_block_under_the_table():
+    # qr-left: the chart takes the whole right column and the QR block sits at the bottom of the
+    # left column, above the footnote.
+    assert (
+        '.dash.qr-left { grid-template-rows: auto minmax(0,1fr) auto; grid-template-areas: "hd hd" '
+        '"board chart" "tape tape"; }'
+    ) in BOARD
+    assert ".board .ar-qr { width: var(--qr); box-sizing: border-box; }" in BOARD
+    script = BOARD.split("<script>", 1)[1]
+    assert 'if (left) board.insertBefore(side, note); else dash.insertBefore(side, $("tape"));' in (
+        script
+    )
+    assert "new ResizeObserver(placeQR).observe(board);" in script
+
+
+def test_the_qr_block_goes_left_only_when_a_large_qr_and_3_pending_rows_fit():
+    def fit(px, board, above, note, width, cta):
+        m = {"px": px, "board": board, "above": above, "note": note, "width": width, "cta": cta}
+        return run_tabs(f"qrFit({json.dumps(m)})")
+
+    # free = board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34)
+    #        - note - two 12 px gaps - the frame's 12 px above and below
+    assert fit(1, 945, 120, 20, 900, 500) == 0  # 1920x1080: 21 px free, the strip stays
+    assert fit(1, 1100, 120, 20, 900, 300) == 0  # 176 px free: smaller than the strip's 300
+    assert fit(1, 1224, 120, 20, 900, 300) == 300  # exactly the strip's size
+    assert fit(1, 1500, 120, 20, 900, 300) == 420  # capped
+    assert fit(0.5, 900, 60, 33, 450, 160) == 260  # 960 wide: the column width limits it
+
+
+def test_pending_rows_that_do_not_fit_become_a_more_line():
+    assert '<p class="pending-more" id="pending-more" hidden></p>' in BOARD
+    # .ar-row sets display: grid, which would override the hidden attribute.
+    assert ".pending .ar-row[hidden] { display: none; }" in BOARD
+    script = BOARD.split("<script>", 1)[1]
+    assert "more.textContent = `+${rows.length - shown} more`;" in script
+    assert "new ResizeObserver(fitPending).observe(pendingList);" in script
+
+
 def test_the_board_has_no_market_wire():
     # L3: the market wire panel is gone, markup, style and script. /api/board still sends
     # "events"; the board just doesn't render them.
@@ -299,7 +338,7 @@ def run_tabs(expression):
     if node is None:
         pytest.skip("node is not installed")
     sources = re.findall(r"^const (?:PALETTE|BASELINE_COLORS) = .*$", BOARD, re.MULTILINE)
-    for marker in ("tabs", "chartSeries"):
+    for marker in ("tabs", "chartSeries", "qrFit"):
         sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", BOARD, re.DOTALL)
     script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
