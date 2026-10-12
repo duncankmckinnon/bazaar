@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import shutil
@@ -408,3 +409,35 @@ def test_lede_markup_has_no_hard_coded_dates():
     assert "Feb 2" not in lede and "2026" not in lede
     assert "10 recent trading days" in lede
     assert "// windowText:start" in page() and "// windowText:end" in page()
+
+
+BRAND = PAGE.parent / "brand"
+# Vendored unmodified from github.com/pydantic/brand @ 83c4f63 (see static/brand/README.md).
+LOGOS = {
+    "pydantic-name-dark.svg": (
+        "Pydantic",
+        "339cd97bcccf390c79674180dbdc325aa376cbdda12f473503e3f3cc84166701",
+    ),
+    "pydantic-logfire-dark.svg": (
+        "Pydantic Logfire",
+        "da8893c60e8ff2fe439ca77a37c20fb85227ba23b0b2f784efa18172b0650e11",
+    ),
+}
+
+
+def test_the_vendored_logos_are_byte_identical_to_the_brand_repo_files():
+    for name, (_, digest) in LOGOS.items():
+        assert hashlib.sha256((BRAND / name).read_bytes()).hexdigest() == digest, name
+        assert digest in (BRAND / "README.md").read_text(encoding="utf-8"), name
+
+
+def test_the_page_shows_both_logos_same_origin_with_alt_text_and_a_reserved_size():
+    images = re.findall(r"<img\b[^>]*>", page())
+
+    for name, (alt, _) in LOGOS.items():
+        tag = next(t for t in images if f'src="/static/brand/{name}"' in t)
+        viewbox = re.search(r'viewBox="0 0 (\d+) (\d+)"', (BRAND / name).read_text()).groups()
+        assert f'alt="{alt}"' in tag
+        assert f'width="{viewbox[0]}" height="{viewbox[1]}"' in tag  # the logo's own ratio
+        assert 'decoding="async"' in tag
+    assert all(re.search(r'src="/static/brand/[\w.-]+\.svg"', tag) for tag in images), images

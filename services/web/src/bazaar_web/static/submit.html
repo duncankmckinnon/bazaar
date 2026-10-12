@@ -34,6 +34,15 @@ button, input, textarea { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
 
 main { max-width: 34rem; margin: 0 auto; padding: 20px 16px 48px; }
+/* Pydantic brand guidelines 1.4: clear space of one logomark on every side. The mark is the
+   logo's full height and 1.154x as wide, so --logo-h above, below and between rows, and
+   1.154 * --logo-h at the sides and between the logos. The block spans main's padding, so that
+   empty margin counts as clear space; logos too wide for one row with it wrap into a stack. */
+.logos { --logo-h: 22px; display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
+  gap: var(--logo-h) calc(var(--logo-h) * 1.154);
+  margin: -20px -16px 0; padding: var(--logo-h) calc(var(--logo-h) * 1.154); }
+.logos img { display: block; height: var(--logo-h); width: auto; }
+@media (min-width: 600px) { .logos { --logo-h: 32px; } }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .brand { font: 600 13px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
 a { color: var(--sugar); text-underline-offset: 3px; }
@@ -99,6 +108,10 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 </head>
 <body>
 <main>
+  <div class="logos">
+    <img src="/static/brand/pydantic-name-dark.svg" alt="Pydantic" width="605" height="120" decoding="async">
+    <img src="/static/brand/pydantic-logfire-dark.svg" alt="Pydantic Logfire" width="966" height="120" decoding="async">
+  </div>
   <header>
     <span class="brand">Bazaar</span>
     <a class="board-link" href="/">View the board</a>
