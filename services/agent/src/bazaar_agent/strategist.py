@@ -40,7 +40,9 @@ SELECT
     attributes->>'bazaar.data_version' AS data_version,
     attributes->>'return_pct' AS return_pct,
     attributes->>'fills' AS fills,
-    attributes->>'decisions_exhausted' AS decisions_exhausted
+    attributes->>'decisions_exhausted' AS decisions_exhausted,
+    attributes->>'excess_pct' AS excess_pct,
+    attributes->>'benchmark_return_pct' AS benchmark_return_pct
 FROM records
 WHERE kind = 'log' AND span_name = 'bazaar.run scored'
 """
@@ -75,7 +77,9 @@ class StrategyStats(BaseModel):
     name: str
     runs: int
     return_pct: float  # mean over the strategy's runs
-    excess_vs_benchmark_pct: float | None  # return_pct minus the benchmark's mean return
+    # Mean per-run excess: the run's logged excess_pct, else its return minus the window's mean
+    # SPY-baseline return; None when neither is known.
+    excess_vs_benchmark_pct: float | None
     fills: float
     llm_cost_usd: float | None  # mean per run with recorded model cost
     adherence: float | None  # mean strategy_adherence; None if never judged
@@ -153,9 +157,19 @@ def aggregate(
             continue
         runs.setdefault(run_id, row)
 
-    benchmark = _mean(
+    # The runner logs each run's benchmark return and excess (fix/run-benchmark); runs scored
+    # before that fall back to the window's SPY baseline runs.
+    derived = _mean(
         _number(r.get("return_pct")) for r in runs.values() if r["strategy_name"] == BENCHMARK_NAME
     )
+    logged = _mean(_number(r.get("benchmark_return_pct")) for r in runs.values())
+    benchmark = logged if logged is not None else derived
+
+    def excess(row: Mapping[str, Any]) -> float | None:
+        if (value := _number(row.get("excess_pct"))) is not None:
+            return value
+        return None if derived is None else _number(row.get("return_pct")) - derived
+
     by_name: dict[str, list[tuple[str, Mapping[str, Any]]]] = defaultdict(list)
     for run_id, row in runs.items():
         if row.get("policy_kind") == "baseline" or row["strategy_name"] == BENCHMARK_NAME:
@@ -171,7 +185,7 @@ def aggregate(
                 name=name,
                 runs=len(group),
                 return_pct=mean_return,
-                excess_vs_benchmark_pct=None if benchmark is None else mean_return - benchmark,
+                excess_vs_benchmark_pct=_mean(excess(r) for _, r in group),
                 fills=_mean(_number(r.get("fills")) for _, r in group) or 0.0,
                 llm_cost_usd=_mean(cost_by_run.get(run_id) for run_id, _ in group),
                 adherence=_mean(adherence_by_run.get(run_id) for run_id, _ in group),

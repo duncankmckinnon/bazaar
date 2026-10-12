@@ -16,7 +16,18 @@ TOKEN = "pylf_v1_us_readtokendonotleak0123456789"
 SINCE = datetime(2026, 10, 11, 20, 14, tzinfo=UTC)
 
 
-def scored(run_id, name, return_pct, *, kind="agent", fills=2, exhausted=0, bundle=None):
+def scored(
+    run_id,
+    name,
+    return_pct,
+    *,
+    kind="agent",
+    fills=2,
+    exhausted=0,
+    bundle=None,
+    excess=None,
+    benchmark=None,
+):
     attributes = {
         "bazaar.run_id": run_id,
         "bazaar.strategy_name": name,
@@ -29,6 +40,11 @@ def scored(run_id, name, return_pct, *, kind="agent", fills=2, exhausted=0, bund
     }
     if bundle is not None:
         attributes["bazaar.data_version"] = bundle
+    # Logged by runners from fix/run-benchmark on; older runs have neither.
+    if excess is not None:
+        attributes["excess_pct"] = excess
+    if benchmark is not None:
+        attributes["benchmark_return_pct"] = benchmark
     return {"kind": "log", "span_name": "bazaar.run scored", "attributes": attributes}
 
 
@@ -86,6 +102,11 @@ class FakeLogfire:
                     "return_pct": str(r["attributes"]["return_pct"]),
                     "fills": str(r["attributes"]["fills"]),
                     "decisions_exhausted": str(r["attributes"]["decisions_exhausted"]),
+                    **{
+                        key: str(r["attributes"][key])
+                        for key in ("excess_pct", "benchmark_return_pct")
+                        if key in r["attributes"]
+                    },
                 }
                 for r in self.records
                 if r["kind"] == "log" and r["span_name"] == "bazaar.run scored"
@@ -249,3 +270,22 @@ def test_brief_is_safe_from_worker_threads(logfire_api):
     with ThreadPoolExecutor(3) as pool:
         results = list(pool.map(lambda _: brief(bundle_id="demo-bundle-v2", since=SINCE), range(3)))
     assert {tuple(r.names) for r in results} == {("news-b", "momo-a", "value-c")}
+
+
+def test_the_logged_excess_and_benchmark_win_and_older_runs_fall_back(logfire_api):
+    records = [
+        # A new run logs its own excess and benchmark; an older one has neither.
+        scored("a1", "momo-a", 2.0, excess=10.0, benchmark=2.5),
+        scored("a2", "momo-a", 4.0),
+        scored("b1", "news-b", 5.0),
+        scored("s1", BENCHMARK_NAME, 1.0, kind="baseline"),
+        scored("s2", BENCHMARK_NAME, 3.0, kind="baseline"),
+    ]
+    logfire_api(FakeLogfire(records))
+    result = brief(bundle_id="demo-bundle-v2", since=SINCE)
+    stats = by_name(result.top)
+    # The brief's benchmark is the mean of the logged values (2.5), not the baselines' (2.0).
+    assert result.benchmark_return_pct == 2.5
+    # momo-a: a1's logged 10.0 and a2's fallback 4.0 - 2.0 = 2.0; news-b falls back: 5 - 2.
+    assert stats["momo-a"].excess_vs_benchmark_pct == 6.0
+    assert stats["news-b"].excess_vs_benchmark_pct == 3.0
