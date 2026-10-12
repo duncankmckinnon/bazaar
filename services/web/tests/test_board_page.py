@@ -198,12 +198,19 @@ def test_chart_and_tape_build_data_with_dom_apis_not_html():
         '\'<span class="rk"></span><span class="sc num"></span><span class="nm"></span>'
         '<span class="rt num"></span>\''
     )
-    assert sorted(writes) == sorted(['qrSVG(SUBMIT_URL, "#36182D", "#E320E7")', '""', skeleton])
+    assert sorted(writes) == sorted(['qrSVG(SUBMIT_URL, "#36182D", "#36182D")', '""', skeleton])
 
 
-def test_chart_draws_the_start_reference_and_replay_label():
-    assert 'rt.textContent = money(start) + " start";' in BOARD
-    assert "stroke-dasharray: 6 6" in BOARD  # dashed $10,000 reference
+def test_chart_labels_the_top_3_and_the_baselines_and_drops_the_start_text():
+    assert 'money(start) + " start"' not in BOARD  # the Cash label covers it
+    assert "t.textContent = l.text;" in BOARD  # labels via textContent
+    script = BOARD.split("<script>", 1)[1]
+    assert "const labels = series.filter(s => s.podium || s.baseline)" in script
+    labels = run_tabs(
+        '["baseline-cash-only", "baseline-buy-and-hold-spy", "baseline-equal-weight", "x"]'
+        ".map(baseLabel)"
+    )
+    assert labels == ["Cash", "SPY", "Equal wt", "x"]
     assert "Feb 2" not in BOARD.replace('"Feb 2–13 2026" within a month', "")  # derived
     assert 'fetch("/api/tickers"' in BOARD
 
@@ -294,7 +301,7 @@ def test_placement_reruns_on_render_and_when_the_fonts_load():
     assert "new ResizeObserver(placeQR).observe(board);" in script
     assert "document.fonts.ready.then(placeQR);" in script
     assert "  renderBoard(data);\n  placeQR();" in script
-    assert 'ins.style.width = "min-content";' in script  # the CTA at its narrowest
+    assert "const cta = Math.round(b.width * CTA_SHARE);" in script  # the CTA's share
 
 
 def test_a_running_rows_day_text_widens_its_column_instead_of_clipping():
@@ -345,7 +352,7 @@ def test_the_running_day_text_is_steady_and_a_marker_blinks():
     for selector in data_text:
         assert "animation" not in rules[selector], selector
     marker = rules[".pending .ar-row.st-running .rt::before"]
-    assert "animation: blink 1s steps(1) infinite" in marker and "var(--aqua)" in marker
+    assert "animation: blink 1s steps(1) infinite" in marker and "var(--lime)" in marker
     reduced = BOARD.split("@media (prefers-reduced-motion: reduce)", 1)[1]
     assert ".pending .ar-row.st-running .rt::before" in reduced.split("}", 1)[0]
 
@@ -362,7 +369,10 @@ def run_tabs(expression):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
-    sources = re.findall(r"^const (?:PALETTE|BASELINE_COLORS) = .*$", BOARD, re.MULTILINE)
+    sources = re.findall(
+        r"^const (?:COLORS|DIM|BASELINE_COLORS|ordinal) = .*$", BOARD, re.MULTILINE
+    )
+    sources += re.findall(r"^const baseLabel = .*$", BOARD, re.MULTILINE)
     for marker in ("tabs", "chartSeries", "qrPlace"):
         sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", BOARD, re.DOTALL)
     script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
@@ -472,18 +482,16 @@ def test_the_header_states_the_factory():
     assert ".hd .sub .factory { color: var(--lime); }" in BOARD
 
 
-def test_house_rows_get_a_dim_ai_tag_by_text_only():
+def test_house_rows_get_a_dim_ai_tag_on_both_only_and_no_generation_chip():
     script = BOARD.split("<script>", 1)[1]
-    assert 'if (r.lane === "house" || r.handle === "house") {' in script
-    house = script.split('if (r.lane === "house" || r.handle === "house") {', 1)[1]
-    house = house.split("\n  }\n", 1)[0]  # the block's closing brace, in fillRow
-    # Every house row gets the AI chip, unconditionally; the G chip only for a generation > 0.
-    assert 'const chips = ["AI"];' in house
-    assert "const gen = Number(r.generation);" in house
-    assert "if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);" in house
-    assert 'tag.className = "ai";' in house and "tag.textContent = text;" in house
-    assert "nm.prepend(...chips.map(" in house  # AI first, then G<n>
-    assert "innerHTML" not in house
+    head = 'if (tab === "both" && (r.lane === "house" || r.handle === "house")) {'
+    assert head in script
+    house = script.split(head, 1)[1].split("\n  }\n", 1)[0]  # the block, in fillRow
+    # One AI chip, on Both only (Agent factory is all house, Human none); the name's g<n>-
+    # prefix already says the generation.
+    assert 'tag.className = "ai";' in house and 'tag.textContent = "AI";' in house
+    assert "nm.prepend(tag);" in house and "innerHTML" not in house
+    assert "G${" not in script and "r.generation" not in script
     # All chips removed before setName runs, so re-renders don't stack them and the name
     # link is found and kept as before.
     assert script.index('nm.querySelectorAll(".ai").forEach((chip) => chip.remove());') < (
@@ -501,7 +509,7 @@ def test_the_board_page_has_the_in_sample_footnote(settings, helpers):
 
     assert (
         '<p class="ar-note"><span class="ai">AI</span> = house strategy \u00b7 '
-        '<span class="ai">Gn</span> = bred from this window\'s results (in-sample)</p>'
+        "names starting gN- were bred from this window's results (in-sample)</p>"
     ) in page
     # Static markup under the table, never built by the script.
     assert "ar-note" not in page.split("<script>", 1)[1]

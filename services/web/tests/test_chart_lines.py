@@ -103,15 +103,22 @@ def lab(hex_colour):
     return 116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))
 
 
-def test_the_palette_has_room_for_the_lines_and_no_near_identical_colours():
-    (raw,) = re.findall(r"const PALETTE = \[([^\]]*)\];", BOARD)
-    palette = re.findall(r'"(#[0-9A-Fa-f]{6})"', raw)
-    assert len(palette) >= CHART_LINES + 2  # 10 lines, plus running rows
-    assert palette[:4] == ["#D0FF71", "#00FFEB", "#E320E7", "#FF6550"]  # the brand first
-    closest = min(math.dist(lab(a), lab(b)) for a, b in itertools.combinations(palette, 2))
+def test_the_top_3_lines_are_the_podium_colours_and_the_rest_one_plum_grey():
+    # V1: lime, cyan and magenta only for ranks 1-3; every other line one muted plum-grey.
+    (raw,) = re.findall(r"const COLORS = \[([^\]]*)\];", BOARD)
+    podium = re.findall(r'"(#[0-9a-fA-F]{6})"', raw)
+    assert podium == ["#d0ff71", "#00ffeb", "#e520e9"]
+    (dim,) = re.findall(r'const DIM = "(#[0-9a-fA-F]{6})";', BOARD)
+    assert dim == "#8d7a96"
+    closest = min(math.dist(lab(a), lab(b)) for a, b in itertools.combinations([*podium, dim], 2))
     assert closest >= 30, closest
-    background = "#36182D"
-    assert min(math.dist(lab(c), lab(background)) for c in palette) >= 55
+    script = BOARD.split("<script>", 1)[1]
+    assert (
+        "const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : podium ? COLORS[place - 1] : DIM;"
+        in script
+    )
+    assert "const place = baseline || running ? null : ++rank;" in script  # running lines are grey
+    assert ".plot .series.dim polyline { stroke-width: 2; opacity: .6; }" in BOARD
 
 
 def test_the_page_draws_representatives_labelled_with_their_group():

@@ -3,6 +3,7 @@ change shows on the next poll (bounded wait), TTL expiry never waits."""
 
 import dataclasses
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -240,3 +241,42 @@ def test_a_persisted_board_never_shows_a_row_hidden_since(settings, helpers, bui
         builds.gate.set()
 
     assert during_boot == ["kept"]
+
+
+def test_a_persisted_board_never_names_a_row_hidden_since_in_its_events(settings, helpers, builds):
+    store = Store(settings.web_db)
+    sid = store.create(
+        name="taken-down", handle=None, instructions="Buy KO on dips, hold MSFT.", ip_hash="h",
+        max_queue=30, max_per_day=150, max_per_ip_hour=5,
+    )  # fmt: skip
+    store.add_event("taken-down scored +9.43%", sid)
+    store.hide(sid)
+    persist(
+        settings,
+        {
+            "rows": [{"id": sid}],
+            "events": [{"t": "2026-10-12T00:00:00", "text": "taken-down scored +9.43%"}],
+        },
+    )
+    quick = dataclasses.replace(settings, board_fresh_wait_ms=200)  # the queued row's writes
+    with TestClient(create_app(quick, helpers.FakeRunner())) as client:
+        during_boot = client.get("/api/board").text  # the boot build is still blocked
+        builds.gate.set()
+
+    assert "taken-down" not in during_boot
+
+
+def test_a_slow_board_request_logs_its_two_phases(settings, helpers, monkeypatch, caplog):
+    monkeypatch.setattr(bazaar_web.app, "SLOW_BOARD_S", 0.05)
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        client.get("/api/board")
+        store = client.app.state.store
+        real = store.hidden_ids
+        monkeypatch.setattr(store, "hidden_ids", lambda: time.sleep(0.1) or real())
+        with caplog.at_level("WARNING", logger="bazaar_web.app"):
+            client.get("/api/board")
+
+    slow = [r.getMessage() for r in caplog.records if "slow /api/board" in r.getMessage()]
+    assert len(slow) == 1
+    cache_s, live_s = (float(x) for x in re.findall(r"(\d+\.\d+) s", slow[0]))
+    assert live_s >= 0.1 and cache_s < 0.1  # numbers only: the phases, no row data

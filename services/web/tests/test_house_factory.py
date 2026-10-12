@@ -562,9 +562,10 @@ def test_bad_factory_settings_are_refused(monkeypatch, name, raw):
         Settings.from_env()
 
 
-def test_the_tag_shows_the_generation_as_text():
+def test_the_board_shows_the_generation_in_the_name_not_a_chip():
+    # V1: a factory strategy's name already starts g<n>-, so the board drops its G<n> chip.
     page = (STATIC / "board.html").read_text()
-    assert "if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);" in page
+    assert "G${" not in page and "names starting gN-" in page
 
 
 def test_paused_means_no_proposals_and_no_house_runs(lane, helpers, monkeypatch):
