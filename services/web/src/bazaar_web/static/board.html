@@ -43,94 +43,105 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .hd .brand { display: flex; align-items: center; gap: calc(var(--px)*60); min-width: 0; }
 .hd .logo { display: block; height: calc(var(--px)*52); width: auto; flex: none; }
 .hd h1 { margin: 0; white-space: nowrap; font: 400 calc(var(--px)*56)/1.1 var(--pixel); color: var(--lime); letter-spacing: .02em; }
-.hd .sub { text-align: right; font: 400 calc(var(--px)*17)/1.4 var(--pixel); color: var(--aqua); white-space: nowrap; }
+.hd .sub { text-align: right; font: 400 max(12px, calc(var(--px)*17))/1.4 var(--pixel); color: var(--muted); white-space: nowrap; }
 .hd .sub span { display: block; }
 .hd .sub .factory { color: var(--lime); }
 
 /* Left: the leaderboard, one tab at a time: its top 15, then everything pending. */
-.board { grid-area: board; min-height: 0; display: flex; flex-direction: column; gap: calc(var(--px)*12); }
+.board { grid-area: board; min-height: 0; display: flex; flex-direction: column; gap: calc(var(--px)*16); }
+/* The admin pill sits over the bottom-left corner: keep the footnote above it. */
+body:has(> .adm) .board { padding-bottom: max(48px, calc(var(--px)*64)); }
 .tabs { display: flex; gap: calc(var(--px)*10); }
 .tab { min-height: max(44px, calc(var(--px)*48)); padding: 0 calc(var(--px)*18); font: 400 max(14px, calc(var(--px)*18))/1 var(--pixel); cursor: pointer; border-radius: 6px; background: transparent; color: var(--text); border: 1px solid var(--edge); }
 .tab[aria-selected="true"] { background: var(--lime); color: var(--ink); border-color: var(--lime); }
-.tab:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.tab:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 .panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ar-cols, .ar-row { display: grid; grid-template-columns: calc(var(--px)*80) calc(var(--px)*140) minmax(0,1fr) calc(var(--px)*110); column-gap: calc(var(--px)*12); align-items: center; }
-.ar-cols { padding: calc(var(--px)*4) calc(var(--px)*8); font: 400 calc(var(--px)*14)/1 var(--pixel); color: var(--muted); }
+.ar-cols { padding: calc(var(--px)*4) calc(var(--px)*8); font: 500 max(12px, calc(var(--px)*14))/1 var(--mono); color: var(--muted); }
 .ar-cols span:nth-child(4) { text-align: right; }
 .ar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; flex: none; }
 .ar-row { height: calc(var(--px)*40); padding: 0 calc(var(--px)*8); font: 400 calc(var(--px)*21)/1 var(--pixel); color: var(--c, var(--text)); border-radius: 4px; }
 .ar-row.hl { background: rgba(239,230,242,.08); }
-.ar-row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; }
+/* Policy names in mono, as submitted (the pixel font in capitals was the hard part to read); the
+   pixel font stays for rank, score and return. The score is the hero, the return muted. */
+.ar-row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-weight: 500; }
+.ar-list .ar-row .rt { color: var(--muted); }
 .ar-row .nm a { color: inherit; text-decoration: none; cursor: pointer; }
 /* House (AI-generated) strategies carry a dim tag; attendee rows have none. */
-.ar-row .nm .ai { font: 400 calc(var(--px)*13)/1 var(--pixel); color: var(--muted); border: 1px solid currentColor; padding: 1px 6px; margin-right: calc(var(--px)*8); vertical-align: .15em; }
+.ar-row .nm .ai { font: 400 max(min(12px, 1em), calc(var(--px)*13))/1 var(--pixel); color: var(--muted); border: 1px solid currentColor; padding: 1px 6px; margin-right: calc(var(--px)*8); vertical-align: .15em; }
 .ar-row .rt { text-align: right; white-space: nowrap; }
 .ar-row .sc.prov { opacity: .7; }
-.ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 calc(var(--px)*13)/1 var(--pixel); color: var(--ink); background: var(--lime); padding: .3em .5em; animation: blink .5s steps(1) 16; }
-.pending-head { margin: calc(var(--px)*6) 0 0; border-top: 1px solid var(--line); padding-top: calc(var(--px)*8); font: 400 calc(var(--px)*14)/1 var(--pixel); color: var(--aqua); }
-.pending { position: relative; list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; }
+.ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 max(min(12px, 1em), calc(var(--px)*13))/1 var(--pixel); color: var(--ink); background: var(--lime); padding: .3em .5em; animation: blink .5s steps(1) 16; }
+.pending-head { margin: calc(var(--px)*6) 0 0; border-top: 1px solid var(--line); padding-top: calc(var(--px)*8); font: 400 max(12px, calc(var(--px)*14))/1 var(--pixel); color: var(--muted); }
+/* Sized to its rows (shrinking when they don't fit), so "+K more" sits right under the last one
+   and the panel's free space is the gap above the QR block. */
+.pending { position: relative; list-style: none; margin: 0; padding: 0; flex: 0 1 auto; min-height: 0; overflow: hidden; }
 .pending-more { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 calc(var(--px)*18)/calc(var(--px)*34) var(--pixel); color: var(--muted); }
 .pending .ar-row[hidden] { display: none; }
 /* The return column grows for a running row's blinking dot and day text rather than clip it. */
 .pending .ar-row { grid-template-columns: calc(var(--px)*80) calc(var(--px)*140) minmax(0,1fr) minmax(calc(var(--px)*110), max-content); }
 .pending .ar-row { height: calc(var(--px)*34); font-size: calc(var(--px)*18); color: var(--muted); }
 /* The day text stays steady (readable in photos); a dot before it blinks as the live cue. */
-.pending .ar-row.st-running .rt { color: var(--aqua); }
-.pending .ar-row.st-running .rt::before { content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .5em; border-radius: 50%; background: var(--aqua); vertical-align: .1em; animation: blink 1s steps(1) infinite; }
+.pending .ar-row.st-running .rt { color: var(--lime); }
+.pending .ar-row.st-running .rt::before { content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .5em; border-radius: 50%; background: var(--lime); vertical-align: .1em; animation: blink 1s steps(1) infinite; }
 /* The footnote under the table: static, and legible at phone width (never below 11px). */
-.ar-note { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 max(calc(var(--px)*13), 11px)/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-.ar-note .ai { font: 400 .85em/1 var(--pixel); border: 1px solid currentColor; padding: .2em .35em; }
+.ar-note { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 max(12px, calc(var(--px)*13))/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.ar-note .ai { font: 400 max(12px, .85em)/1 var(--pixel); border: 1px solid currentColor; padding: .2em .35em; }
 .empty { font: 400 calc(var(--px)*21)/1.6 var(--pixel); color: var(--lime); padding: calc(var(--px)*12) calc(var(--px)*8); }
 
 /* Right: the chart, with the column's full height above the QR strip. */
 .chart { grid-area: chart; min-height: 0; display: flex; flex-direction: column; gap: calc(var(--px)*8); }
-.chart h2 { margin: 0; font: 400 calc(var(--px)*20)/1.2 var(--pixel); color: var(--aqua); }
+.chart h2 { margin: 0; font: 400 max(12px, calc(var(--px)*20))/1.2 var(--pixel); color: var(--muted); }
 .plot { position: relative; flex: 1; min-height: 0; }
 .plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .plot .grid line { stroke: rgba(239,230,242,.10); stroke-width: 1; }
-.plot .axis text { fill: var(--muted); font: 500 calc(var(--px)*14) var(--mono); }
-.plot .ref line { stroke: var(--edge); stroke-dasharray: 6 6; stroke-width: 1.5; }
-.plot .ref text { fill: var(--muted); font: 500 calc(var(--px)*14) var(--mono); }
+.plot .axis text { fill: var(--muted); font: 500 max(14px, calc(var(--px)*16)) var(--mono); }
 .plot .series polyline { fill: none; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; transition: opacity .2s; }
+/* The top 3 in the podium colours on top; every other line one plum-grey behind them. */
+.plot .series.dim polyline { stroke-width: 2; opacity: .6; }
 .plot .series.baseline polyline { stroke-width: 2; stroke-dasharray: 8 6; }
+.plot .label { font: 600 max(13px, calc(var(--px)*16)) var(--mono); }
+.plot .label.base { font-weight: 500; fill: var(--muted); }
 .plot .series circle { stroke: none; }
 .plot .series.running circle.tip { animation: blink 1s steps(1) infinite; }
 .plot.focus .series { opacity: .18; }
 .plot.focus .series.on { opacity: 1; }
 .plot.focus .series.on polyline { stroke-width: 4; }
 .plot .cursor { stroke: var(--text); stroke-opacity: .35; stroke-width: 1; }
-.tip-box { position: absolute; pointer-events: none; z-index: 3; background: rgba(28,18,32,.94); border: 1px solid var(--aqua); padding: calc(var(--px)*8) calc(var(--px)*12); font: 500 calc(var(--px)*15)/1.4 var(--mono); white-space: nowrap; }
+.tip-box { position: absolute; pointer-events: none; z-index: 3; background: rgba(28,18,32,.94); border: 1px solid var(--lime); padding: calc(var(--px)*8) calc(var(--px)*12); font: 500 max(12px, calc(var(--px)*15))/1.4 var(--mono); white-space: nowrap; }
 .tip-box[hidden] { display: none; }
 .tip-box b { display: block; color: var(--lime); font-weight: 700; }
 
 /* Under the chart (or under the table, below): the QR block. The QR keeps a 4-module quiet zone (qrSVG) on the light card,
    and error correction H for the logo in its centre. */
-.side { grid-area: side; min-height: 0; display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--px)*36); }
-.side .ins { display: flex; flex-direction: column; align-items: flex-end; gap: calc(var(--px)*10); text-align: right; }
-.ar-coin { font: 400 calc(var(--px)*48)/1.1 var(--pixel); color: var(--lime); }
-.side p { font: 400 calc(var(--px)*26)/1.3 var(--pixel); color: var(--text); margin: 0; }
-.side .url { font: 500 calc(var(--px)*20)/1.3 var(--mono); color: var(--soft); word-break: break-all; }
-.ar-qr { background: var(--sugar); border: calc(var(--px)*8) solid var(--aqua); box-shadow: 0 0 0 calc(var(--px)*6) var(--ink), 0 0 0 calc(var(--px)*12) var(--magenta); width: calc(var(--px)*300); flex: 0 0 auto; }
+.side { grid-area: side; min-height: 0; display: flex; align-items: center; justify-content: flex-start; gap: calc(var(--px)*36); }
+/* The CTA takes the width the QR leaves, each line on one line: its type scales with that width
+   (cqi), up to the prototype's size. The QR itself is the URL (its aria-label carries it). */
+.side .ins { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: calc(var(--px)*12); container-type: inline-size; }
+.ar-coin { font: 400 min(calc(var(--px)*48), 7.4cqi)/1.1 var(--pixel); color: var(--lime); white-space: nowrap; }
+.side p { font: 500 min(calc(var(--px)*24), 4.6cqi)/1.3 var(--mono); color: var(--text); margin: 0; white-space: nowrap; }
+.ar-qr { background: var(--sugar); border: calc(var(--px)*8) solid var(--lime); width: calc(var(--px)*300); flex: 0 0 auto; }
 /* Tall windows (placeQR): the QR block sits at the bottom of the left column, sized to the room
    there, and the chart takes the whole right column. */
 .dash.qr-left { grid-template-rows: auto minmax(0,1fr) auto; grid-template-areas: "hd hd" "board chart" "tape tape"; }
-.board .side { flex: none; justify-content: flex-start; padding: calc(var(--px)*12); }
+.board .side { flex: none; padding: calc(var(--px)*12) 0; }
 .board .ar-qr { width: var(--qr); box-sizing: border-box; }
 
 /* Bottom: the replay tape of each day's top movers. */
 .tape { grid-area: tape; margin: 0 calc(var(--px)*-40); display: flex; align-items: center; border-top: 1px solid var(--line); background: rgba(28,18,32,.7); overflow: hidden; white-space: nowrap; }
-.tape[hidden] { display: none; }
-.tape .label { flex: 0 0 auto; padding: calc(var(--px)*12) calc(var(--px)*20); font: 400 calc(var(--px)*14)/1.3 var(--pixel); color: var(--ink); background: var(--lime); z-index: 1; }
+/* Its height is kept while it loads, so the left column doesn't shift under it. */
+.tape[hidden] { visibility: hidden; }
+.tape .label { flex: 0 0 auto; padding: calc(var(--px)*12) calc(var(--px)*20); font: 400 max(12px, calc(var(--px)*14))/1.3 var(--pixel); color: var(--ink); background: var(--lime); z-index: 1; }
 .tape .viewport { flex: 1; overflow: hidden; }
 .tape .track { display: inline-flex; gap: calc(var(--px)*44); padding: calc(var(--px)*12) calc(var(--px)*20); font: 500 calc(var(--px)*18)/1 var(--mono); animation: tape 30s linear infinite; }
 .tape .track span b { color: var(--text); margin-right: .55em; font-weight: 700; }
 .tape .track span em { font-style: normal; margin-left: .55em; }
-.up { color: var(--aqua); } .down { color: var(--calcium); } .flat { color: var(--muted); }
+.up { color: var(--lime); } .down { color: var(--calcium); } .flat { color: var(--muted); }
 @keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-.conn { position: fixed; top: calc(var(--px)*10); right: calc(var(--px)*20); z-index: 5; font: 400 calc(var(--px)*14)/1 var(--pixel); color: var(--calcium); }
+.conn { position: fixed; top: calc(var(--px)*10); right: calc(var(--px)*20); z-index: 5; font: 400 max(12px, calc(var(--px)*14))/1 var(--pixel); color: var(--calcium); }
 .conn[hidden] { display: none; }
 /* F3: the admin-only factory control (built by the script below; never on the public view). */
-.adm { position: fixed; left: calc(var(--px)*20); bottom: calc(var(--px)*20); z-index: 6; display: flex; gap: .7em; align-items: center; margin: 0; font: 400 max(calc(var(--px)*13), 10px)/1 var(--pixel); color: var(--muted); background: rgba(0,0,0,.6); border: 1px solid currentColor; border-radius: 999px; padding: .55em .9em; }
+.adm { position: fixed; left: calc(var(--px)*20); bottom: calc(var(--px)*20); z-index: 6; display: flex; gap: .7em; align-items: center; margin: 0; font: 400 max(calc(var(--px)*13), 12px)/1 var(--pixel); color: var(--muted); background: rgba(0,0,0,.6); border: 1px solid currentColor; border-radius: 999px; padding: .55em .9em; }
 .adm input { font: 400 12px/1 var(--mono); width: 13em; color: var(--text); background: transparent; border: 1px solid currentColor; border-radius: 3px; padding: .35em .5em; }
 .adm button { font: inherit; color: var(--ink); background: var(--lime); border: 0; border-radius: 3px; padding: .45em .7em; cursor: pointer; }
 .adm button:disabled { opacity: .5; cursor: default; }
@@ -149,7 +160,6 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
   .pending .ar-row { grid-template-columns: 42px 80px minmax(0,1fr) minmax(70px, max-content); }
   .ar-row { height: 34px; }
   .plot { height: 300px; flex: none; }
-  .side { justify-content: center; }
   .ar-qr { width: 200px; }
   .tape { margin: 0 -14px; }
 }
@@ -182,19 +192,18 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
       <ol class="pending" id="pending" aria-labelledby="pending-head"></ol>
       <p class="pending-more" id="pending-more" hidden></p>
     </div>
-    <p class="ar-note"><span class="ai">AI</span> = house strategy · <span class="ai">Gn</span> = bred from this window's results (in-sample)</p>
+    <p class="ar-note"><span class="ai">AI</span> = house strategy · names starting gN- were bred from this window's results (in-sample)</p>
   </section>
   <section class="chart" aria-label="Portfolio value by trading day">
     <h2>Portfolio value by trading day</h2>
     <div class="plot" id="plot"><svg id="svg" role="img" aria-label="Portfolio value by trading day"></svg><div class="tip-box" id="tip" hidden></div></div>
   </section>
   <aside class="side">
+    <div class="ar-qr"><div class="qr" id="qr"></div></div>
     <div class="ins">
       <div class="ar-coin">Insert policy</div>
-      <p>Scan to play<br>Start with $10,000</p>
-      <p class="url" id="url"></p>
+      <p>Scan to play · start with $10,000</p>
     </div>
-    <div class="ar-qr"><div class="qr" id="qr"></div></div>
   </aside>
   <footer class="tape" id="tape" hidden><span class="label" id="tape-label">Replay</span><div class="viewport"><div class="track" id="track"></div></div></footer>
 </main>
@@ -214,7 +223,7 @@ const COLORS = ["#d0ff71", "#00ffeb", "#e520e9"];
 // Chart lines by rank; baselines are drawn dashed in a muted tone. The brand colours come first;
 // the rest were picked so that no two of the 12 are near-identical (CIE76 distance >= 30), with
 // room for running rows after the 10 lines.
-const PALETTE = ["#D0FF71", "#00FFEB", "#E320E7", "#FF6550", "#3E8BFF", "#FF9BD2", "#FBFFEA", "#FFC857", "#5BC0EB", "#6BFF3D", "#C77DFF", "#FF4DA6"];
+const DIM = "#8d7a96";
 const BASELINE_COLORS = ["#b48fa8", "#8fa8b4", "#a8b48f", "#c9a9bf"];
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -347,8 +356,7 @@ function qrSVG(url, fg, mark) {
 const $ = (id) => document.getElementById(id);
 const list = $("list"), pendingList = $("pending"), conn = $("conn"), plot = $("plot"), svg = $("svg"), tip = $("tip");
 const tabButtons = [...document.querySelectorAll('[role="tab"]')];
-$("qr").innerHTML = qrSVG(SUBMIT_URL, "#36182D", "#E320E7");
-$("url").textContent = SUBMIT_URL.replace(/^https?:\/\//, "");
+$("qr").innerHTML = qrSVG(SUBMIT_URL, "#36182D", "#36182D");
 
 const lastStatus = new Map(), newUntil = new Map();
 let lastData = null, focusId = null, pinnedId = null;
@@ -417,19 +425,14 @@ function fillRow(li, r, start, now) {
   const nm = li.querySelector(".nm");
   nm.querySelectorAll(".ai").forEach((chip) => chip.remove());  // first, so setName finds its link as before
   setName(nm, r.name, safeUrl(r.logfire_url));
-  // Only server-made house rows carry handle "house" (attendees can't claim it). Once
-  // perf/house-lane merges, the handle check can go in favour of lane alone.
-  if (r.lane === "house" || r.handle === "house") {
-    // Every house row gets "AI"; a factory strategy also gets its generation (G3) after it.
-    const chips = ["AI"];
-    const gen = Number(r.generation);
-    if (Number.isInteger(gen) && gen > 0) chips.push(`G${gen}`);
-    nm.prepend(...chips.map((text) => {
-      const tag = document.createElement("i");
-      tag.className = "ai";
-      tag.textContent = text;
-      return tag;
-    }));
+  // Only server-made house rows carry handle "house" (attendees can't claim it). The chip is
+  // on Both only: on Agent factory every row is one, on Human none is. A factory strategy's
+  // generation is already its name's g<n>- prefix.
+  if (tab === "both" && (r.lane === "house" || r.handle === "house")) {
+    const tag = document.createElement("i");
+    tag.className = "ai";
+    tag.textContent = "AI";
+    nm.prepend(tag);
   }
   li.querySelector(".rt").textContent = scored
     ? (typeof r.return_pct === "number" ? pct(r.return_pct) : "")
@@ -487,14 +490,18 @@ function chartSeries(rows, tab) {
   rows.filter(r => r.status === "scored" && r.kind !== "baseline" && Number.isInteger(members(r))).forEach(add);
   rows.filter(r => r.kind === "baseline" && r.status === "scored").forEach(add);
   rows.filter(r => r.status === "running" && onTab(r, tab)).forEach(add);
+  // The tab's top 3 lines take the podium colours; every other line (and running ones) is one
+  // plum-grey; baselines keep their own muted greys.
   let rank = 0, base = 0;
   return picked.map(r => {
-    const baseline = r.kind === "baseline";
-    const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : PALETTE[rank++ % PALETTE.length];
+    const baseline = r.kind === "baseline", running = r.status === "running";
+    const place = baseline || running ? null : ++rank;
+    const podium = place !== null && place <= COLORS.length;
+    const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : podium ? COLORS[place - 1] : DIM;
     const pts = r.history.filter(p => p && Number.isFinite(p.day) && Number.isFinite(p.value)).map(p => ({ day: p.day, value: p.value }));
     const n = members(r);
     const more = Number.isInteger(n) && n > 1 ? ` +${n - 1}` : "";
-    return { id: String(r.id), name: String(r.name) + more, color, baseline, running: r.status === "running", pts };
+    return { id: String(r.id), name: String(r.name) + more, short: String(r.name), color, baseline, running, podium: podium ? place : null, pts };
   });
 }
 // chartSeries:end
@@ -505,7 +512,8 @@ function renderChart(data) {
   const start = data.window && typeof data.window.starting_cash === "number" ? data.window.starting_cash : 10000;
   const series = chartSeries(Array.isArray(data.rows) ? data.rows : [], tab);
   const W = Math.max(plot.clientWidth, 200), H = Math.max(plot.clientHeight, 140);
-  const pad = { l: Math.max(Math.round(W * 0.085), 58), r: 14, t: 10, b: 28 };
+  // Room on the right for the end labels (the top 3's names, SPY and Cash).
+  const pad = { l: Math.max(Math.round(W * 0.085), 58), r: Math.max(Math.round(W * 0.2), 96), t: 14, b: 32 };
   const values = [start, ...series.flatMap(s => s.pts.map(p => p.value))];
   let lo = Math.min(...values), hi = Math.max(...values);
   const span = Math.max(hi - lo, start * 0.004);
@@ -527,22 +535,46 @@ function renderChart(data) {
     const t = svgEl("text", { x: x(d), y: H - 8, "text-anchor": "middle" }, axis);
     t.textContent = "D" + d;
   }
-  const ref = svgEl("g", { class: "ref" }, svg);
-  svgEl("line", { x1: pad.l, x2: W - pad.r, y1: y(start), y2: y(start) }, ref);
-  const rt = svgEl("text", { x: W - pad.r, y: y(start) - 6, "text-anchor": "end" }, ref);
-  rt.textContent = money(start) + " start";
-
-  for (const s of series) {
-    const g = svgEl("g", { class: "series" + (s.baseline ? " baseline" : "") + (s.running ? " running" : "") }, svg);
+  // Drawn back to front: the plum-grey lines, the baselines, then the top 3.
+  const order = (s) => (s.podium ? 2 : s.baseline ? 1 : 0);
+  for (const s of [...series].sort((a, b) => order(a) - order(b))) {
+    const g = svgEl("g", { class: "series" + (s.baseline ? " baseline" : "") + (s.running ? " running" : "") + (!s.podium && !s.baseline ? " dim" : "") }, svg);
     g.dataset.id = s.id;
     const path = s.pts.map(p => `${x(p.day).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
     svgEl("polyline", { points: path, stroke: s.color }, g);
     const last = s.pts[s.pts.length - 1];
     svgEl("circle", { class: "tip", cx: x(last.day), cy: y(last.value), r: s.running ? 5 : 3.5, fill: s.color }, g);
   }
+  renderLabels(series, x, y, H - pad.b, W);
   // Hidden until hovered: with the SVG's overflow visible, a parked cursor would show.
   svgEl("line", { class: "cursor", x1: -10, x2: -10, y1: pad.t, y2: H - pad.b, id: "cursor", visibility: "hidden" }, svg);
   applyFocus();
+}
+
+// End-of-line labels: the top 3 (place and name, in the line's colour) and the baselines
+// ("SPY", "Cash"), nudged apart vertically so none overlap.
+const baseLabel = (name) => (/cash/i.test(name) ? "Cash" : /buy-and-hold|spy/i.test(name) ? "SPY" : /equal/i.test(name) ? "Equal wt" : name.replace(/^baseline-/, ""));
+function renderLabels(series, x, y, bottom, right) {
+  const px = parseFloat(getComputedStyle(document.querySelector(".ar-cols")).columnGap) / 12;
+  const size = Math.max(13, 16 * px);  // .plot .label
+  const labels = series.filter(s => s.podium || s.baseline).map(s => {
+    const last = s.pts[s.pts.length - 1], lx = x(last.day) + 10;
+    // Mono: about 0.6em a character; the name is cut to the room left of the SVG's edge.
+    const room = Math.max(4, Math.floor((right - lx) / (size * 0.6)));
+    const full = s.baseline ? baseLabel(s.short) : `${ordinal(s.podium)} ${s.short}`;
+    return { s, x: lx, y: y(last.value), text: full.length > room ? full.slice(0, room - 1) + "…" : full };
+  }).sort((a, b) => a.y - b.y);
+  const gap = size * 1.25;
+  for (let i = 1; i < labels.length; i++) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + gap);
+  const over = labels.length ? labels[labels.length - 1].y - bottom : 0;
+  if (over > 0) for (const l of labels) l.y -= over;
+  const g = svgEl("g", { class: "labels" }, svg);
+  for (const l of labels) {
+    const attrs = { class: "label" + (l.s.baseline ? " base" : ""), x: l.x, y: l.y + size * 0.35 };
+    if (!l.s.baseline) attrs.fill = l.s.color;
+    const t = svgEl("text", attrs, g);
+    t.textContent = l.text;
+  }
 }
 
 function setFocus(id) { focusId = id; applyFocus(); }
@@ -642,8 +674,8 @@ function renderHeader(data) {
 // qrPlace:start
 // The QR block moves to the bottom of the left column only when the QR it gets there is bigger than
 // the strip's (300 px at 1920) and at least 220 px. The left size reserves the top 15, 3 pending
-// rows and a "+K more" line, and the CTA at its narrowest (the URL wraps), capped at 420 px.
-const QR_MAX = 420, QR_MIN_LEFT = 220;
+// rows and a "+K more" line, and the CTA's share of the width (its text scales), capped at 420 px.
+const QR_MAX = 420, QR_MIN_LEFT = 220, CTA_SHARE = 0.4;
 function qrPlace(m) {
   const free = m.board - m.above - 15 * 40 * m.px - 4 * 34 * m.px - m.note - 2 * 12 * m.px - 2 * 12 * m.px;
   const room = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px - 2 * 12 * m.px));
@@ -657,12 +689,8 @@ function placeQR() {
   const narrow = matchMedia("(max-width: 760px)").matches;
   const px = parseFloat(getComputedStyle(document.querySelector(".ar-cols")).columnGap) / 12;
   const b = board.getBoundingClientRect(), note = board.lastElementChild; // the footnote
-  // The CTA's narrowest width: its scrollWidth is the long submit URL on one line, which once
-  // left no room for the QR.
-  const ins = document.querySelector(".ins");
-  ins.style.width = "min-content";
-  const cta = ins.offsetWidth;
-  ins.style.width = "";
+  // The CTA's share of the block: its one-line text scales to whatever width it is given.
+  const cta = Math.round(b.width * CTA_SHARE);
   const { left, size } = narrow ? { left: false } : qrPlace({
     px, board: b.height, width: b.width, cta,
     above: list.getBoundingClientRect().top - b.top + $("pending-head").offsetHeight + 6 * px,
