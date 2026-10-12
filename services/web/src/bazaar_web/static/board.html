@@ -123,6 +123,13 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 @keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .conn { position: fixed; top: calc(var(--u)*.6); right: calc(var(--u)*1); z-index: 5; font: 400 calc(var(--u)*.6)/1 var(--pixel); color: var(--calcium); }
 .conn[hidden] { display: none; }
+/* F3: the admin-only factory control (built by the script below; never on the public view). */
+.adm { position: fixed; left: calc(var(--u)*1); bottom: calc(var(--u)*1); z-index: 6; display: flex; gap: .7em; align-items: center; margin: 0; font: 400 max(calc(var(--u)*.6), 10px)/1 var(--pixel); color: var(--muted); background: rgba(0,0,0,.6); border: 1px solid currentColor; border-radius: 999px; padding: .55em .9em; }
+.adm input { font: 400 12px/1 var(--mono); width: 13em; color: var(--sugar); background: transparent; border: 1px solid currentColor; border-radius: 3px; padding: .35em .5em; }
+.adm button { font: inherit; color: var(--blackbean); background: var(--pyai-yellow); border: 0; border-radius: 3px; padding: .45em .7em; cursor: pointer; }
+.adm button:disabled { opacity: .5; cursor: default; }
+.adm .adm-lock { color: inherit; }
+.adm .adm-note { color: var(--calcium); }
 
 @media (max-width: 760px) {
   :root { --u: 6px; }
@@ -605,6 +612,162 @@ addEventListener("resize", () => { clearTimeout(refitTimer); refitTimer = setTim
 if (typeof ResizeObserver === "function") new ResizeObserver(refit).observe(list);
 if (document.fonts) { document.fonts.ready.then(refit); document.fonts.addEventListener("loadingdone", refit); }
 refit();
+})();
+</script>
+<script>
+// F3: pause and resume the house factory, for admins only. The public view builds nothing and
+// calls no /api/admin route. /?admin shows a password field; a token the server accepts is kept
+// in sessionStorage (this tab only) and sent only in the X-Bazaar-Admin-Token header, never in a
+// URL. Browser telemetry ignores /api/admin/ requests, and the control carries rrweb's
+// "rr-block" class, so session replay records neither the control nor the field.
+(() => {
+"use strict";
+const KEY = "bazaar.admin";
+const HEADER = "X-Bazaar-Admin-Token";
+const HOUSE = "/api/admin/house";
+const POLL_MS = 15000;
+let root = null;
+
+const saved = {
+  get() { try { return sessionStorage.getItem(KEY); } catch (_) { return null; } },
+  set(token) { try { sessionStorage.setItem(KEY, token); } catch (_) {} },
+  clear() { try { sessionStorage.removeItem(KEY); } catch (_) {} },
+};
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function admin(token, method, path) {
+  return fetch(path, { method, headers: { [HEADER]: token }, cache: "no-store" });
+}
+
+const refused = (res) => res.status === 403 || res.status === 404;
+const askedFor = () => new URLSearchParams(location.search).has("admin");
+
+function dropAdminParam() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has("admin")) return;
+  url.searchParams.delete("admin");
+  history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+}
+
+function clearRoot() {
+  if (root) root.remove();
+  root = null;
+}
+
+// The house state for this token: the JSON on success, null when the server refuses it,
+// undefined when the request failed.
+async function check(token) {
+  try {
+    const res = await admin(token, "GET", HOUSE);
+    if (refused(res)) return null;
+    return res.ok ? await res.json() : undefined;
+  } catch (_) {
+    return undefined;
+  }
+}
+
+function unlockForm() {
+  clearRoot();
+  const form = el("form", "adm rr-block");
+  const input = el("input");
+  input.type = "password";
+  input.autocomplete = "off";
+  input.placeholder = "admin token";
+  input.setAttribute("aria-label", "Admin token");
+  const button = el("button", null, "UNLOCK");
+  button.type = "submit";
+  const note = el("span", "adm-note");
+  form.append(input, button, note);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const token = input.value;
+    input.value = "";
+    button.disabled = true;
+    note.textContent = "";
+    const house = token ? await check(token) : null;
+    dropAdminParam();
+    if (house) {
+      saved.set(token);
+      control(token, house);
+      return;
+    }
+    note.textContent = "not authorized";
+    button.disabled = false;
+  });
+  root = form;
+  document.body.append(form);
+  input.focus();
+}
+
+function control(token, house) {
+  clearRoot();
+  const pill = el("div", "adm rr-block");
+  const state = el("span", "adm-state");
+  const button = el("button");
+  button.type = "button";
+  const lock = el("a", "adm-lock", "lock");
+  lock.href = "#";
+  pill.append(state, button, lock);
+  root = pill;
+  document.body.append(pill);
+  let paused = false;
+  let busy = false;
+  let timer = null;
+  const live = () => root === pill;
+  const stop = () => { clearTimeout(timer); saved.clear(); if (live()) clearRoot(); };
+  const show = (h) => {
+    paused = Boolean(h.paused);
+    state.textContent = paused ? "FACTORY: PAUSED" : "FACTORY: RUNNING";
+    button.textContent = paused ? "RESUME" : "PAUSE";
+    button.disabled = busy;
+  };
+  const refresh = async () => {
+    const h = await check(token);
+    if (!live()) return;
+    if (h === null) return stop();
+    if (h && !busy) show(h);
+    timer = setTimeout(refresh, POLL_MS);
+  };
+  button.addEventListener("click", async () => {
+    if (busy) return;
+    busy = true;
+    button.disabled = true;
+    try {
+      const res = await admin(token, "POST", paused ? HOUSE + "/resume" : HOUSE + "/pause");
+      if (refused(res)) return stop();
+      if (res.ok && live()) show(await res.json());
+    } catch (_) {
+      // unchanged; the next refresh shows the server's state
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  });
+  lock.addEventListener("click", (event) => { event.preventDefault(); stop(); });
+  show(house);
+  timer = setTimeout(refresh, POLL_MS);
+}
+
+async function start() {
+  const token = saved.get();
+  if (token) {
+    const house = await check(token);
+    if (house) {
+      dropAdminParam();
+      control(token, house);
+      return;
+    }
+    if (house === null) saved.clear();  // refused: never shown again with this token
+  }
+  if (askedFor()) unlockForm();
+}
+start();
 })();
 </script>
 </body>
