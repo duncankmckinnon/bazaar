@@ -8,29 +8,26 @@
 <script type="module" src="/browser-telemetry.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Silkscreen&display=swap">
 <style>
-@font-face { font-family: "Dwight"; src: url("/fonts/DwightMedium.woff2") format("woff2"); font-weight: 500; font-display: swap; }
-
 :root {
   color-scheme: dark;
-  --lithium: #E520E9; --calcium: #FF6550; --aqua: #77FFD8;
-  --sugar: #FBFFEA; --petroleum: #092224; --blackbean: #061314;
-  --dim: #9fb6b4; --soft: #c9d6cf; --faint: #a3b5ae; --error: #FF8C76;
-  --line: rgba(251,255,234,.16); --field: #24101d; --field-line: #8aa19f;
-  --display: "Dwight", "IBM Plex Sans", sans-serif;
+  --text: #efe6f2; --muted: #cdbfd2; --dim: #b7a6bd; --lime: #d0ff71; --aqua: #00ffeb;
+  --error: #ff8c76; --ink: #1c1220;
+  --field: #22121f; --field-line: #9a86a2; --card: rgba(34,18,31,.75); --card-line: #4b3552;
+  --display: "Silkscreen", ui-monospace, monospace;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 }
 *, *::before, *::after { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; height: 100%; }
+html { -webkit-text-size-adjust: 100%; height: 100%; background: #1c1220; }
 body {
-  margin: 0; min-height: 100%; color: var(--sugar); font: 400 16px/1.5 var(--sans);
-  background: radial-gradient(60% 70% at 50% 18%, rgba(229,32,233,.30) 0%, rgba(229,32,233,0) 60%), radial-gradient(50% 60% at 90% 100%, rgba(255,101,80,.16) 0%, rgba(255,101,80,0) 60%), #36182D;
+  margin: 0; min-height: 100%; color: var(--text); font: 400 15px/1.45 var(--sans);
+  background: radial-gradient(120% 60% at 50% 0%, #5a1d5e 0%, #2a1230 55%, #1c1220 100%);
   background-repeat: no-repeat;
 }
-button, input, textarea { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--sugar); outline-offset: 2px; }
+button, input, textarea, output { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 [hidden] { display: none !important; }
 
 main { max-width: 34rem; margin: 0 auto; padding: 20px 16px 48px; }
@@ -41,61 +38,66 @@ main { max-width: 34rem; margin: 0 auto; padding: 20px 16px 48px; }
   margin: -20px -16px 0; padding: var(--logo-h) calc(var(--logo-h) * 1.154); }
 .logos img { display: block; height: var(--logo-h); width: auto; }
 @media (min-width: 600px) { .logos { --logo-h: 32px; } }
-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
-.brand { font: 600 13px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
-a { color: var(--sugar); text-underline-offset: 3px; }
-.board-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; font: 500 14px/1 var(--mono); }
-h1 { font: 500 clamp(32px, 9vw, 44px)/1.02 var(--display); letter-spacing: -.02em; margin: 0 0 12px; }
-h2 { font: 500 24px/1.1 var(--display); margin: 0 0 8px; }
-.lede { color: var(--soft); margin: 0 0 24px; }
-.lede b { color: var(--sugar); font-weight: 600; }
+a { color: var(--aqua); text-underline-offset: 3px; }
+h1 { font: 400 26px/1.1 var(--display); color: var(--lime); margin: 0 0 6px; }
+h2 { font: 400 16px/1.2 var(--display); color: var(--aqua); margin: 0; }
+@media (min-width: 600px) { h1 { font-size: 32px; } }
+.lede { color: var(--muted); margin: 0 0 18px; }
 
-.field { margin-bottom: 22px; }
-label { display: block; font-weight: 600; margin-bottom: 6px; }
-label .opt { font-weight: 400; color: var(--dim); }
+.field { margin-bottom: 18px; }
+label, .label { display: block; font-weight: 600; margin-bottom: 6px; }
 input[type="text"], input[type="email"], textarea {
-  display: block; width: 100%; min-height: 50px; padding: 12px 14px; font-size: 16px;
-  background: var(--field); border: 1px solid var(--field-line); border-radius: 12px;
+  display: block; width: 100%; min-height: 46px; padding: 0 12px; font-size: 16px;
+  background: var(--field); border: 1px solid var(--field-line); border-radius: 8px;
 }
-input[type="text"], input[type="email"] { font-family: var(--mono); }
-::placeholder { color: var(--faint); opacity: 1; }
-textarea { min-height: 180px; resize: vertical; line-height: 1.45; }
+#name { font-family: var(--mono); }
+textarea { padding: 10px 12px; line-height: 1.45; resize: vertical; }
+::placeholder { color: var(--dim); opacity: 1; }
 input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--error); }
-.hint { font-size: 14px; color: var(--dim); margin: 6px 0 0; }
-.hint.ok { color: var(--aqua); }
-.hint.bad, .error { color: var(--error); }
-.error { font-size: 14px; margin: 6px 0 0; }
-.counter { font: 500 13px/1 var(--mono); color: var(--dim); }
-.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.hint { font-size: 13px; color: var(--dim); margin: 6px 0 0; }
+.hint.saved { color: var(--lime); }
+.error { font-size: 14px; color: var(--error); margin: 6px 0 0; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.row label { margin-bottom: 0; }
 
-.examples { display: grid; gap: 8px; margin: 10px 0 0; }
-.examples p { margin: 0; font-size: 14px; color: var(--dim); }
-.example {
-  text-align: left; min-height: 48px; padding: 10px 14px; border-radius: 12px; cursor: pointer;
-  background: rgba(251,255,234,.05); border: 1px solid var(--line);
+.builder { display: flex; flex-direction: column; gap: 14px; margin-bottom: 18px; }
+.builder .row { align-items: baseline; }
+.aside { font-size: 12px; color: var(--dim); }
+.control output { font-family: var(--mono); color: var(--lime); }
+input[type="range"] { display: block; width: 100%; height: 44px; margin: 0; accent-color: var(--lime); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer; font: 600 14px var(--sans);
+  background: transparent; color: var(--text); border: 1px solid var(--field-line);
 }
-.example b { display: block; font-weight: 600; }
-.example span { display: block; font-size: 13px; color: var(--dim); }
-.example:active { transform: scale(.99); }
+.chip[aria-pressed="true"] { background: var(--lime); color: var(--ink); border-color: var(--lime); }
+.link-button {
+  background: none; border: 0; padding: 0; min-height: 44px; cursor: pointer;
+  color: var(--aqua); font: 600 13px var(--sans); text-decoration: underline;
+}
+.example-box { margin-top: 8px; padding: 10px 12px; border-radius: 8px; border: 1px dashed var(--field-line); font-size: 13px; color: var(--muted); }
+.example-box b { color: var(--text); }
 
 .primary {
-  display: block; width: 100%; min-height: 54px; border: 0; border-radius: 999px; cursor: pointer;
-  background: var(--lithium); color: var(--blackbean); font-weight: 700; font-size: 17px;
+  display: block; width: 100%; min-height: 52px; border: 0; border-radius: 10px; cursor: pointer;
+  background: var(--lime); color: var(--ink); font: 400 18px var(--display);
 }
 .primary:disabled { opacity: .55; cursor: progress; }
 .secondary {
   display: block; width: 100%; min-height: 50px; border-radius: 999px; cursor: pointer;
-  background: transparent; border: 1px solid var(--line); font-weight: 600;
+  background: transparent; border: 1px solid var(--field-line); font-weight: 600;
 }
-.form-error { margin: 0 0 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,101,80,.5); background: rgba(255,101,80,.08); }
+.form-error { margin: 0 0 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,140,118,.5); background: rgba(255,140,118,.08); }
 
-.card { border: 1px solid var(--line); border-radius: 16px; padding: 18px 16px; background: rgba(6,19,20,.55); margin-bottom: 16px; }
+.card { border: 1px solid var(--card-line); border-radius: 12px; padding: 16px; background: var(--card); margin-bottom: 16px; }
 .card .who { font: 500 14px/1.3 var(--mono); color: var(--dim); margin: 0 0 10px; word-break: break-word; }
-.state { font: 500 22px/1.25 var(--display); margin: 0; }
-.detail { margin: 10px 0 0; color: var(--soft); word-break: break-word; }
+.renamed { font-size: 13px; color: var(--aqua); margin: 0 0 10px; word-break: break-word; }
+.renamed b { font-family: var(--mono); }
+.state { font: 400 20px/1.25 var(--display); margin: 0; }
+.detail { margin: 10px 0 0; color: var(--muted); word-break: break-word; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin: 14px 0 0; }
-.stat { border-radius: 12px; padding: 10px 12px; background: rgba(251,255,234,.05); }
-.stat dt { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.stat { border-radius: 12px; padding: 10px 12px; background: rgba(239,230,242,.05); }
+.stat dt { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
 .stat dd { margin: 6px 0 0; font: 600 22px/1 var(--mono); font-variant-numeric: tabular-nums; }
 .up { color: var(--aqua); } .down { color: var(--error); }
 .reconnecting { font: 500 13px/1 var(--mono); color: var(--error); margin: 12px 0 0; }
@@ -109,65 +111,68 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
   <div class="logos">
     <img src="/static/brand/pydantic-name-dark.svg" alt="Pydantic" width="605" height="120" decoding="async">
   </div>
-  <header>
-    <span class="brand">Bazaar</span>
-    <a class="board-link" href="/">View the board</a>
-  </header>
 
   <section id="form-view" aria-labelledby="form-title">
     <h1 id="form-title">Enter your trading agent</h1>
-    <p class="lede">Your agent can trade any <b>S&amp;P 500 stock</b>, using prices, news and filings, over <span id="window">10 recent trading days</span>, starting with <b>$10,000</b>.</p>
+    <p class="lede">Trade any S&amp;P 500 stock for 10 days, starting with $10,000. Two fields, then pick a style.</p>
 
     <form id="submit-form" method="post" novalidate>
       <p id="form-error" class="form-error" role="alert" hidden></p>
 
       <div class="field">
         <label for="name">Strategy name</label>
-        <input id="name" name="name" type="text" inputmode="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" required aria-describedby="name-hint name-error">
-        <p id="name-hint" class="hint">3 to 40 characters: lowercase letters, numbers and hyphens.</p>
+        <input id="name" name="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" required placeholder="e.g. tech-momentum" aria-describedby="name-hint name-error">
+        <p id="name-hint" class="hint">Lowercase is automatic. Spaces become hyphens.</p>
         <p id="name-error" class="error" hidden></p>
       </div>
 
       <div class="field">
-        <label for="handle">Your handle <span class="opt">(optional)</span></label>
-        <input id="handle" name="handle" type="text" autocomplete="nickname" autocapitalize="none" spellcheck="false" maxlength="64" aria-describedby="handle-error">
-        <p id="handle-error" class="error" hidden></p>
-      </div>
-
-      <div class="field">
-        <label for="email">Email</label>
-        <input id="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required aria-describedby="contact-purpose email-error">
+        <label for="email">Work email</label>
+        <input id="email" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required placeholder="you@company.com" aria-describedby="email-saved email-error email-purpose">
+        <p id="email-saved" class="hint saved" aria-live="polite" hidden>Saved. You're on the list even if you don't submit.</p>
         <p id="email-error" class="error" hidden></p>
+        <p id="email-purpose" class="hint">We save your email as soon as you leave this field, and use it only to contact winners.</p>
       </div>
 
-      <div class="field">
-        <label for="company">Company</label>
-        <input id="company" type="text" autocomplete="organization" maxlength="100" required aria-describedby="contact-purpose company-error">
-        <p id="company-error" class="error" hidden></p>
-      </div>
-
-      <div class="field">
-        <label for="role">Role</label>
-        <input id="role" type="text" autocomplete="organization-title" maxlength="100" required aria-describedby="contact-purpose role-error">
-        <p id="role-error" class="error" hidden></p>
-        <p id="contact-purpose" class="hint">We'll use your email only to contact you if your strategy wins. Your company and role are used the same way and are never shown publicly.</p>
+      <div class="card builder" role="group" aria-labelledby="builder-title">
+        <div class="row">
+          <h2 id="builder-title">Build your strategy</h2>
+          <span class="aside">no typing needed</span>
+        </div>
+        <div class="control">
+          <div class="row"><label for="aggr">Aggressiveness</label><output id="aggr-value" for="aggr"></output></div>
+          <input id="aggr" type="range" min="1" max="5" step="1" value="3">
+        </div>
+        <div class="control">
+          <div class="row"><label for="hold">Hold positions for</label><output id="hold-value" for="hold"></output></div>
+          <input id="hold" type="range" min="1" max="10" step="1" value="3">
+        </div>
+        <div class="control">
+          <div class="row"><label for="stop">Stop-loss</label><output id="stop-value" for="stop"></output></div>
+          <input id="stop" type="range" min="0" max="10" step="1" value="4">
+        </div>
+        <div class="control">
+          <span id="signals-label" class="label">Signal</span>
+          <div id="signals" class="chips" role="group" aria-labelledby="signals-label"></div>
+        </div>
+        <div class="control">
+          <span id="sectors-label" class="label">Sectors</span>
+          <div id="sectors" class="chips" role="group" aria-labelledby="sectors-label"></div>
+        </div>
       </div>
 
       <div class="field">
         <div class="row">
-          <label for="instructions">Strategy</label>
-          <span id="counter" class="counter" aria-live="polite">0 / 4000</span>
+          <label for="instructions">Your strategy</label>
+          <button id="use-example" class="link-button" type="button">Use the example</button>
         </div>
-        <textarea id="instructions" name="instructions" maxlength="4000" required aria-describedby="instructions-hint instructions-error" placeholder="Tell your agent how to trade, in plain English."></textarea>
-        <p id="instructions-hint" class="hint">20 to 4000 characters.</p>
+        <textarea id="instructions" name="instructions" rows="7" maxlength="4000" required aria-describedby="instructions-hint instructions-error"></textarea>
+        <p id="instructions-hint" class="hint">Written from your choices above. Edit freely; moving a slider rewrites it.</p>
         <p id="instructions-error" class="error" hidden></p>
-        <div class="examples">
-          <p>Or start from an example:</p>
-          <div id="examples" class="examples"></div>
-        </div>
+        <div class="example-box"><b>Example of a decent strategy:</b> Each morning, buy about $2,000 of the tech stock with the strongest 5-day gain, if it is beating SPY. Sell anything that falls 4% below what you paid. One order a day.</div>
       </div>
 
-      <button id="submit" class="primary" type="submit">Submit strategy</button>
+      <button id="submit" class="primary" type="submit">Insert policy</button>
     </form>
   </section>
 
@@ -175,6 +180,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     <h1 id="status-title">Your agent</h1>
     <div class="card">
       <p id="status-name" class="who"></p>
+      <p id="status-renamed" class="renamed" hidden></p>
       <div id="status" aria-live="polite">
         <p id="status-state" class="state">Checking status</p>
         <p id="status-detail" class="detail" hidden></p>
@@ -194,51 +200,102 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 "use strict";
 (function () {
   var SLUG = /^[a-z0-9-]{3,40}$/;
+  var NAME_MESSAGE = "Use 3 to 40 letters, digits or hyphens";
   var MIN_CHARS = 20;
   var MAX_CHARS = 4000;
   var DAYS = 10;
   var STORAGE_KEY = "bazaar.submission";
-  var EXAMPLES = [
-    {
-      title: "Sector momentum",
-      text: "Each morning, screen the Information Technology sector for the three biggest 5-day " +
-        "gainers and hold them in equal amounts. Sell any that drop out of the top three."
+
+  // names:start
+  // The server normalises names the same way. While typing, edge hyphens stay, so "a " can
+  // still become "a-b"; they are stripped when the field is left and before sending.
+  function nameAsTyped(value) {
+    return String(value).toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-");
+  }
+  function nameFinal(value) {
+    return nameAsTyped(value).replace(/^-+|-+$/g, "");
+  }
+  // names:end
+
+  // emailOk:start
+  function emailOk(value) {
+    return typeof value === "string" && value.length <= 254 &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+  // emailOk:end
+
+  // builder:start
+  var EXAMPLE = "Each morning, buy about $2,000 of the tech stock with the strongest 5-day gain, " +
+    "if it is beating SPY. Sell anything that falls 4% below what you paid. One order a day.";
+  var AGGRESSIVENESS = ["Very cautious", "Cautious", "Balanced", "Bold", "All in"];
+  var SIGNALS = [["momentum", "Momentum"], ["dip", "Buy the dip"], ["news", "News"]];
+  var SECTORS = ["Tech", "Energy", "Healthcare", "Financials", "Consumer", "Industrials"];
+  // The chips keep short labels; the strategy names the GICS sectors the agent screens by.
+  var SECTOR_WHERE = {
+    Tech: "Information Technology",
+    Energy: "Energy",
+    Healthcare: "Health Care",
+    Financials: "Financials",
+    Consumer: "Consumer Discretionary or Consumer Staples",
+    Industrials: "Industrials"
+  };
+  var DEFAULTS = { aggr: 3, hold: 3, stop: 4, signal: "momentum", sectors: ["Tech"], custom: null };
+
+  function composed(s) {
+    var size = [1000, 1500, 2500, 3500, 5000][s.aggr - 1];
+    var cash = [60, 40, 25, 10, 0][s.aggr - 1];
+    var sig = {
+      momentum: "the strongest 5-day gain",
+      dip: "the biggest one-day drop (buy the dip)",
+      news: "the most positive news that day"
+    }[s.signal];
+    var where = s.sectors.length
+      ? s.sectors.map(function (label) { return SECTOR_WHERE[label]; }).join(", ") + " stocks"
+      : "any S&P 500 stock";
+    var stop = s.stop ? " Sell a position if it falls " + s.stop + "% below what you paid." : "";
+    var cashLine = cash ? " Keep at least " + cash + "% in cash." : " Stay fully invested.";
+    return "Each morning, look at " + where + " and pick the one with " + sig + ". Buy about $" +
+      size.toLocaleString("en-US") + " of it. Hold each position for about " + s.hold +
+      (s.hold === 1 ? " day" : " days") + ", then sell." + stop + cashLine + " One order a day.";
+  }
+
+  function strategyText(s) {
+    return s.custom !== null ? s.custom : composed(s);
+  }
+
+  // Moving any control rewrites the strategy (custom: null); typing or the example keeps text.
+  var ACTIONS = {
+    set: function (s, a) { var c = { custom: null }; c[a.key] = Number(a.value); return c; },
+    signal: function (s, a) { return { signal: a.id, custom: null }; },
+    sector: function (s, a) {
+      var on = s.sectors.indexOf(a.label) !== -1;
+      return {
+        sectors: on
+          ? s.sectors.filter(function (label) { return label !== a.label; })
+          : s.sectors.concat([a.label]),
+        custom: null
+      };
     },
-    {
-      title: "Buy the dip",
-      text: "Each day, find the two Consumer Staples stocks that fell most yesterday and buy " +
-        "$1,000 of each. Sell a position once it is up 3%."
-    },
-    {
-      title: "Index plus news",
-      text: "Put $7,000 into SPY on day 1 and hold it. With the rest, buy $1,000 of any S&P 500 " +
-        "stock with clearly good news, and sell it on clearly bad news."
-    }
-  ];
+    text: function (s, a) { return { custom: a.value }; },
+    example: function () { return { custom: EXAMPLE }; }
+  };
+
+  function next(s, action) {
+    return Object.assign({}, s, ACTIONS[action.type](s, action));
+  }
+  // builder:end
 
   function byId(id) { return document.getElementById(id); }
 
   var form = byId("submit-form");
   var nameInput = byId("name");
-  var handleInput = byId("handle");
-  var instructionsInput = byId("instructions");
   var emailInput = byId("email");
-  var companyInput = byId("company");
-  var roleInput = byId("role");
+  var instructionsInput = byId("instructions");
   var submitButton = byId("submit");
   var formError = byId("form-error");
-  var nameHint = byId("name-hint");
-  var counter = byId("counter");
-  var instructionsHint = byId("instructions-hint");
-  var fields = {
-    name: nameInput,
-    handle: handleInput,
-    instructions: instructionsInput,
-    email: emailInput,
-    company: companyInput,
-    role: roleInput
-  };
-  var CONTACT = ["email", "company", "role"];
+  var emailSaved = byId("email-saved");
+  var fields = { name: nameInput, email: emailInput, instructions: instructionsInput };
 
   // Storage can throw (private mode, blocked site data); the page works without it.
   var store = {
@@ -261,26 +318,6 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     node.hidden = !text;
   }
 
-  // ---------- form ----------
-
-  EXAMPLES.forEach(function (example) {
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = "example";
-    var title = document.createElement("b");
-    title.textContent = example.title;
-    var preview = document.createElement("span");
-    preview.textContent = example.text.slice(0, 70) + "…";
-    button.appendChild(title);
-    button.appendChild(preview);
-    button.addEventListener("click", function () {
-      instructionsInput.value = example.text;
-      updateInstructions();
-      instructionsInput.focus();
-    });
-    byId("examples").appendChild(button);
-  });
-
   function setFieldError(field, message) {
     setText(byId(field + "-error"), message);
     fields[field].setAttribute("aria-invalid", message ? "true" : "false");
@@ -291,90 +328,113 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     Object.keys(fields).forEach(function (field) { setFieldError(field, ""); });
   }
 
-  function updateName() {
-    var value = nameInput.value;
-    setFieldError("name", "");
-    if (!value) {
-      nameHint.className = "hint";
-      nameHint.textContent = "3 to 40 characters: lowercase letters, numbers and hyphens.";
-    } else if (SLUG.test(value)) {
-      nameHint.className = "hint ok";
-      nameHint.textContent = "Looks good.";
-    } else {
-      nameHint.className = "hint bad";
-      nameHint.textContent = /[A-Z]/.test(value)
-        ? "Use lowercase letters only."
-        : value.length < 3
-          ? "At least 3 characters."
-          : "Only lowercase letters, numbers and hyphens. No spaces.";
-    }
+  // ---------- strategy builder ----------
+
+  var state = DEFAULTS;
+  var sliders = {
+    aggr: function (v) { return AGGRESSIVENESS[v - 1]; },
+    hold: function (v) { return v + (v === 1 ? " day" : " days"); },
+    stop: function (v) { return v ? v + "%" : "none"; }
+  };
+  var chips = [];
+
+  function addChip(container, label, action, pressed) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip";
+    button.textContent = label;
+    button.addEventListener("click", function () { update(next(state, action)); });
+    byId(container).appendChild(button);
+    chips.push({ button: button, pressed: pressed });
   }
 
-  function updateInstructions() {
-    var length = instructionsInput.value.trim().length;
-    counter.textContent = length + " / " + MAX_CHARS;
-    setFieldError("instructions", "");
-    if (length > 0 && length < MIN_CHARS) {
-      instructionsHint.className = "hint bad";
-      instructionsHint.textContent = (MIN_CHARS - length) + " more characters needed.";
-    } else {
-      instructionsHint.className = "hint";
-      instructionsHint.textContent = "20 to 4000 characters.";
-    }
-  }
-
-  nameInput.addEventListener("input", updateName);
-  instructionsInput.addEventListener("input", updateInstructions);
-
-  // contactErrors:start
-  // Plain messages for the contact fields, after trimming; "" means the value is fine.
-  function contactErrors(values) {
-    var EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    function trimmed(value) { return typeof value === "string" ? value.trim() : ""; }
-    function text(value, what) {
-      if (!value) { return "Enter your " + what + "."; }
-      return value.length > 100 ? "Use at most 100 characters." : "";
-    }
-    var email = trimmed(values && values.email);
-    var emailError = "";
-    if (!email) {
-      emailError = "Enter your email address.";
-    } else if (email.length > 254) {
-      emailError = "Use at most 254 characters.";
-    } else if (!EMAIL.test(email)) {
-      emailError = "Enter a valid email address, like name@example.com.";
-    }
-    return {
-      email: emailError,
-      company: text(trimmed(values && values.company), "company"),
-      role: text(trimmed(values && values.role), "role")
-    };
-  }
-  // contactErrors:end
-
-  function contactValues() {
-    return { email: emailInput.value, company: companyInput.value, role: roleInput.value };
-  }
-
-  // Like the name field: a message after leaving a field, cleared as soon as the value is fine.
-  CONTACT.forEach(function (field) {
-    fields[field].addEventListener("blur", function () {
-      if (fields[field].value) { setFieldError(field, contactErrors(contactValues())[field]); }
-    });
-    fields[field].addEventListener("input", function () {
-      if (!contactErrors(contactValues())[field]) { setFieldError(field, ""); }
-    });
+  SIGNALS.forEach(function (pair) {
+    addChip("signals", pair[1], { type: "signal", id: pair[0] },
+      function (s) { return s.signal === pair[0]; });
+  });
+  SECTORS.forEach(function (label) {
+    addChip("sectors", label, { type: "sector", label: label },
+      function (s) { return s.sectors.indexOf(label) !== -1; });
   });
 
-  // Contact details live only in these inputs until they are sent; never stored or shown.
-  function clearContact() {
-    CONTACT.forEach(function (field) { fields[field].value = ""; });
+  function update(s) {
+    state = s;
+    Object.keys(sliders).forEach(function (key) {
+      var text = sliders[key](s[key]);
+      byId(key).value = String(s[key]);
+      byId(key).setAttribute("aria-valuetext", text);
+      byId(key + "-value").textContent = text;
+    });
+    chips.forEach(function (chip) {
+      chip.button.setAttribute("aria-pressed", String(chip.pressed(s)));
+    });
+    var text = strategyText(s);
+    if (instructionsInput.value !== text) { instructionsInput.value = text; }
+    setFieldError("instructions", "");
   }
+
+  Object.keys(sliders).forEach(function (key) {
+    byId(key).addEventListener("input", function (event) {
+      update(next(state, { type: "set", key: key, value: event.target.value }));
+    });
+  });
+  instructionsInput.addEventListener("input", function () {
+    state = next(state, { type: "text", value: instructionsInput.value });
+    setFieldError("instructions", "");
+  });
+  byId("use-example").addEventListener("click", function () {
+    update(next(state, { type: "example" }));
+  });
+
+  // ---------- name and email ----------
+
+  nameInput.addEventListener("input", function () {
+    var raw = nameInput.value;
+    var value = nameAsTyped(raw);
+    if (value !== raw) {
+      var caret = nameInput.selectionStart === null ? raw.length : nameInput.selectionStart;
+      var at = nameAsTyped(raw.slice(0, caret)).length;
+      nameInput.value = value;
+      nameInput.setSelectionRange(at, at);
+    }
+    setFieldError("name", "");
+  });
+  nameInput.addEventListener("blur", function () {
+    nameInput.value = nameFinal(nameInput.value);
+  });
+
+  // The address is saved when the field is left, so it counts even without a submission. A
+  // failure stays silent and never blocks the form.
+  var lastLead = null;
+  emailInput.addEventListener("input", function () {
+    emailSaved.hidden = true;
+    setFieldError("email", "");
+  });
+  emailInput.addEventListener("blur", function () {
+    var email = emailInput.value.trim();
+    if (!emailOk(email) || email === lastLead) { return; }
+    lastLead = email;
+    fetch("/api/leads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email })
+    }).then(function (response) {
+      if (response.status !== 204) { lastLead = null; return; }
+      if (emailInput.value.trim() === email) { emailSaved.hidden = false; }
+    }).catch(function () { lastLead = null; });
+  });
+
+  // ---------- submit ----------
 
   function validate() {
     var ok = true;
+    nameInput.value = nameFinal(nameInput.value);
     if (!SLUG.test(nameInput.value)) {
-      setFieldError("name", "Choose a name of 3 to 40 lowercase letters, numbers or hyphens.");
+      setFieldError("name", NAME_MESSAGE);
+      ok = false;
+    }
+    if (!emailOk(emailInput.value.trim())) {
+      setFieldError("email", "Enter a valid work email, like you@company.com.");
       ok = false;
     }
     var length = instructionsInput.value.trim().length;
@@ -382,18 +442,11 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
       setFieldError("instructions", "Describe your strategy in 20 to 4000 characters.");
       ok = false;
     }
-    var errors = contactErrors(contactValues());
-    CONTACT.forEach(function (field) {
-      if (errors[field]) {
-        setFieldError(field, errors[field]);
-        ok = false;
-      }
-    });
     return ok;
   }
 
   // An error `detail` is a plain string or FastAPI's list of {loc, msg}. Only msg is shown:
-  // FastAPI also echoes the submitted `input`, which can hold contact details.
+  // FastAPI also echoes the submitted `input`, which can hold the email.
   function showDetail(detail, fallback) {
     if (typeof detail === "string" && detail.trim()) {
       setText(formError, detail);
@@ -429,14 +482,10 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     event.preventDefault();
     clearErrors();
     if (!validate()) { return; }
-    var handle = handleInput.value.trim();
     var payload = {
       name: nameInput.value,
-      handle: handle ? handle : null,
-      instructions: instructionsInput.value.trim(),
       email: emailInput.value.trim(),
-      company: companyInput.value.trim(),
-      role: roleInput.value.trim()
+      instructions: instructionsInput.value.trim()
     };
     submitButton.disabled = true;
     submitButton.textContent = "Sending";
@@ -447,10 +496,12 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     }).then(function (response) {
       return response.json().catch(function () { return null; }).then(function (body) {
         if (response.ok && body && typeof body.id === "string") {
-          var saved = { id: body.id, name: payload.name, position: body.position };
+          // The server may rename a taken name; the final name is the one that plays.
+          var name = typeof body.name === "string" && body.name ? body.name : payload.name;
+          var saved = { id: body.id, name: name, position: body.position };
           store.set(saved);
-          clearContact();
-          showStatus(saved);
+          emailInput.value = "";
+          showStatus(saved, body.renamed === true);
           return;
         }
         // Never show the raw body: only a JSON `detail`, else a generic message with the code.
@@ -463,7 +514,7 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
       setText(formError, "Could not reach the server. Check your connection and try again.");
     }).then(function () {
       submitButton.disabled = false;
-      submitButton.textContent = "Submit strategy";
+      submitButton.textContent = "Insert policy";
     });
   });
 
@@ -482,32 +533,6 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     if (typeof value === "string" && value.trim() !== "") { value = Number(value); }
     return typeof value === "number" && isFinite(value) ? value : null;
   }
-
-  // windowText:start
-  // "10 trading days, Sep 28 to Oct 9 2026" from the board's window, or null if it is not valid.
-  // Dates are split, not parsed with new Date(), which would shift them by the viewer's timezone.
-  function windowText(win) {
-    var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    function parse(iso) {
-      if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) { return null; }
-      var parts = iso.split("-").map(Number);
-      var year = parts[0], month = parts[1], day = parts[2];
-      var leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-      var lengths = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-      if (month < 1 || month > 12 || day < 1 || day > lengths[month - 1]) { return null; }
-      return { iso: iso, year: year, label: MONTHS[month - 1] + " " + day };
-    }
-    if (!win || typeof win !== "object") { return null; }
-    var start = parse(win.start);
-    var end = parse(win.end);
-    if (!start || !end || end.iso < start.iso) { return null; }
-    var days = Number.isInteger(win.days) && win.days > 0 ? win.days : 10;
-    var range = start.year === end.year
-      ? start.label + " to " + end.label + " " + end.year
-      : start.label + " " + start.year + " to " + end.label + " " + end.year;
-    return days + (days === 1 ? " trading day, " : " trading days, ") + range;
-  }
-  // windowText:end
 
   // safeLogfireUrl:start
   // Only an absolute https URL on pydantic.dev (Logfire's hosts) may become a link.
@@ -544,6 +569,18 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     logfireLink.hidden = false;
   }
 
+  function showRenamed(name) {
+    var note = byId("status-renamed");
+    note.textContent = "";
+    note.hidden = !name;
+    if (!name) { return; }
+    var shown = document.createElement("b");
+    shown.textContent = name;
+    note.appendChild(document.createTextNode("That name is taken, so you'll play as "));
+    note.appendChild(shown);
+    note.appendChild(document.createTextNode(". No need to change it."));
+  }
+
   function percent(value) {
     var number = toNumber(value);
     if (number === null) { return null; }
@@ -570,8 +607,8 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     statusStats.appendChild(wrap);
   }
 
-  function render(state, detail) {
-    statusState.textContent = state;
+  function render(status, detail) {
+    statusState.textContent = status;
     setText(statusDetail, detail || "");
     statusStats.textContent = "";
     statusStats.hidden = true;
@@ -645,12 +682,13 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     return typeof position === "number" ? "Queued, number " + position + " in line" : "Queued";
   }
 
-  function showStatus(saved) {
+  function showStatus(saved, renamed) {
     current = saved;
     failures = 0;
     byId("form-view").hidden = true;
     byId("status-view").hidden = false;
     byId("status-name").textContent = saved.name || "";
+    showRenamed(renamed ? saved.name : null);
     reconnecting.hidden = true;
     showLogfire(null);
     // The POST position stands in until the first poll returns the live one.
@@ -663,25 +701,18 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     current = null;
     store.clear();
     form.reset();
-    clearContact();
+    lastLead = null;
+    emailSaved.hidden = true;
     clearErrors();
-    updateName();
-    updateInstructions();
+    update(DEFAULTS);
     byId("status-view").hidden = true;
     byId("form-view").hidden = false;
     nameInput.focus();
   });
 
-  // The trading window comes from the board, once; the static text stays if anything is off.
-  fetch("/api/board", { cache: "no-store" }).then(function (response) {
-    return response.ok ? response.json() : null;
-  }).then(function (board) {
-    var text = windowText(board && board.window);
-    if (text) { byId("window").textContent = text; }
-  }).catch(function () { /* keep the static window text */ });
-
+  update(DEFAULTS);
   var saved = store.get();
-  if (saved) { showStatus(saved); }
+  if (saved) { showStatus(saved, false); }
 })();
 </script>
 </body>
