@@ -11,7 +11,7 @@ from uuid import UUID
 
 import logfire
 from bazaar_protocol import AccountSnapshot, NonNegativeAmount, Version, WireModel
-from bazaar_protocol.telemetry import redacted_exceptions
+from bazaar_protocol.telemetry import redacted_exceptions, strategy_label
 from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 from bazaar_runner.clock import build_schedule, schedule_digest
@@ -165,8 +165,12 @@ async def record_run(
     role = {"bazaar.trading_role_source": source} if source else {}
     with (
         logfire.set_baggage(**attributes),
+        # Span names are fixed (dashboards match them); the message leads with the strategy name,
+        # an attribute value, never template text.
         logfire.span(
-            "runner.run",
+            "{strategy} · run",
+            _span_name="runner.run",
+            strategy=attributes["bazaar.strategy_name"],
             experiment_id=str(spec.experiment_id),
             policy_ref=policy_ref,
             **attributes,
@@ -232,7 +236,12 @@ def scored(record: RunRecord, evaluation: BaseModel) -> dict[str, float | int]:
 def _evaluate(evaluate: Evaluate, record: RunRecord) -> BaseModel | None:
     # Inside runner.run, so evals' own spans join the run's trace.
     try:
-        with logfire.span("runner.evaluate"), redacted_exceptions():
+        with (
+            logfire.span(
+                "{strategy} · evaluate", _span_name="runner.evaluate", strategy=strategy_label()
+            ),
+            redacted_exceptions(),
+        ):
             return evaluate(record.model_dump(mode="json"))
     except Exception:
         logger.exception("evaluation failed for experiment %s", record.manifest.experiment_id)

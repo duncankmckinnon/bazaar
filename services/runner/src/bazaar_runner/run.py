@@ -21,10 +21,17 @@ from bazaar_protocol import (
     Version,
     WireModel,
 )
-from bazaar_protocol.telemetry import redact, redacted_exceptions
+from bazaar_protocol.telemetry import redact, redacted_exceptions, strategy_label
 from pydantic import AwareDatetime, Field
 
-from bazaar_runner.clock import ClockScript, EventKind, RunManifest, build_schedule, utc_z
+from bazaar_runner.clock import (
+    ClockScript,
+    EventKind,
+    RunManifest,
+    build_schedule,
+    trading_day,
+    utc_z,
+)
 from bazaar_runner.market import (
     ApprovalDenied,
     FutureData,
@@ -241,7 +248,9 @@ async def submit_order(
 ) -> None:
     with (
         logfire.span(
-            "runner.order",
+            "{strategy} · order {side} {quantity} {symbol}",
+            _span_name="runner.order",
+            strategy=strategy_label(),
             symbol=order.symbol,
             side=order.side.value,
             quantity=str(order.quantity),
@@ -319,15 +328,31 @@ async def run_strategy(
         for event in schedule:
             ctx = event.context(manifest)
             at = {"event_sequence": event.event_sequence, "simulated_at": event.simulated_at}
+            # For the live view's messages: the trading session's number (from 1), else the date.
+            session = trading_day(spec.script.sessions, event.simulated_at)
+            label = {
+                "strategy": strategy_label(),
+                "day": session[0] if session else event.simulated_at.date().isoformat(),
+            }
             step = _at(event.kind.value, event.event_sequence, event.simulated_at)
             if event.kind is EventKind.MARK:
-                with logfire.span("runner.mark", **at) as span, redacted_exceptions():
+                with (
+                    logfire.span(
+                        "{strategy} · day {day} · mark", _span_name="runner.mark", **label, **at
+                    ) as span,
+                    redacted_exceptions(),
+                ):
                     await set_cutoff(event.simulated_at)
                     snapshot = await market.portfolio(ctx)
                     span.set_attribute("portfolio_value", str(snapshot.portfolio_value))
                 marks.append(MarkRecord(event_sequence=event.event_sequence, snapshot=snapshot))
                 continue
-            with logfire.span("runner.decision", **at) as span, redacted_exceptions():
+            with (
+                logfire.span(
+                    "{strategy} · day {day} · decide", _span_name="runner.decision", **label, **at
+                ) as span,
+                redacted_exceptions(),
+            ):
                 await set_cutoff(event.simulated_at)
                 account = await market.account(ctx)
                 settled = len(orders)
