@@ -308,6 +308,22 @@ def test_house_rows_get_a_dim_ai_tag_by_text_only():
     assert ".ar-row .nm .ai {" in BOARD and "color: var(--muted)" in BOARD
 
 
+def test_the_board_page_has_the_in_sample_footnote(settings, helpers):
+    from bazaar_web.app import create_app
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app(settings, helpers.FakeRunner())) as client:
+        page = client.get("/").text
+
+    assert (
+        '<p class="ar-note"><span class="ai">AI</span> / <span class="ai">Gn</span> = house '
+        "strategies bred from this window's results (in-sample)</p>"
+    ) in page
+    # Static markup under the table, never built by the script.
+    assert "ar-note" not in page.split("<script>", 1)[1]
+    assert page.index('id="list"') < page.index('class="ar-note"')
+
+
 def test_the_header_names_the_universe_from_the_board_data():
     script = BOARD.split("<script>", 1)[1]
     assert 'const universe = typeof w.universe === "string" ? w.universe : "";' in script

@@ -57,6 +57,9 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
 .ar-row .nm a { color: inherit; text-decoration: none; cursor: pointer; }
 /* House (AI-generated) strategies carry a dim tag; attendee rows have none. */
 .ar-row .nm .ai { font: 400 calc(var(--u)*.55)/1 var(--pixel); color: var(--muted); border: 1px solid currentColor; border-radius: 2px; padding: .2em .35em; margin-right: .6em; vertical-align: .15em; opacity: .8; }
+/* The footnote under the table: static, and legible at phone width (never below 11px). */
+.ar-note { flex: none; margin: calc(var(--u)*.6) 0 0; padding: 0 calc(var(--u)*.6); font: 400 max(calc(var(--u)*.72), 11px)/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.ar-note .ai { font: 400 .85em/1 var(--pixel); border: 1px solid currentColor; border-radius: 2px; padding: .2em .35em; opacity: .8; }
 .ar-row .rt { text-align: right; font-size: calc(var(--u)*.8); white-space: nowrap; }
 .ar-row.st-running, .ar-row.st-queued { --c: #d9c4d3; }
 .ar-row.st-running .rt { color: var(--pyai-cyan); animation: blink 1s steps(1) infinite; }
@@ -151,6 +154,7 @@ body { margin: 0; background: var(--darkpurple); font-family: var(--sans); }
     <h2 class="ar-title">HIGH SCORES</h2>
     <div class="ar-cols"><span>RANK</span><span>SCORE</span><span>POLICY</span><span>RETURN</span></div>
     <ol class="ar-list" id="list"><li class="empty" id="connecting">CONNECTING...</li></ol>
+    <p class="ar-note"><span class="ai">AI</span> / <span class="ai">Gn</span> = house strategies bred from this window's results (in-sample)</p>
   </section>
   <section class="chart" aria-label="Portfolio value by trading day">
     <h2>PORTFOLIO VALUE BY TRADING DAY</h2>
