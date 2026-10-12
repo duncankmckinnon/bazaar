@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 from typing import ClassVar
 
+import logfire
 import pytest
 from bazaar_agent import strategist, strategist_eval
 from bazaar_agent.strategist import (
@@ -36,7 +37,6 @@ from bazaar_agent.strategist_eval import (
 )
 from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
-from pydantic_ai.models.instrumented import InstrumentationSettings, InstrumentedModel
 from pydantic_evals.evaluators import EvaluatorContext
 
 
@@ -223,8 +223,8 @@ def judge_returning(score=0.8, prompts=None):
         grade = {"reason": "Keeps the top's momentum trait.", "pass": True, "score": score}
         return ModelResponse([ToolCallPart(info.output_tools[0].name, grade)])
 
-    # Instrumented like a real judge, so its chat spans are exported and checked too.
-    return InstrumentedModel(FunctionModel(respond), InstrumentationSettings(include_content=True))
+    # LearnsFromTop instruments it as it would a real judge (build_judge).
+    return FunctionModel(respond)
 
 
 def test_an_experiment_never_looks_like_a_run_or_a_proposal(with_model, capfire):
@@ -448,3 +448,51 @@ def test_a_judge_failure_is_recorded_and_the_experiment_goes_on(with_model):
     assert "sk-secret" not in failure.error_message + failure.error_stacktrace
     # Every other score was still computed.
     assert case.scores["TopParentShare"].value == 1.0 and "LearnsFromTop" not in case.scores
+
+
+async def test_the_judge_has_room_to_answer_and_is_instrumented(monkeypatch, capfire):
+    """Real run 2026-10-12: at max_tokens 600 the judge was cut off on every case, and its calls
+    had no chat span (no cost)."""
+    from bazaar_agent.redaction import RedactingModel
+    from pydantic_ai.models.instrumented import InstrumentedModel
+
+    seen = []
+
+    async def respond(messages, info):
+        seen.append(info.model_settings)
+        grade = {"reason": "ok", "pass": True, "score": 0.5}
+        return ModelResponse([ToolCallPart(info.output_tools[0].name, grade)])
+
+    assert strategist_eval.JUDGE_SETTINGS["max_tokens"] >= 4000
+    built = strategist_eval.build_judge(FunctionModel(respond))
+    assert isinstance(built, InstrumentedModel) and isinstance(built.wrapped, RedactingModel)
+    assert built.instrumentation_settings is strategist.STRATEGIST_INSTRUMENTATION
+    # A name is built on the strategist's own path.
+    names = []
+    monkeypatch.setattr(strategist, "build_model", lambda name=None: names.append(name) or built)
+    assert strategist_eval.build_judge("gateway/anthropic:claude-sonnet-5") is built
+    assert names == ["gateway/anthropic:claude-sonnet-5"]
+
+    accepted = [proposal("g1-a", "Buy AAPL on up days with 25% of cash.")]
+    ctx = EvaluatorContext(
+        name="case",
+        inputs=CASE,
+        metadata=META,
+        expected_output=None,
+        output=StrategistOutput(drafts=[], proposals=accepted, k=1),
+        duration=0.0,
+        _span_tree=None,
+        attributes={},
+        metrics={},
+    )
+    with logfire.span("evaluator LearnsFromTop"):
+        assert (await LearnsFromTop(model=FunctionModel(respond)).evaluate(ctx)).value == 0.5
+    assert seen and all(s["max_tokens"] >= 4000 for s in seen)
+    spans = capfire.exporter.exported_spans_as_dict()
+    (evaluator,) = [s for s in spans if s["name"] == "evaluator LearnsFromTop"]
+    (chat,) = [s for s in spans if s["name"].startswith("chat ")]
+    # The judge's model call is a chat span inside the evaluator's trace.
+    assert chat["context"]["trace_id"] == evaluator["context"]["trace_id"]
+    assert (
+        evaluator["start_time"] <= chat["start_time"] <= chat["end_time"] <= evaluator["end_time"]
+    )
