@@ -117,7 +117,11 @@ def test_the_top_3_lines_are_the_podium_colours_and_the_rest_one_plum_grey():
         "const color = baseline ? BASELINE_COLORS[base++ % BASELINE_COLORS.length] : podium ? COLORS[place - 1] : DIM;"
         in script
     )
-    assert "const place = baseline || running ? null : ++rank;" in script  # running lines are grey
+    # running lines are grey; places come from the table rank (test_board_page has the cases)
+    assert (
+        "const place = baseline || running || !Number.isInteger(tabPlace(r)) ? null : tabPlace(r);"
+        in script
+    )
     assert ".plot .series.dim polyline { stroke-width: 2; opacity: .6; }" in BOARD
 
 
