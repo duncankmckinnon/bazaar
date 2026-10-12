@@ -20,7 +20,10 @@ STATUS_ORDER = {"scored": 0, "running": 1, "queued": 2, "failed": 3}
 # /api/board sends the top TOP_ROWS scored rows (plus every running, queued and baseline row);
 # ranks are always over every row. Histories go only to what the chart draws.
 TOP_ROWS = 100
-CHART_TOP = 10
+# The chart draws CHART_LINES distinct lines: scored rows whose day-by-day values all agree
+# within CLOSE_DOLLARS share one line, drawn once for the best of them and labelled "+N".
+CHART_LINES = 10
+CLOSE_DOLLARS = 1.0
 
 
 def percent(fraction: Decimal | None) -> float | None:
@@ -241,10 +244,49 @@ def board_rows(
     return rows, starting_cash
 
 
+def same_path(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> bool:
+    """The same days, and every day's value within CLOSE_DOLLARS (values are in cents)."""
+    return len(a) == len(b) and all(
+        p["day"] == q["day"] and round(abs(p["value"] - q["value"]), 2) <= CLOSE_DOLLARS
+        for p, q in zip(a, b, strict=True)
+    )
+
+
+def chart_lines(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """{representative row id: group size} for the chart's distinct lines.
+
+    Walks the scored, non-baseline rows on the board in rank order. Each joins the first earlier
+    group whose representative's path it matches (same_path), else starts a new group with
+    itself as the representative (its best member). It stops at the first row that would need
+    a group past CHART_LINES, so the last line's "+N" still counts the identical rows right
+    after it. Rows without a history never count as a line. Histories come from BoardSource's per-dir
+    cache, so grouping reads no run dir.
+    """
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    members: dict[str, int] = {}
+    for row in rows:
+        if row["status"] != "scored" or row["kind"] == "baseline" or not row["history"]:
+            continue
+        if row["rank"] is None or row["rank"] > TOP_ROWS:
+            continue
+        for rep_id, path in groups:
+            if same_path(path, row["history"]):
+                members[rep_id] += 1
+                break
+        else:
+            if len(groups) == CHART_LINES:
+                break
+            groups.append((row["id"], row["history"]))
+            members[row["id"]] = 1
+    return members
+
+
 def page_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What the page draws: the top TOP_ROWS scored, every running, queued and baseline row
-    (failed runs are not on the board). History only for the chart: the top CHART_TOP scored,
-    the baselines and the running rows."""
+    (failed runs are not on the board). History only for the chart: each line's representative
+    (chart_lines; it also carries chart_members, its group size), the baselines and the running
+    rows. Group members keep their table rows, without history."""
+    lines = chart_lines(rows)
     shown = []
     for row in rows:
         baseline = row["kind"] == "baseline"
@@ -252,9 +294,15 @@ def page_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not (top or baseline or row["status"] in ("running", "queued")):
             continue
         charted = row["status"] == "running" or (
-            row["status"] == "scored" and (baseline or row["rank"] <= CHART_TOP)
+            row["status"] == "scored" and (baseline or row["id"] in lines)
         )
-        shown.append(row if charted or row["history"] is None else {**row, "history": None})
+        shown.append(
+            {
+                **row,
+                "history": row["history"] if charted else None,
+                "chart_members": lines.get(row["id"]),
+            }
+        )
     return shown
 
 
