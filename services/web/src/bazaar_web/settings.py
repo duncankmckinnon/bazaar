@@ -25,6 +25,7 @@ SECRET_ENV_VARS = (
     "BAZAAR_RUNNER_TOKEN",
     "BAZAAR_ADMIN_TOKEN",
     "LOGFIRE_TOKEN",
+    "BAZAAR_LOGFIRE_BROWSER_TOKEN",  # public by design, but only in /browser-telemetry.js
 )
 MAX_CONCURRENT_RANGE = range(1, 33)
 HOUSE_CONCURRENT_RANGE = range(17)
@@ -79,6 +80,8 @@ class Settings:
     admin_token: str | None = None
     fonts_dir: Path | None = None
     logfire_dashboard_url: str | None = None  # template with "{strategy}"
+    # Logfire's public frontend token for browser telemetry; None turns it off.
+    logfire_browser_token: str | None = None
     market_db: Path | None = None  # read-only, for the ticker bar
     data_bundle: str = DEFAULT_BUNDLE  # the bundle whose window, universe and bars are shown
     max_concurrent: int = 3
@@ -137,6 +140,7 @@ class Settings:
             admin_token=env.get("BAZAAR_ADMIN_TOKEN") or None,
             fonts_dir=Path(env["BAZAAR_FONTS_DIR"]) if env.get("BAZAAR_FONTS_DIR") else None,
             logfire_dashboard_url=env.get("BAZAAR_LOGFIRE_DASHBOARD_URL") or None,
+            logfire_browser_token=(env.get("BAZAAR_LOGFIRE_BROWSER_TOKEN") or "").strip() or None,
             market_db=Path(env["BAZAAR_MARKET_DB"]) if env.get("BAZAAR_MARKET_DB") else None,
             data_bundle=data_bundle(env),
             max_concurrent=parse_max_concurrent(env.get("BAZAAR_MAX_CONCURRENT")),

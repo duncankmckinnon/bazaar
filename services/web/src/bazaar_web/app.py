@@ -23,6 +23,7 @@ from pydantic_core import PydanticCustomError
 
 from bazaar_web import stats, telemetry
 from bazaar_web.board import BoardSource, board_rows, build_board
+from bazaar_web.browser import telemetry_module
 from bazaar_web.bundle import BundleSource
 from bazaar_web.settings import Settings
 from bazaar_web.store import (
@@ -226,6 +227,16 @@ def create_app(
         if fonts is None or not FONT_NAME.fullmatch(name) or not (fonts / name).is_file():
             raise HTTPException(404, "not found")
         return FileResponse(fonts / name, media_type="font/woff2")
+
+    @app.get("/browser-telemetry.js", include_in_schema=False)
+    def browser_telemetry() -> Response:
+        """The page's Logfire setup (bazaar_web.browser); a bare comment when it is off. Never
+        cached: a token change or removal takes effect on the next page load."""
+        return Response(
+            telemetry_module(settings.logfire_browser_token),
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/submit", include_in_schema=False)
     def submit_page() -> Response:
