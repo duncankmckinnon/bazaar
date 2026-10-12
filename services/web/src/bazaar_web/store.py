@@ -710,10 +710,10 @@ class Store:
         return [dict(row) for row in rows]
 
     def pending_strategies(self, limit: int) -> list[dict[str, Any]]:
-        """Up to limit strategies not yet in the Logfire dataset, oldest first: visible human-lane
-        submissions and factory house rows (generation > 0), never catalog-era house rows
-        (handle 'house' without a generation) or operator rows. Only public columns are read:
-        contact details never leave this database this way."""
+        """Up to limit strategies not yet in the Logfire dataset, fewest failed attempts first,
+        then oldest: visible human-lane submissions and factory house rows (generation > 0),
+        never catalog-era house rows (handle 'house' without a generation) or operator rows.
+        Only public columns are read: contact details never leave this database this way."""
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, name, instructions, handle, lane, generation, parents, created_at "
@@ -721,7 +721,8 @@ class Store:
                 "AND lower(COALESCE(email, '')) != ? AND ("
                 "(COALESCE(lane, 'human') = 'human' AND lower(COALESCE(handle, '')) != 'house') "
                 "OR (lane = 'house' AND typeof(generation) = 'integer' AND generation > 0)"
-                ") ORDER BY rowid LIMIT ?",
+                # Rows that failed sink behind fresh ones, so one can't block the queue.
+                ") ORDER BY dataset_attempts, rowid LIMIT ?",
                 (OPERATOR_CONTACT_EMAIL, limit),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -740,12 +741,12 @@ class Store:
                 )
 
     def pending_deletes(self, limit: int) -> list[dict[str, Any]]:
-        """Hidden rows whose case is still in the dataset, oldest first."""
+        """Hidden rows whose case is still in the dataset, fewest failed attempts first."""
         with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT id, dataset_case_id FROM submissions WHERE hidden = 1 "
                 "AND dataset_case_id IS NOT NULL AND dataset_deleted_at IS NULL "
-                "ORDER BY rowid LIMIT ?",
+                "ORDER BY dataset_attempts, rowid LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]

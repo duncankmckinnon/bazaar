@@ -15,7 +15,11 @@ from bazaar_web.dataset import DATASET, DatasetSync, case_for
 from bazaar_web.settings import SECRET_ENV_VARS
 from bazaar_web.store import OPERATOR_CONTACT_EMAIL, Store
 from fastapi.testclient import TestClient
-from logfire.experimental.api_client import CaseNotFoundError, DatasetNotFoundError
+from logfire.experimental.api_client import (
+    CaseNotFoundError,
+    DatasetApiError,
+    DatasetNotFoundError,
+)
 
 KEY = "pylf_v1_us_DATASETKEYSENTINEL0123456789"
 SECRETS = ("contact-sentinel@example.org", "SentinelCo Industries", "Chief Sentinel Officer")
@@ -507,3 +511,102 @@ def test_a_rerun_gets_its_own_case_and_the_old_one_is_deleted(settings, helpers,
     sent = json.dumps(fake.calls, default=str)
     for secret in SECRETS:  # the rerun copies contact details; none of them is ever sent
         assert secret not in sent
+
+
+# ---------- one bad row never blocks the rest (P1c) ----------
+
+
+class Refusing(FakeClient):
+    """Logfire refuses (with status) any add_cases call that carries the case named bad."""
+
+    def __init__(self, bad, status=422, **kwargs):
+        super().__init__(**kwargs)
+        self.bad, self.status = bad, status
+
+    def add_cases(self, dataset_id_or_name, cases, *, on_conflict):
+        if any(c["name"] == self.bad for c in cases):
+            self.record("add_cases", dataset_id_or_name, cases=cases, on_conflict=on_conflict)
+            raise DatasetApiError(self.status, "refused")
+        return super().add_cases(dataset_id_or_name, cases, on_conflict=on_conflict)
+
+
+def rows_named(n, start=0):
+    return [(f"r{i:03d}", f"bot-{i:03d}", None, "human", None, 0, None)
+            for i in range(start, start + n)]  # fmt: skip
+
+
+def test_a_refused_row_is_retried_alone_and_the_rest_sync(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(100))
+    fake = Refusing("strategy-bot-000-r000")  # the oldest: at the head of the first batch
+    sync = DatasetSync(store, factory_for(fake))
+
+    first = sync.round()
+    insert(store.path, rows_named(5, start=100))  # later strategies keep flowing
+    second = sync.round()
+
+    bad = store.get("r000")
+    assert (bad["dataset_synced_at"], bad["dataset_attempts"]) == (None, 2)
+    assert bad["dataset_error_class"] == "DatasetApiError"
+    synced_ids = [r for r in (f"r{i:03d}" for i in range(105)) if store.get(r)["dataset_synced_at"]]
+    assert synced_ids == [f"r{i:03d}" for i in range(1, 105)]
+    assert (first, second) == (0.0, 0.05) and sync.failures == 0  # no global backoff
+    # The second batch: the 5 fresh rows first, the refused one behind them.
+    batches = [[c["name"] for c in kw["cases"]] for m, _, kw in fake.calls if m == "add_cases"]
+    assert [len(b) for b in batches[:101]] == [100] + [1] * 100  # one refusal, then one at a time
+    assert batches[101][:5] == [f"strategy-bot-{i:03d}-r{i:03d}" for i in range(100, 105)]
+
+
+def test_a_server_error_backs_off_the_whole_batch_without_fan_out(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(10))
+    fake = Refusing("strategy-bot-000-r000", status=503)
+    sync = DatasetSync(store, factory_for(fake))
+
+    wait = sync.round()
+
+    assert wait == 0.05 and sync.failures == 1  # the backoff
+    assert [m for m, _, _ in fake.calls].count("add_cases") == 1  # no one-at-a-time retries
+    assert all(store.get(f"r{i:03d}")["dataset_attempts"] == 1 for i in range(10))
+
+
+def test_a_lone_refused_row_backs_off(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(1))
+    sync = DatasetSync(store, factory_for(Refusing("strategy-bot-000-r000")))
+    assert sync.round() == 0.05 and sync.failures == 1  # nothing went through
+
+
+def test_fresh_rows_go_ahead_of_failed_ones(tmp_path):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(3))
+    store.dataset_failed(["r000"], "DatasetApiError")
+    store.dataset_failed(["r000", "r001"], "DatasetApiError")
+
+    assert [r["id"] for r in store.pending_strategies(3)] == ["r002", "r001", "r000"]
+
+
+def test_a_refused_delete_does_not_block_the_others(tmp_path, keyed):
+    class RefusingDelete(FakeClient):
+        def delete_case(self, dataset_id_or_name, case_id):
+            if case_id == str(uuid.UUID(int=1)):
+                self.record("delete_case", dataset_id_or_name, case_id)
+                raise DatasetApiError(400, "refused")
+            return super().delete_case(dataset_id_or_name, case_id)
+
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(2))
+    fake = RefusingDelete()
+    sync = DatasetSync(store, factory_for(fake))
+    sync.round()
+    store.hide("r000")
+    store.hide("r001")
+
+    wait = sync.round()
+
+    first, second = store.get("r000"), store.get("r001")
+    assert first["dataset_deleted_at"] is None and first["dataset_attempts"] == 1
+    assert first["dataset_error_class"] == "DatasetApiError"
+    assert second["dataset_deleted_at"] is not None
+    assert wait == 0.05 and sync.failures == 0  # one went through: no backoff
+    assert [r["id"] for r in store.pending_deletes(10)] == ["r000"]

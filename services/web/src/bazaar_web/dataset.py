@@ -97,6 +97,14 @@ def is_gone(exc: Exception) -> bool:
     return isinstance(exc, CaseNotFoundError)
 
 
+def is_rejected(exc: Exception) -> bool:
+    """Logfire refused this request itself (a 4xx), so retrying it as is would fail again; a
+    timeout or a 5xx is the service, and backs the whole loop off instead."""
+    from logfire.experimental.api_client import DatasetApiError
+
+    return isinstance(exc, DatasetApiError) and 400 <= exc.status_code < 500
+
+
 class MissingCaseId(Exception):
     """add_cases returned no case for a row we sent: the row stays unsynced."""
 
@@ -154,8 +162,8 @@ class DatasetSync:
         counts = {"pending": len(rows), "pushed": 0, "deleted": 0, "failed": 0}
         with logfire.span("strategy dataset sync", **counts) as span:
             try:
-                counts["deleted"] = self.delete(deletes)
-                counts["pushed"] = self.push(rows)
+                counts["deleted"], refused_deletes = self.delete(deletes)
+                counts["pushed"], refused_pushes = self.push(rows)
             except Failed as failure:
                 with logfire.suppress_instrumentation():
                     self.store.dataset_failed(failure.ids, failure.error)
@@ -168,7 +176,12 @@ class DatasetSync:
                     len(failure.ids),
                 )
                 return self.backoff()
+            counts["failed"] = refused_deletes + refused_pushes
             span.set_attributes(counts)
+        if counts["failed"]:
+            log.warning("strategy dataset: Logfire refused %d rows", counts["failed"])
+            if not counts["deleted"] and not counts["pushed"]:
+                return self.backoff()  # nothing went through
         self.failures = 0
         full = len(rows) == BATCH or len(deletes) == BATCH
         return 0.0 if full else SYNC_S  # a full batch: more are likely waiting
@@ -178,46 +191,84 @@ class DatasetSync:
             self.client = self.client_factory(os.environ[KEY_ENV].strip())
         return self.client
 
-    def delete(self, rows: list[dict[str, Any]]) -> int:
-        """Delete each hidden row's case; a case already gone counts as deleted."""
-        done = 0
+    def refused(self, row: dict[str, Any], exc: Exception) -> None:
+        """Logfire refused this one row: it keeps its attempts and error class and sinks
+        behind fresh rows (both passes order by attempts), so it never blocks the others."""
+        with logfire.suppress_instrumentation():
+            self.store.dataset_failed([row["id"]], type(exc).__name__)
+
+    def delete(self, rows: list[dict[str, Any]]) -> tuple[int, int]:
+        """Delete each hidden row's case; (deleted, refused). A case already gone counts as
+        deleted, a refusal skips just that row, and anything else stops the round."""
+        done = refused = 0
         for row in rows:
             try:
                 self.connect().delete_case(DATASET, row["dataset_case_id"])
             except Exception as exc:  # noqa: BLE001 - classified below
+                if is_rejected(exc):
+                    self.refused(row, exc)
+                    refused += 1
+                    continue
                 if not is_gone(exc):
                     raise Failed([row["id"]], type(exc).__name__) from None
             with logfire.suppress_instrumentation():
                 self.store.dataset_deleted([row["id"]])
             done += 1
-        return done
+        return done, refused
 
-    def push(self, rows: list[dict[str, Any]]) -> int:
-        """Upsert the rows' cases and store each returned case id; a row the reply leaves out
-        stays unsynced, so no row counts as synced without an id."""
+    def push(self, rows: list[dict[str, Any]]) -> tuple[int, int]:
+        """Upsert the rows' cases; (pushed, refused). If Logfire refuses the batch (a 4xx), the
+        rows go one at a time, so one bad row can't hold the rest back; any other failure
+        stops the round for the whole batch."""
         if not rows:
-            return 0
-        ids = [row["id"] for row in rows]
+            return 0, 0
         try:
-            client = self.connect()
-            if not self.ensured:
-                try:
-                    client.get_dataset(DATASET, include_cases=False)
-                except Exception as exc:
-                    if not is_missing(exc):
-                        raise
-                    client.create_dataset(DATASET, description=DESCRIPTION)
-                self.ensured = True
-            cases = [case_for(row) for row in rows]
-            returned = client.add_cases(DATASET, cases=cases, on_conflict="update")
+            self.ensure()
+            return self.add(rows), 0
+        except Failed:
+            raise
         except Exception as exc:  # noqa: BLE001 - Logfire down, bad key, anything
-            raise Failed(ids, type(exc).__name__) from None
+            if not (is_rejected(exc) and len(rows) > 1):
+                raise Failed([row["id"] for row in rows], type(exc).__name__) from None
+        pushed = refused = 0
+        for i, row in enumerate(rows):
+            try:
+                pushed += self.add([row])
+            except Failed as failure:  # its case id was missing from the reply
+                with logfire.suppress_instrumentation():
+                    self.store.dataset_failed(failure.ids, failure.error)
+                refused += 1
+            except Exception as exc:  # noqa: BLE001 - classified below
+                if not is_rejected(exc):
+                    raise Failed([r["id"] for r in rows[i:]], type(exc).__name__) from None
+                self.refused(row, exc)
+                refused += 1
+        return pushed, refused
+
+    def ensure(self) -> None:
+        """The dataset exists (checked once per process)."""
+        if self.ensured:
+            return
+        client = self.connect()
+        try:
+            client.get_dataset(DATASET, include_cases=False)
+        except Exception as exc:
+            if not is_missing(exc):
+                raise
+            client.create_dataset(DATASET, description=DESCRIPTION)
+        self.ensured = True
+
+    def add(self, rows: list[dict[str, Any]]) -> int:
+        """One add_cases call, storing each returned case id; a row the reply leaves out stays
+        unsynced (Failed), so no row counts as synced without an id."""
+        cases = [case_for(row) for row in rows]
+        returned = self.connect().add_cases(DATASET, cases=cases, on_conflict="update")
         by_name = {c.get("name"): str(c["id"]) for c in returned or () if c.get("id")}
         found = {row["id"]: by_name[case["name"]] for row, case in zip(rows, cases, strict=True)
                  if case["name"] in by_name}  # fmt: skip
         with logfire.suppress_instrumentation():
             self.store.dataset_synced(found)
-        missing = [i for i in ids if i not in found]
+        missing = [row["id"] for row in rows if row["id"] not in found]
         if missing:
             raise Failed(missing, MissingCaseId.__name__)
         return len(found)
