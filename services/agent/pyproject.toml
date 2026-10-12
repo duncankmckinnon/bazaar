@@ -7,6 +7,8 @@ dependencies = [
     "bazaar-protocol",
     "fastapi>=0.115",
     "httpx>=0.27",
+    # The Jev judge's client (strategy_evaluation.judge_http_client), as TypeSafeProvider takes.
+    "httpx2>=2.13.1",
     "pydantic-ai-slim[anthropic,openai,typesafe]==2.54.0",
     "pydantic-ai-harness[codemode]==0.54.0",
     "logfire[fastapi,httpx,sqlite3,system-metrics,variables]>=5.1.1",
