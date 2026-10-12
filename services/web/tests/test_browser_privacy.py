@@ -415,3 +415,90 @@ def test_without_a_token_the_page_sends_no_telemetry_and_still_submits(serve, br
     context.close()
 
     assert traffic.logfire == []  # no /v1/traces, no /v1/replay: nothing reaches logfire-us
+
+
+ADMIN_TOKEN = "admin-token-SENTINEL-64"  # fake; the test app's admin token
+
+
+def test_the_admin_token_never_leaves_the_browser_and_the_factory_control_works(
+    serve, browser, monkeypatch
+):
+    """F3: the board's factory control. The admin token is PRIVATE: any trace of it in an export,
+    a replay upload or a request URL is a BLOCKER, never a note."""
+    monkeypatch.setenv("BAZAAR_ADMIN_TOKEN", ADMIN_TOKEN)
+    base = serve(TOKEN)
+    traffic = Traffic(base)
+    context = browser.new_context()
+    context.route("**/*", traffic.handle)
+    page = context.new_page()
+
+    # The public view: no control and no /api/admin request at all.
+    page.goto(base + "/")
+    loaded = time.monotonic()
+    page.wait_for_timeout(2500)  # past the first board poll
+    assert page.locator(".adm").count() == 0
+    assert not [r["url"] for r in traffic.same_origin if "/api/admin" in r["url"]]
+
+    # Unlock on this device: /?admin, then the token typed into the password field.
+    page.goto(base + "/?admin")
+    page.locator("form.adm input[type=password]").click()
+    page.keyboard.type(ADMIN_TOKEN)
+    # Matched by path, so a token leaked into a query string is caught below, not here.
+    with page.expect_response(
+        lambda r: r.url.split("?")[0] == base + "/api/admin/house"
+    ) as unlocked:
+        page.locator("form.adm button").click()
+    assert unlocked.value.status == 200
+    state = page.locator("div.adm .adm-state")
+    state.wait_for()
+    assert state.text_content() == "FACTORY: RUNNING"
+    assert "admin" not in urlparse(page.url).query  # dropped from the address bar
+    assert page.evaluate("sessionStorage.getItem('bazaar.admin')") == ADMIN_TOKEN
+
+    # Pause, then resume: both requests really happen, and the pill follows the server.
+    for action, shown in (("pause", "FACTORY: PAUSED"), ("resume", "FACTORY: RUNNING")):
+        url = f"{base}/api/admin/house/{action}"
+        with page.expect_response(lambda r, url=url: r.url.split("?")[0] == url) as done:
+            page.locator("div.adm button").click()
+        assert (done.value.request.method, done.value.status) == ("POST", 200)
+        assert done.value.json()["paused"] is (action == "pause")
+        page.wait_for_function(
+            f"document.querySelector('.adm-state').textContent === {json.dumps(shown)}"
+        )
+    page.wait_for_timeout(max(0.0, loaded + STAY_ON_PAGE - time.monotonic()) * 1000)
+    flush(page, traffic)
+    context.close()
+
+    # Non-vacuous: the admin requests went out (in the header), and telemetry and replay were
+    # exported from the board while they did.
+    admin = [r for r in traffic.same_origin if "/api/admin/" in r["url"]]
+    assert [r["url"].split("?")[0] for r in admin if r["method"] == "POST"] == [
+        f"{base}/api/admin/house/pause",
+        f"{base}/api/admin/house/resume",
+    ]
+    assert all(r["headers"].get("x-bazaar-admin-token") == ADMIN_TOKEN for r in admin)
+    assert traffic.exports, "no export reached logfire-us"
+    chunks = replay_chunks(traffic)
+    assert any(
+        urlparse(url).path == "/"
+        for chunk in chunks
+        for url in chunk.get("meta", {}).get("urls", [])
+    ), [chunk.get("meta", {}).get("urls") for chunk in chunks]
+
+    # BLOCKER: the admin token in no export or replay upload (URL, headers, decoded body) ...
+    for request in traffic.logfire:
+        haystack = " ".join(
+            [request["url"], json.dumps(request["headers"]),
+             request["body"].decode("utf-8", errors="replace")]
+        ).lower()  # fmt: skip
+        for form in forms_of(ADMIN_TOKEN):
+            where = locate(request, form) or "URL, headers or non-JSON body"
+            assert form not in haystack, (
+                f"BLOCKER: admin token {form!r} in {request['url']}: {where}"
+            )
+    # ... in no URL the page requested ...
+    urls = [r["url"] for r in traffic.same_origin + traffic.logfire] + traffic.external
+    assert not [url for url in urls if ADMIN_TOKEN.lower() in url.lower()]
+    # ... and the admin requests made no browser span at all (ignoreUrls /api/admin/).
+    for export in traffic.exports:
+        assert "/api/admin" not in export["body"].decode("utf-8", errors="replace")
