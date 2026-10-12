@@ -509,19 +509,28 @@ def tickers_allowed(text: str, allowed: Iterable[str]) -> bool:
     return all(t in known for t in TICKER_TOKEN.findall(text))
 
 
+def tickers(text: str, allowed: Iterable[str]) -> list[str]:
+    """The allowed symbols text mentions, in order and with repeats, read as tickers_allowed reads
+    them (acronyms are not mentions)."""
+    known = set(allowed) - ACRONYMS
+    return [t for t in TICKER_TOKEN.findall(text) if t in known]
+
+
 def known_parents(parents: Iterable[str], brief_names: Iterable[str]) -> list[str]:
     """The listed parents that are brief names, deduplicated, in listed order."""
     names = set(brief_names)
     return [p for p in dict.fromkeys(parents) if p in names]
 
 
+def similarity(normalized_a: str, normalized_b: str) -> float:
+    """The duplicate check's ratio (0..1) between two normalized texts."""
+    return difflib.SequenceMatcher(None, normalized_a, normalized_b).ratio()
+
+
 def near_duplicate(text: str, others: Iterable[str]) -> bool:
     """text equals or nearly equals one of others (both normalized)."""
     norm = normalized(text)
-    return any(
-        norm == other or difflib.SequenceMatcher(None, norm, other).ratio() >= NEAR_DUPLICATE
-        for other in others
-    )
+    return any(norm == other or similarity(norm, other) >= NEAR_DUPLICATE for other in others)
 
 
 def validate(
