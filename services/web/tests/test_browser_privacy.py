@@ -13,8 +13,9 @@ Without Playwright or a launchable Chromium (plain `uv run pytest`, the CI test 
 here SKIPS with a named reason; it never passes silently. With BAZAAR_REQUIRE_BROWSER_PROOF=1
 (the CI browser-privacy job) a missing browser FAILS instead.
 
-Email, company, role and instructions are private: any trace of them in an export fails. Name
-and handle are public (the board shows them): a trace of them is reported as a NOTE warning.
+Handle, email, company, role and instructions must never appear: any trace of them in an export
+fails. Only the strategy name is public (the board and the Logfire link show it): a trace of it
+is reported as a NOTE warning.
 """
 
 import gzip
@@ -74,7 +75,7 @@ def browser_required():
 
 
 class PublicFieldNote(UserWarning):
-    """A public field (name or handle) seen in an export: reported, not a failure."""
+    """The public strategy name seen in an export: reported, not a failure."""
 
 
 TOKEN_ENV = "BAZAAR_LOGFIRE_BROWSER_TOKEN"
@@ -89,7 +90,7 @@ STAY_ON_PAGE = 16.0
 # Text that session replay must mask on /submit (maskAllText is on everywhere but the board).
 UNMASKED_TEXT = ("Enter your trading agent", "use your email only to contact you")
 
-PRIVATE = ("email", "company", "role", "instructions")
+PRIVATE = ("handle", "email", "company", "role", "instructions")
 FIELDS = {
     "name": "name-sentinel-53",
     "handle": "HandleSentinel-29",
