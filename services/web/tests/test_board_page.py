@@ -36,7 +36,7 @@ def test_board_page_falls_back_to_the_request_url(settings, helpers):
 def test_board_page_loads_no_cdn_scripts():
     sources = re.findall(r"<script[^>]*\bsrc=\"([^\"]+)\"", BOARD)
 
-    assert sources == ["/static/vendor/qrcode.min.js"]
+    assert sources == ["/static/vendor/qrcode.min.js", "/browser-telemetry.js?page=board"]
     for cdn in ("cdnjs", "unpkg", "jsdelivr"):
         assert cdn not in BOARD
 
