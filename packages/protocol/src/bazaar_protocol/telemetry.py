@@ -81,6 +81,7 @@ SECRET_ENV = (
     "LOGFIRE_API_KEY",
     "LOGFIRE_TOKEN",
     "LOGFIRE_READ_TOKEN",
+    "LOGFIRE_API_WRITE_KEY",  # the strategist eval's dataset push (bazaar_agent.strategist_eval)
 )
 REDACTED = "[REDACTED]"
 # Shorter values are not credentials and would redact ordinary text.
