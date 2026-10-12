@@ -268,21 +268,31 @@ def test_the_proposal_queue_survives_a_restart_and_names_never_repeat(
 ):
     config = lanes(settings, house_concurrent=2)
     names = []
+
+    # Idle: the runner holds nothing and the store has no house row queued or running. The runner
+    # alone can look idle while a row claimed just before the pause has yet to reach it; shut
+    # down then, and the next start reruns it (by design), so its name would be started twice.
+    def idle(r):
+        return r.running() == [] and not {"queued", "running"} & set(house_rows(config.web_db))
+
+    with_rounds = []
     for _ in range(2):
         runner = LaneRunner(helpers, auto=True)
         with TestClient(create_app(config, runner)) as client:
             helpers.wait_for(lambda r=runner: len(r.started) >= 5)
             client.post("/api/admin/house/pause", headers=ADMIN)
-            helpers.wait_for(lambda r=runner: r.running() == [])
+            helpers.wait_for(lambda r=runner: idle(r))
             client.post("/api/admin/house/resume", headers=ADMIN)
             client.post("/api/admin/house/pause", headers=ADMIN)
-            helpers.wait_for(lambda r=runner: r.running() == [])
+            helpers.wait_for(lambda r=runner: idle(r))
         names += runner.started
+        with_rounds.append(list(runner.started))
         Store(config.web_db).set_house_paused(False)
 
     # Two slots take proposals in order, but their threads may start in either order.
-    assert len(names) == len(set(names))
-    assert set(names) == set(strategist.proposed[: len(names)])
+    evidence = (with_rounds, strategist.proposed[: len(names) + 2], house_rows(config.web_db))
+    assert len(names) == len(set(names)), evidence
+    assert set(names) == set(strategist.proposed[: len(names)]), evidence
 
 
 def test_house_rows_count_toward_no_cap(settings, helpers):
@@ -484,14 +494,26 @@ def house_rows(path):
 def test_a_failing_runner_backs_the_lane_off(settings, helpers, scaled_backoff):
     runner = FailingRunner(helpers)
     config = lanes(settings, house_concurrent=3)
-    with TestClient(create_app(config, runner)) as client:
+    # The store's clock stands still: it only stamps backoff_until (the waits run on the event
+    # loop's clock), so the backoff reads as current however slowly the checks below run.
+    clock = helpers.Clock()
+    with TestClient(create_app(config, runner, now=clock)) as client:
         helpers.wait_for(lambda: len(runner.started) >= 3)
         time.sleep(0.6)  # a simulated minute
-        state = client.get("/api/admin/house", headers=ADMIN).json()
-        events = [e["text"] for e in client.get("/api/board").json()["events"]]
         client.post("/api/admin/house/pause", headers=ADMIN)
 
-    rows = house_rows(config.web_db)
+        # Read the counter and the rows together, once nothing is in flight: a slot marks its
+        # row failed, then counts it, so a read in between (or rows counted after more runs
+        # failed) disagreed under load.
+        def settled():
+            rows = house_rows(config.web_db)
+            state = client.get("/api/admin/house", headers=ADMIN).json()
+            done = not {"queued", "running"} & set(rows)
+            return done and state["consecutive_failures"] == len(rows) and (rows, state)
+
+        rows, state = helpers.wait_for(settled)
+        events = [e["text"] for e in client.get("/api/board").json()["events"]]
+
     # Without the backoff three slots made hundreds of rows a second; with it, 5 + 10 + 20 + 40
     # + 80 + 160 s of waiting covers the minute after the first failures.
     assert 3 <= len(rows) <= 12 and set(rows) == {"failed"}
