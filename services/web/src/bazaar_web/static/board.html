@@ -70,7 +70,9 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .pending-head { margin: calc(var(--px)*6) 0 0; border-top: 1px solid var(--line); padding-top: calc(var(--px)*8); font: 400 calc(var(--px)*14)/1 var(--pixel); color: var(--aqua); }
 .pending { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; }
 .pending .ar-row { height: calc(var(--px)*34); font-size: calc(var(--px)*18); color: var(--muted); }
-.pending .ar-row.st-running .rt { color: var(--aqua); animation: blink 1s steps(1) infinite; }
+/* The day text stays steady (readable in photos); a dot before it blinks as the live cue. */
+.pending .ar-row.st-running .rt { color: var(--aqua); }
+.pending .ar-row.st-running .rt::before { content: ""; display: inline-block; width: .5em; height: .5em; margin-right: .5em; border-radius: 50%; background: var(--aqua); vertical-align: .1em; animation: blink 1s steps(1) infinite; }
 /* The footnote under the table: static, and legible at phone width (never below 11px). */
 .ar-note { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 max(calc(var(--px)*13), 11px)/1.5 var(--mono); color: var(--muted); overflow-wrap: anywhere; }
 .ar-note .ai { font: 400 .85em/1 var(--pixel); border: 1px solid currentColor; padding: .2em .35em; }
@@ -142,7 +144,7 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
   .tape { margin: 0 -14px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ar-row.new .nm::after, .pending .ar-row.st-running .rt, .plot .series.running circle.tip { animation: none; }
+  .ar-row.new .nm::after, .pending .ar-row.st-running .rt::before, .plot .series.running circle.tip { animation: none; }
   .tape .track { animation: none; flex-wrap: wrap; white-space: normal; }
   .plot .series polyline { transition: none; }
 }
