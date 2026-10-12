@@ -418,10 +418,6 @@ LOGOS = {
         "Pydantic",
         "339cd97bcccf390c79674180dbdc325aa376cbdda12f473503e3f3cc84166701",
     ),
-    "pydantic-logfire-dark.svg": (
-        "Pydantic Logfire",
-        "da8893c60e8ff2fe439ca77a37c20fb85227ba23b0b2f784efa18172b0650e11",
-    ),
 }
 
 
@@ -431,7 +427,7 @@ def test_the_vendored_logos_are_byte_identical_to_the_brand_repo_files():
         assert digest in (BRAND / "README.md").read_text(encoding="utf-8"), name
 
 
-def test_the_page_shows_both_logos_same_origin_with_alt_text_and_a_reserved_size():
+def test_the_page_shows_the_pydantic_logo_same_origin_with_alt_text_and_a_reserved_size():
     images = re.findall(r"<img\b[^>]*>", page())
 
     for name, (alt, _) in LOGOS.items():
@@ -440,4 +436,11 @@ def test_the_page_shows_both_logos_same_origin_with_alt_text_and_a_reserved_size
         assert f'alt="{alt}"' in tag
         assert f'width="{viewbox[0]}" height="{viewbox[1]}"' in tag  # the logo's own ratio
         assert 'decoding="async"' in tag
+    brand = re.findall(r'src="/static/brand/([\w.-]+)"', page())
+    assert brand == ["pydantic-name-dark.svg"], brand  # only the Pydantic logo (B3b)
     assert all(re.search(r'src="/static/brand/[\w.-]+\.svg"', tag) for tag in images), images
+
+
+def test_the_logfire_logo_is_no_longer_vendored():
+    assert sorted(path.name for path in BRAND.iterdir()) == ["README.md", "pydantic-name-dark.svg"]
+    assert "pydantic-logfire" not in (BRAND / "README.md").read_text(encoding="utf-8")
