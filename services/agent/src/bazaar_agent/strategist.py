@@ -2,7 +2,7 @@
 
 brief() reads the scored runs of one window from Logfire with the read token in
 $LOGFIRE_READ_TOKEN and ranks the strategies by mean return, with each one's excess over the
-benchmark baseline, fills, LLM cost per run, adherence and exhausted decisions. It is synchronous
+benchmark baseline, fills, LLM cost per run, adherence and budget-exhausted decisions. It is synchronous
 and runs its own event loop (asyncio.run), so a worker thread can call it while runs execute.
 Any failure raises StrategistError naming only the error's type: never the token or a response.
 """
@@ -76,7 +76,9 @@ class StrategyStats(BaseModel):
     fills: float
     llm_cost_usd: float | None  # mean per run with recorded model cost
     adherence: float | None  # mean strategy_adherence; None if never judged
-    decisions: float  # mean decisions that exhausted their budget
+    # Mean decisions per run that exhausted their budget (decisions_exhausted); every run has one
+    # decision per session, so this is not a count of decisions.
+    budget_exhausted: float
     policy_kind: str | None
 
 
@@ -170,7 +172,8 @@ def aggregate(
                 fills=_mean(_number(r.get("fills")) for _, r in group) or 0.0,
                 llm_cost_usd=_mean(cost_by_run.get(run_id) for run_id, _ in group),
                 adherence=_mean(adherence_by_run.get(run_id) for run_id, _ in group),
-                decisions=_mean(_number(r.get("decisions_exhausted")) for _, r in group) or 0.0,
+                budget_exhausted=_mean(_number(r.get("decisions_exhausted")) for _, r in group)
+                or 0.0,
                 policy_kind=kinds[0][0] if kinds else None,
             )
         )

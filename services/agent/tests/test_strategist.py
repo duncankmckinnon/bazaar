@@ -162,7 +162,8 @@ def test_strategies_are_ranked_with_benchmark_excess_cost_and_adherence(logfire_
     stats = by_name(result.top + result.bottom)
     momo = stats["momo-a"]
     assert (momo.runs, momo.return_pct, momo.excess_vs_benchmark_pct) == (2, 3.0, 1.0)
-    assert momo.fills == 3.0 and momo.decisions == 0.5
+    assert momo.fills == 3.0 and momo.budget_exhausted == 0.5
+    assert "decisions" not in type(momo).model_fields
     assert momo.llm_cost_usd == pytest.approx((0.03 + 0.05) / 2)
     # Only a1 was judged (mean of 1.0 and 0.5); a2 never was, so it doesn't count as 0.
     assert momo.adherence == pytest.approx(0.75)
