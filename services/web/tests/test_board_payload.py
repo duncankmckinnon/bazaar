@@ -327,15 +327,15 @@ def test_a_cold_board_never_parses_hidden_dirs(big, helpers, monkeypatch):
     real = bazaar_web.board.load_run
     monkeypatch.setattr(bazaar_web.board, "load_run", lambda path: calls.append(path) or real(path))
     with TestClient(create_app(big, helpers.FakeRunner())) as client:
-        cold = client.get("/api/board").json()
+        cold = helpers.board(client).json()
         cold_parsed = len(calls)
         client.app.state.board.invalidate()  # a rebuild, as after the TTL
-        client.get("/api/board")
+        helpers.board(client)
         parsed = len(calls)
         with sqlite3.connect(big.web_db) as conn:  # un-hide the best run
             conn.execute("UPDATE submissions SET hidden = 0 WHERE run_dir = 'run-0000'")
         conn.close()
-        shown = client.get("/api/board").json()
+        shown = helpers.board(client).json()
 
     print(f"\n2,800 of 3,000 hidden: parsed {parsed}")
     assert parsed == cold_parsed  # the warm rebuild parsed nothing

@@ -47,6 +47,9 @@ def status(client, submission_id):
 
 
 def board_row(client, submission_id):
+    cache = client.app.state.board_cache
+    cache.invalidate()  # a build that starts after this call
+    assert cache.settled()
     return {r["id"]: r for r in client.get("/api/board").json()["rows"]}[submission_id]
 
 

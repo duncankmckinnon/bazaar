@@ -331,9 +331,19 @@ class FakeStrategist:
         return batch
 
 
+def fresh_board(client):
+    """GET /api/board after a build that started after this call. The route serves its last
+    payload and rebuilds in the background, so a read straight after a write may be older."""
+    cache = client.app.state.board_cache
+    cache.invalidate()
+    assert cache.settled()
+    return client.get("/api/board")
+
+
 @pytest.fixture
 def helpers():
     class H:
+        board = staticmethod(fresh_board)
         FakeStrategist = FakeStrategist
         FakeProposal = FakeProposal
         FakeRunner = FakeRunner

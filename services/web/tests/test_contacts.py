@@ -194,7 +194,7 @@ def test_contacts_csv_rows_match_the_board_and_leave_out_hidden_and_contactless(
         client.post(f"/api/admin/submissions/{ids['hidden-bot']}/hide", headers=ADMIN)
         runner.gate.clear()
         waiting = client.post("/api/submissions", json=body("waiting-bot")).json()["id"]
-        board = {r["id"]: r for r in client.get("/api/board").json()["rows"]}
+        board = {r["id"]: r for r in helpers.board(client).json()["rows"]}
         response = client.get("/api/admin/contacts", headers=ADMIN)
         rows = list(csv.DictReader(io.StringIO(response.text)))
         runner.gate.set()

@@ -6,7 +6,10 @@ import hmac
 import io
 import json
 import logging
+import os
 import re
+import threading
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -23,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic_core import PydanticCustomError
 
 from bazaar_web import stats, telemetry
-from bazaar_web.board import BoardSource, board_rows, build_board
+from bazaar_web.board import BoardSource, board_factory, board_rows, build_board
 from bazaar_web.browser import telemetry_module
 from bazaar_web.bundle import BundleSource
 from bazaar_web.dataset import ClientFactory
@@ -207,6 +210,107 @@ def static_page(name: str, label: str) -> Response:
     return HTMLResponse(PLACEHOLDER.format(label))
 
 
+class BoardCache:
+    """Stale-while-revalidate over the /api/board payload: a build parses run dirs and queries
+    the store (about 97 s cold after a deploy, up to 8 s warm), so no request waits on one.
+    get() returns the last good payload at once and, when it is older than ttl or invalidated,
+    starts one background rebuild (never two at a time). Each good payload is persisted
+    atomically next to the web database and loaded at startup, marked stale until this
+    process's first build. A failed build is logged and never cached; the next trigger retries.
+    """
+
+    def __init__(self, build: Callable[[], dict[str, Any]], path: Path, ttl: float = 2.0) -> None:
+        self.build, self.path, self.ttl = build, path, ttl
+        self._lock = threading.Lock()
+        self._payload: dict[str, Any] | None = None
+        self._built_at: float | None = None  # monotonic time of this process's last good build
+        self._dirty = False
+        self._thread: threading.Thread | None = None
+        self._done = threading.Event()
+        try:
+            self._payload = {**json.loads(path.read_text()), "stale": True}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:
+            log.warning("persisted board unreadable (%s)", type(exc).__name__)
+
+    def start(self) -> None:
+        with self._lock:
+            self._kick()
+
+    def stop(self) -> None:
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=5)
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._dirty = True
+            self._kick()
+
+    def get(self) -> dict[str, Any] | None:
+        with self._lock:
+            payload, built_at = self._payload, self._built_at
+            if built_at is None or self._dirty or time.monotonic() - built_at >= self.ttl:
+                done = self._kick()
+            else:
+                done = None
+        if payload is not None or done is None:
+            return payload
+        # The one wait: a first boot with nothing persisted shares the in-flight build (it never
+        # starts a second). None if that build failed.
+        done.wait()
+        return self._payload
+
+    def settled(self, timeout: float = 10.0) -> bool:
+        """Wait until no rebuild is running or due (tests read the board after a write)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._thread is None and not self._dirty and self._built_at is not None:
+                    return True
+                done = self._done
+            done.wait(max(0.0, deadline - time.monotonic()))
+        return False
+
+    def _kick(self) -> threading.Event:
+        """Start a rebuild unless one is running; the event of the one in flight. Under _lock."""
+        if self._thread is None:
+            self._dirty = False
+            self._done = threading.Event()
+            self._thread = threading.Thread(
+                target=self._rebuild, args=(self._done,), name="board-rebuild", daemon=True
+            )
+            self._thread.start()
+        return self._done
+
+    def _rebuild(self, done: threading.Event) -> None:
+        payload = None
+        try:
+            with logfire.suppress_instrumentation():  # like the polled route
+                payload = self.build()
+        except Exception as exc:  # noqa: BLE001 - keep serving the last good payload
+            log.warning("board rebuild failed (%s)", type(exc).__name__)
+        if payload is not None:
+            self._persist(payload)
+        with self._lock:
+            if payload is not None:
+                self._payload, self._built_at = payload, time.monotonic()
+            self._thread = None
+            if self._dirty:  # invalidated while this build ran: it may have missed the change
+                self._kick()
+        done.set()
+
+    def _persist(self, payload: dict[str, Any]) -> None:
+        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(jsonable_encoder(payload)))
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            log.warning("board not persisted (%s)", type(exc).__name__)
+            tmp.unlink(missing_ok=True)
+
+
 def create_app(
     settings: Settings | None = None,
     run_submission: RunSubmission | None = None,
@@ -239,11 +343,17 @@ def create_app(
             dataset_client=dataset_client,
         )
         app.state.store, app.state.board, app.state.worker = store, board, worker
+        cache = app.state.board_cache = BoardCache(
+            lambda: board_payload(app.state), settings.web_db.parent / "board-payload.json"
+        )
+        board.on_invalidate = cache.invalidate  # a scored, hidden or rerun row: rebuild now
+        cache.start()
         await worker.start()
         try:
             yield
         finally:
             await worker.stop()
+            cache.stop()
 
     app = FastAPI(title="Bazaar web", lifespan=lifespan)
 
@@ -275,10 +385,10 @@ def create_app(
         """Every row, ranked over all of them (the board payload sends only the top rows)."""
         return board_rows(request.app.state.board, request.app.state.store, settings.logfire_url)[0]
 
-    def board_payload(request: Request) -> dict[str, Any]:
+    def board_payload(state: Any) -> dict[str, Any]:
         return build_board(
-            request.app.state.board,
-            request.app.state.store,
+            state.board,
+            state.store,
             settings.logfire_url,
             bundles.get(),
             house_enabled=settings.house_enabled,
@@ -367,6 +477,7 @@ def create_app(
         name = store.get(submission_id)["name"]
         position = store.position(submission_id)  # read before a worker can pick it up
         request.app.state.worker.enqueue(submission_id)
+        request.app.state.board_cache.invalidate()  # the new row, pending, on the next poll
         return {
             "id": submission_id,
             "status": "queued",
@@ -427,8 +538,13 @@ def create_app(
 
     @app.get("/api/board")
     def board(request: Request) -> dict[str, Any]:
+        payload = request.app.state.board_cache.get()
+        if payload is None:  # a first boot whose first build failed; the page retries
+            raise HTTPException(503, "board not ready")
         with logfire.suppress_instrumentation():  # polled; see submission_status
-            return board_payload(request)
+            # The factory line is a cheap query and stays live, not as old as the cached rows.
+            factory = board_factory(request.app.state.store, settings.house_enabled)
+        return {**payload, "factory": factory}
 
     @app.post("/api/admin/submissions/{submission_id}/hide", status_code=204)
     def hide(submission_id: str, request: Request, token: AdminToken = None) -> Response:

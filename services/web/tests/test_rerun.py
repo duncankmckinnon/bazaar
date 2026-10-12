@@ -33,6 +33,9 @@ def rerun(client, submission_id, headers=ADMIN):
 
 
 def board_rows(client):
+    cache = client.app.state.board_cache
+    cache.invalidate()  # a build that starts after this call
+    assert cache.settled()
     return client.get("/api/board").json()["rows"]
 
 

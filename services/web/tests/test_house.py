@@ -364,7 +364,7 @@ def test_with_the_lane_off_interrupted_house_runs_end_as_failed(settings, helper
     runner = LaneRunner(helpers, auto=True)
     with TestClient(create_app(lanes(settings, house_enabled=False), runner)) as client:
         row = Store(settings.web_db).get(sid)
-        board = client.get("/api/board").json()["rows"]
+        board = helpers.board(client).json()["rows"]
 
     assert (row["status"], row["error_class"]) == ("failed", "HouseLaneOff")
     assert runner.started == [] and sid not in {r["id"] for r in board}
@@ -378,7 +378,7 @@ def test_rows_and_status_carry_the_lane(settings, helpers):
     with TestClient(create_app(lanes(settings, house_concurrent=1), runner)) as client:
         sid = client.post("/api/submissions", json=body("human-one")).json()["id"]
         helpers.wait_for(lambda: len(runner.running()) == 2)
-        rows = client.get("/api/board").json()["rows"]
+        rows = helpers.board(client).json()["rows"]
         human = status(client, sid)
         house_id = next(r["id"] for r in rows if r["lane"] == "house")
         house = status(client, house_id)
@@ -488,7 +488,7 @@ def test_a_failing_runner_backs_the_lane_off(settings, helpers, scaled_backoff):
         helpers.wait_for(lambda: len(runner.started) >= 3)
         time.sleep(0.6)  # a simulated minute
         state = client.get("/api/admin/house", headers=ADMIN).json()
-        events = [e["text"] for e in client.get("/api/board").json()["events"]]
+        events = [e["text"] for e in helpers.board(client).json()["events"]]
         client.post("/api/admin/house/pause", headers=ADMIN)
 
     rows = house_rows(config.web_db)

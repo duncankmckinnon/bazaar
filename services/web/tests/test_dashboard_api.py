@@ -385,10 +385,10 @@ def test_the_route_takes_over_from_the_v1_fallback_after_the_retry_window(
         settings, helpers, 404, v1_from_route, market_db=market_db(tmp_path / "m.db")
     )
     with TestClient(app) as c:
-        before = c.get("/api/board").json()["window"]["start"]
+        before = helpers.board(c).json()["window"]["start"]
         before_days = c.get("/api/tickers").json()["days"]
         clock.t += RETRY_S
-        after = c.get("/api/board").json()["window"]
+        after = helpers.board(c).json()["window"]
         after_days = c.get("/api/tickers").json()["days"]
 
     assert before == "2026-02-02" and before_days[0]["date"] == "2026-02-02"
@@ -439,7 +439,7 @@ def test_running_history_comes_from_progress_rows(seeded, helpers):
         }
         sid = c.post("/api/submissions", json=body).json()["id"]
         helpers.wait_for(lambda: c.get(f"/api/submissions/{sid}").json()["day"] == 10)
-        rows = c.get("/api/board").json()["rows"]
+        rows = helpers.board(c).json()["rows"]
         runner.gate.set()
 
     live = next(r for r in rows if r["id"] == sid)
