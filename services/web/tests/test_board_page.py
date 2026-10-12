@@ -297,7 +297,10 @@ def test_pinned_rows_beyond_capacity_are_counted_not_dropped():
 def test_house_rows_get_a_dim_ai_tag_by_text_only():
     script = BOARD.split("<script>", 1)[1]
     assert 'if (r.lane === "house" || r.handle === "house") {' in script
-    assert 'tag.textContent = "AI";' in script and 'tag.className = "ai";' in script
+    assert 'tag.className = "ai";' in script
+    # A factory row shows its generation (G3); catalog-era house rows keep "AI". Text only.
+    assert 'tag.textContent = Number.isInteger(gen) && gen > 0 ? `G${gen}` : "AI";' in script
+    assert "const gen = Number(r.generation);" in script
     # Removed before setName runs, so the name link is found and kept as before.
     assert script.index('nm.querySelector(".ai")?.remove();') < script.index(
         "setName(nm, r.name, safeUrl(r.logfire_url));"

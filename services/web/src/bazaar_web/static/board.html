@@ -369,7 +369,9 @@ function renderBoard(data) {
     if (r.lane === "house" || r.handle === "house") {
       const tag = document.createElement("i");
       tag.className = "ai";
-      tag.textContent = "AI";
+      // A factory strategy shows its generation (G3); catalog-era house rows stay "AI".
+      const gen = Number(r.generation);
+      tag.textContent = Number.isInteger(gen) && gen > 0 ? `G${gen}` : "AI";
       nm.prepend(tag);
     }
     li.querySelector(".rt").textContent = scored

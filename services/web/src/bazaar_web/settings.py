@@ -1,6 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -25,6 +26,7 @@ SECRET_ENV_VARS = (
     "BAZAAR_RUNNER_TOKEN",
     "BAZAAR_ADMIN_TOKEN",
     "LOGFIRE_TOKEN",
+    "LOGFIRE_READ_TOKEN",
 )
 MAX_CONCURRENT_RANGE = range(1, 33)
 HOUSE_CONCURRENT_RANGE = range(17)
@@ -52,6 +54,19 @@ def parse_flag(name: str, raw: str | None) -> bool:
     if value not in TRUE | FALSE:
         raise ValueError(f"{name} must be one of 1/0, true/false, yes/no, on/off, got {raw!r}")
     return value in TRUE
+
+
+def parse_since(raw: str | None) -> datetime | None:
+    """BAZAAR_HOUSE_SINCE: an ISO 8601 time with a UTC offset, or None when unset."""
+    if not (raw or "").strip():
+        return None
+    try:
+        value = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        value = None
+    if value is None or value.tzinfo is None:
+        raise ValueError(f"BAZAAR_HOUSE_SINCE must be an ISO 8601 time with an offset, got {raw!r}")
+    return value.astimezone(UTC)
 
 
 def parse_max_concurrent(raw: str | None) -> int:
@@ -86,6 +101,11 @@ class Settings:
     house_enabled: bool = False
     house_concurrent: int = 3
     house_max_per_hour: int | None = None  # None: no limit
+    # The strategy factory ranks runs scored at or after house_since (the window's deploy time);
+    # unset, the lane waits ("factory not configured"). The strategist is asked at most once
+    # per house_propose_interval_s while it succeeds.
+    house_since: datetime | None = None
+    house_propose_interval_s: int = 300
 
     def __post_init__(self) -> None:
         if (
@@ -152,5 +172,12 @@ class Settings:
                 env.get("BAZAAR_HOUSE_MAX_PER_HOUR") or None,
                 None,
                 range(1, 100_001),
+            ),
+            house_since=parse_since(env.get("BAZAAR_HOUSE_SINCE")),
+            house_propose_interval_s=parse_int(
+                "BAZAAR_HOUSE_PROPOSE_INTERVAL_S",
+                env.get("BAZAAR_HOUSE_PROPOSE_INTERVAL_S") or None,
+                300,
+                range(1, 86_401),
             ),
         )

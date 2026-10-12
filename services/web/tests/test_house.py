@@ -2,13 +2,12 @@ import dataclasses
 import sqlite3
 import threading
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import bazaar_web.worker
 import httpx
 import pytest
 from bazaar_web.app import create_app
-from bazaar_web.house import catalog, house_name
 from bazaar_web.settings import Settings
 from bazaar_web.store import CapReached, Store
 from bazaar_web.worker import expected_run_dir
@@ -78,10 +77,13 @@ class LaneRunner:
                 self.active.discard(name)
 
 
-V1_BUNDLE = {
-    "bundle_id": "demo-bundle-v1", "bars": "alpaca-bars-v1", "news": "n", "filings": "f",
-    "start_date": "2026-02-02", "end_date": "2026-02-13",
-    "sessions": ["2026-02-02", "2026-02-13"], "incomplete_sessions": [],
+V2_BUNDLE = {
+    "bundle_id": "demo-bundle-v2", "bars": "sp-bars-v2", "news": "n", "filings": "f",
+    "start_date": "2026-09-28", "end_date": "2026-10-09",
+    "sessions": ["2026-09-28", "2026-10-09"], "incomplete_sessions": [],
+    "universe": [{"symbol": "KO", "name": "Coca-Cola", "sector": "Consumer Staples"},
+                 {"symbol": "MSFT", "name": "Microsoft", "sector": "Information Technology"}],
+    "universe_name": "S&P 500", "benchmark": "SPY",
 }  # fmt: skip
 
 
@@ -101,9 +103,28 @@ def market_with(body):
 
 
 @pytest.fixture(autouse=True)
-def v1_market(monkeypatch):
-    """A v1 bundle (no universe field): the lane runs the original 12-stock catalog()."""
-    monkeypatch.setattr("bazaar_web.app.BundleSource", market_with(V1_BUNDLE))
+def v2_market(monkeypatch):
+    """A bundle with a universe, so the strategy factory has something to propose over."""
+    monkeypatch.setattr("bazaar_web.app.BundleSource", market_with(V2_BUNDLE))
+
+
+@pytest.fixture(autouse=True)
+def strategist(monkeypatch, helpers):
+    """Every app in these tests gets one fake strategist (the real one is imported lazily)."""
+    fake = helpers.FakeStrategist()
+    monkeypatch.setattr(bazaar_web.worker, "import_strategist", lambda: fake)
+    return fake
+
+
+def queue_house(store, helpers, n=1):
+    """n queued house rows from proposals, as the lane makes them; [(id, name)]."""
+    start = store.unused_proposals() + len(store.timings())
+    batch = [
+        helpers.FakeProposal(f"g1-q{start + i}", f"Buy KO on day 1 and sell it on day {start + i}.")
+        for i in range(n)
+    ]
+    assert store.add_proposals(batch, generation=1, allowed={"KO"}, parents=[])["added"] == n
+    return [store.create_house(None) for _ in range(n)]
 
 
 @pytest.fixture(autouse=True)
@@ -111,8 +132,14 @@ def quick_idle(monkeypatch):
     monkeypatch.setattr(bazaar_web.worker, "HOUSE_IDLE_S", 0.02)
 
 
+SINCE = datetime(2026, 10, 11, 20, 14, tzinfo=UTC)
+
+
 def lanes(settings, **changes):
-    defaults = {"house_enabled": True, "house_concurrent": 2, "max_per_ip_hour": 20}
+    defaults = {
+        "house_enabled": True, "house_concurrent": 2, "max_per_ip_hour": 20,
+        "house_since": SINCE, "house_propose_interval_s": 0,
+    }  # fmt: skip
     return dataclasses.replace(settings, **(defaults | changes))
 
 
@@ -161,27 +188,27 @@ def test_bad_house_settings_are_refused_at_startup(monkeypatch, name, raw):
 def test_humans_never_wait_behind_house_runs(settings, helpers):
     runner = LaneRunner(helpers)
     with TestClient(create_app(lanes(settings, max_concurrent=1), runner)) as client:
-        helpers.wait_for(lambda: len(runner.running("house-")) == 2)
+        helpers.wait_for(lambda: len(runner.running("g")) == 2)
         first = client.post("/api/submissions", json=body("human-one")).json()["id"]
         helpers.wait_for(lambda: runner.running("human-") == ["human-one"])
         second = client.post("/api/submissions", json=body("human-two")).json()
         assert second["position"] == 1  # queued behind the human, not the house runs
         runner.release("human-one")
         helpers.wait_for(lambda: runner.running("human-") == ["human-two"])
-        assert len(runner.running("house-")) == 2  # both lanes full; the house kept its slots
+        assert len(runner.running("g")) == 2  # both lanes full; the house kept its slots
         assert status(client, first)["status"] == "scored"
         for name in runner.running():
             runner.release(name)
 
-    houses = [n for n in runner.started if n.startswith("house-")]
+    houses = [n for n in runner.started if n.startswith("g")]
     assert len(houses) >= 2  # the house never took the freed human slot
 
 
-def test_the_house_lane_stays_full_and_refills(settings, helpers):
+def test_the_house_lane_stays_full_and_refills(settings, helpers, strategist):
     runner = LaneRunner(helpers)
     with TestClient(create_app(lanes(settings, house_concurrent=3), runner)) as client:
-        helpers.wait_for(lambda: len(runner.running("house-")) == 3)
-        first = runner.running("house-")[0]
+        helpers.wait_for(lambda: len(runner.running("g")) == 3)
+        first = runner.running("g")[0]
         runner.release(first)
         helpers.wait_for(lambda: len(runner.started) == 4 and len(runner.running()) == 3)
         state = client.get("/api/admin/house", headers=ADMIN).json()
@@ -194,10 +221,11 @@ def test_the_house_lane_stays_full_and_refills(settings, helpers):
     assert {r["status"] for r in house_rows} == {"running", "scored"}  # never sat queued
     assert all(r["handle"] == "house" for r in house_rows)
     # Releasing the last runs inside the client lets the slots refill once more before the app
-    # stops, so check catalog order over however many started, at least the 4 above.
+    # stops, so check proposal order over however many started, at least the 4 above.
     started = list(runner.started)
     assert len(started) >= 4
-    assert started == [house_name(s, 1) for s, _ in catalog()[: len(started)]]
+    assert started == strategist.proposed[: len(started)]
+    assert {r["generation"] for r in house_rows} == {1}
 
 
 @pytest.mark.parametrize("change", [{"house_enabled": False}, {"house_concurrent": 0}])
@@ -212,11 +240,11 @@ def test_the_kill_switch_means_no_house_runs(settings, helpers, change):
     assert (state["enabled"], state["total_started"], state["slots"]) == (False, 0, 0)
 
 
-def test_pause_and_resume_persist_across_restarts(settings, helpers):
+def test_pause_and_resume_persist_across_restarts(settings, helpers, strategist):
     config = lanes(settings, house_concurrent=1)
     runner = LaneRunner(helpers)
     with TestClient(create_app(config, runner)) as client:
-        helpers.wait_for(lambda: len(runner.running("house-")) == 1)
+        helpers.wait_for(lambda: len(runner.running("g")) == 1)
         paused = client.post("/api/admin/house/pause", headers=ADMIN).json()
         runner.release(runner.running()[0])  # the running one finishes; no new one starts
         helpers.wait_for(lambda: runner.running() == [])
@@ -227,15 +255,17 @@ def test_pause_and_resume_persist_across_restarts(settings, helpers):
         assert client.get("/api/admin/house", headers=ADMIN).json()["paused"] is True
         assert runner.started == []  # still paused after the restart
         resumed = client.post("/api/admin/house/resume", headers=ADMIN).json()
-        helpers.wait_for(lambda: len(runner.running("house-")) == 1)
+        helpers.wait_for(lambda: len(runner.running("g")) == 1)
         client.post("/api/admin/house/pause", headers=ADMIN)  # first, so the slot can't refill
         runner.release(runner.running()[0])
 
     assert resumed["paused"] is False
-    assert runner.started == [house_name(catalog()[1][0], 1)]  # the cursor moved on
+    assert runner.started == [strategist.proposed[1]]  # the next waiting proposal
 
 
-def test_the_cursor_survives_a_restart_and_names_never_repeat(settings, helpers):
+def test_the_proposal_queue_survives_a_restart_and_names_never_repeat(
+    settings, helpers, strategist
+):
     config = lanes(settings, house_concurrent=2)
     names = []
     for _ in range(2):
@@ -250,35 +280,19 @@ def test_the_cursor_survives_a_restart_and_names_never_repeat(settings, helpers)
         names += runner.started
         Store(config.web_db).set_house_paused(False)
 
-    # Two slots take names in catalog order, but their threads may start in either order.
+    # Two slots take proposals in order, but their threads may start in either order.
     assert len(names) == len(set(names))
-    assert set(names) == {house_name(s, 1) for s, _ in catalog()[: len(names)]}
-
-
-def test_the_cycle_goes_up_after_the_catalog_and_taken_names_get_the_next_cycle(tmp_path):
-    store = Store(tmp_path / "web.sqlite3")
-    tiny = [("a", "Buy KO on day 1 and hold it."), ("b", "Buy XOM on day 1 and hold it.")]
-    store.create(
-        name="house-b-1", handle=None, instructions="x" * 20, ip_hash="h",
-        max_queue=30, max_per_day=150, max_per_ip_hour=5,
-    )  # fmt: skip
-
-    made = [store.create_house(tiny, None)[1] for _ in range(4)]
-
-    # A taken name gets the next free cycle number for that slug, never a skip or an error.
-    assert made == ["house-a-1", "house-b-2", "house-a-2", "house-b-3"]
-    state = store.house_state()
-    assert (state["cursor"], state["cycle"], state["total_started"]) == (0, 3, 4)
+    assert set(names) == set(strategist.proposed[: len(names)])
 
 
 def test_house_rows_count_toward_no_cap(settings, helpers):
     config = lanes(settings, house_concurrent=3, max_queue=1, max_per_ip_hour=1, max_per_day=1)
     runner = LaneRunner(helpers)
     with TestClient(create_app(config, runner)) as client:
-        helpers.wait_for(lambda: len(runner.running("house-")) == 3)
+        helpers.wait_for(lambda: len(runner.running("g")) == 3)
         human = client.post("/api/submissions", json=body("human-one"))
         second = client.post("/api/submissions", json=body("human-two"))
-        for name in ["human-one", *runner.running("house-")]:
+        for name in ["human-one", *runner.running("g")]:
             runner.release(name)
 
     assert human.status_code == 201  # three house runs in flight did not fill a cap of 1
@@ -311,8 +325,7 @@ def test_the_hourly_cap_idles_the_lane_until_the_hour_rolls(settings, helpers):
 def test_restart_recovery_runs_house_rows_in_the_house_lane(settings, helpers):
     config = lanes(settings, house_concurrent=1, max_concurrent=1)
     store = Store(config.web_db)
-    done_id = store.create_house(catalog(), None)[0]
-    cut_id, cut_name = store.create_house(catalog(), None)
+    (done_id, _), (cut_id, cut_name) = queue_house(store, helpers, 2)
     for sid in (done_id, cut_id):
         store.mark_running(sid)
     helpers.write_run(
@@ -346,7 +359,7 @@ def done_name_not_rerun(runner, store, done_id):
 
 def test_with_the_lane_off_interrupted_house_runs_end_as_failed(settings, helpers):
     store = Store(settings.web_db)
-    sid = store.create_house(catalog(), None)[0]
+    sid = queue_house(store, helpers)[0][0]
     store.mark_running(sid)
     runner = LaneRunner(helpers, auto=True)
     with TestClient(create_app(lanes(settings, house_enabled=False), runner)) as client:
@@ -526,7 +539,7 @@ def test_resume_ends_a_backoff(settings, helpers, monkeypatch):
 
 def test_a_house_row_cannot_be_rerun_and_nothing_changes(settings, helpers):
     store = Store(settings.web_db)
-    sid, name = store.create_house(catalog(), None)
+    sid, name = queue_house(store, helpers)[0]
     store.finish(sid, run_dir=None, error="the run failed; please try again")
     with sqlite3.connect(settings.web_db) as conn:
         before = conn.execute("SELECT * FROM submissions ORDER BY rowid").fetchall()
@@ -558,14 +571,9 @@ def test_a_human_row_still_reruns(seeded, helpers):
     assert Store(seeded.web_db).get(new_id)["lane"] == "human"
 
 
-def test_house_rows_keep_contact_fields_null(tmp_path):
-    import sqlite3
-
-    from bazaar_web.store import Store
-
+def test_house_rows_keep_contact_fields_null(tmp_path, helpers):
     path = tmp_path / "web.sqlite3"
-    created = Store(path).create_house([("house-null-contact", "Buy KO on dips.")], None)
-    assert created is not None
+    created = queue_house(Store(path), helpers)[0]
     with sqlite3.connect(path) as conn:
         row = conn.execute(
             "SELECT lane, email, company, role FROM submissions WHERE id = ?", (created[0],)
