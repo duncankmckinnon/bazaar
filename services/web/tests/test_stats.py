@@ -73,7 +73,8 @@ def test_six_runs_at_once_and_the_seventh_waits(settings, helpers):
 
 def test_runs_beyond_the_default_executor_size_all_execute(settings, helpers, monkeypatch):
     # With one CPU the loop's default executor has 5 threads; 8 runs must still all start.
-    monkeypatch.setattr("os.process_cpu_count", lambda: 1)
+    # The default executor sizes itself from os.process_cpu_count on 3.13+, os.cpu_count on 3.12.
+    monkeypatch.setattr("os.process_cpu_count", lambda: 1, raising=False)
     monkeypatch.setattr("os.cpu_count", lambda: 1)
     runner = helpers.FakeRunner()
     runner.gate.clear()
