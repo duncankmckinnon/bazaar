@@ -71,6 +71,8 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .pending { position: relative; list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; }
 .pending-more { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 calc(var(--px)*18)/calc(var(--px)*34) var(--pixel); color: var(--muted); }
 .pending .ar-row[hidden] { display: none; }
+/* The return column grows for a running row's blinking dot and day text rather than clip it. */
+.pending .ar-row { grid-template-columns: calc(var(--px)*80) calc(var(--px)*140) minmax(0,1fr) minmax(calc(var(--px)*110), max-content); }
 .pending .ar-row { height: calc(var(--px)*34); font-size: calc(var(--px)*18); color: var(--muted); }
 /* The day text stays steady (readable in photos); a dot before it blinks as the live cue. */
 .pending .ar-row.st-running .rt { color: var(--aqua); }
@@ -144,6 +146,7 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
   .hd .sub { text-align: left; white-space: normal; }
   .tabs { flex-wrap: wrap; }
   .ar-cols, .ar-row { grid-template-columns: 42px 80px minmax(0,1fr) 70px; }
+  .pending .ar-row { grid-template-columns: 42px 80px minmax(0,1fr) minmax(70px, max-content); }
   .ar-row { height: 34px; }
   .plot { height: 300px; flex: none; }
   .side { justify-content: center; }

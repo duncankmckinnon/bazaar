@@ -285,6 +285,19 @@ def test_the_qr_block_goes_left_only_when_a_large_qr_and_3_pending_rows_fit():
     assert fit(0.5, 900, 60, 33, 450, 160) == 260  # 960 wide: the column width limits it
 
 
+def test_a_running_rows_day_text_widens_its_column_instead_of_clipping():
+    # The blinking dot (20886e3) made "day 4/10" overflow the fixed 110 px return column.
+    assert (
+        ".pending .ar-row { grid-template-columns: calc(var(--px)*80) calc(var(--px)*140) "
+        "minmax(0,1fr) minmax(calc(var(--px)*110), max-content); }"
+    ) in BOARD
+    phone = BOARD.split("@media (max-width: 760px) {", 1)[1].split("\n}", 1)[0]
+    assert (
+        ".pending .ar-row { grid-template-columns: 42px 80px minmax(0,1fr) "
+        "minmax(70px, max-content); }"
+    ) in phone
+
+
 def test_pending_rows_that_do_not_fit_become_a_more_line():
     assert '<p class="pending-more" id="pending-more" hidden></p>' in BOARD
     # .ar-row sets display: grid, which would override the hidden attribute.
