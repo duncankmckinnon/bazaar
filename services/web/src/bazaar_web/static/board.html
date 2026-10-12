@@ -101,7 +101,7 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .tip-box[hidden] { display: none; }
 .tip-box b { display: block; color: var(--lime); font-weight: 700; }
 
-/* Under the chart: the QR strip. The QR keeps a 4-module quiet zone (qrSVG) on the light card,
+/* Under the chart (or under the table, below): the QR block. The QR keeps a 4-module quiet zone (qrSVG) on the light card,
    and error correction H for the logo in its centre. */
 .side { grid-area: side; min-height: 0; display: flex; align-items: center; justify-content: flex-end; gap: calc(var(--px)*36); }
 .side .ins { display: flex; flex-direction: column; align-items: flex-end; gap: calc(var(--px)*10); text-align: right; }
@@ -109,6 +109,11 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .side p { font: 400 calc(var(--px)*26)/1.3 var(--pixel); color: var(--text); margin: 0; }
 .side .url { font: 500 calc(var(--px)*20)/1.3 var(--mono); color: var(--soft); word-break: break-all; }
 .ar-qr { background: var(--sugar); border: calc(var(--px)*8) solid var(--aqua); box-shadow: 0 0 0 calc(var(--px)*6) var(--ink), 0 0 0 calc(var(--px)*12) var(--magenta); width: calc(var(--px)*300); flex: 0 0 auto; }
+/* Tall windows (placeQR): the QR block sits at the bottom of the left column, sized to the room
+   there, and the chart takes the whole right column. */
+.dash.qr-left { grid-template-rows: auto minmax(0,1fr) auto; grid-template-areas: "hd hd" "board chart" "tape tape"; }
+.board .side { flex: none; justify-content: flex-start; padding: calc(var(--px)*12); }
+.board .ar-qr { width: var(--qr); box-sizing: border-box; }
 
 /* Bottom: the replay tape of each day's top movers. */
 .tape { grid-area: tape; margin: 0 calc(var(--px)*-40); display: flex; align-items: center; border-top: 1px solid var(--line); background: rgba(28,18,32,.7); overflow: hidden; white-space: nowrap; }
@@ -631,6 +636,37 @@ function renderHeader(data) {
   $("sub-c").textContent = factoryText(data.factory);
 }
 
+// qrFit:start
+// The QR block moves to the bottom of the left column when that column has room under the top 15
+// plus 3 pending rows and a "+K more" line for a QR at least as large as the strip's (300 px at 1920), capped at 420 px.
+const QR_MAX = 420;
+function qrFit(m) {
+  const free = m.board - m.above - 15 * 40 * m.px - 4 * 34 * m.px - m.note - 2 * 12 * m.px - 2 * 12 * m.px;
+  const size = Math.floor(Math.min(free, QR_MAX, m.width - m.cta - 36 * m.px - 2 * 12 * m.px));
+  return size >= 300 * m.px ? size : 0;
+}
+// qrFit:end
+
+const dash = document.querySelector(".dash"), board = document.querySelector(".board"), side = document.querySelector(".side");
+function placeQR() {
+  const narrow = matchMedia("(max-width: 760px)").matches;
+  const px = parseFloat(getComputedStyle(document.querySelector(".ar-cols")).columnGap) / 12;
+  const b = board.getBoundingClientRect(), note = board.lastElementChild; // the footnote
+  const size = narrow ? 0 : qrFit({
+    px, board: b.height, width: b.width, cta: document.querySelector(".ins").scrollWidth,
+    above: list.getBoundingClientRect().top - b.top + $("pending-head").offsetHeight + 6 * px,
+    note: note.offsetHeight,
+  });
+  const left = size > 0, was = dash.classList.contains("qr-left");
+  dash.style.setProperty("--qr", left ? `${size}px` : "");
+  if (left !== was) {
+    dash.classList.toggle("qr-left", left);
+    if (left) board.insertBefore(side, note); else dash.insertBefore(side, $("tape"));
+    if (lastData) renderChart(lastData);
+  }
+  fitPending();
+}
+new ResizeObserver(placeQR).observe(board);
 new ResizeObserver(fitPending).observe(pendingList);
 
 /* ---------- polling ---------- */
