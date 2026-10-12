@@ -39,6 +39,7 @@ from bazaar_protocol.research import (
     Provenance,
     ResearchRequest,
 )
+from bazaar_protocol.telemetry import strategy_label
 from pydantic import AwareDatetime, BaseModel, Field, TypeAdapter, ValidationError
 
 from bazaar_agent.market_view import Quotes as QuoteBook
@@ -359,7 +360,12 @@ class ResearchTools:
         | None = None,
     ) -> ToolResult[T]:
         # Catch INSIDE span: exceptions/validation payloads must never enter telemetry.
-        with logfire.span("research tool", _tags=["research"], _span_name="research.tool") as span:
+        with logfire.span(
+            "{strategy} · research tool",
+            _tags=["research"],
+            _span_name="research.tool",
+            strategy=strategy_label(),
+        ) as span:
             prepared = False
             try:
                 if request is not None:
@@ -628,7 +634,11 @@ class ResearchTools:
         return await self._call(f"{self._account_root}/orders", OrderHistoryPage, request)
 
     async def private_history(self, request: HistoryRequest) -> ToolResult[PrivateHistoryPage]:
-        with logfire.span("private history tool"):
+        with logfire.span(
+            "{strategy} · private history tool",
+            _span_name="private history tool",
+            strategy=strategy_label(),
+        ):
             prepared = False
             try:
                 request = HistoryRequest.model_validate_json(request.model_dump_json())

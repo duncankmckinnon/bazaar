@@ -8,6 +8,7 @@ from enum import StrEnum
 from uuid import UUID
 
 import logfire
+from bazaar_protocol.telemetry import strategy_label
 
 from bazaar_evaluation.results import Evidence, RunEvaluation, TradeScore
 
@@ -80,11 +81,21 @@ def emit(evaluation: RunEvaluation) -> None:
         period_reasons=None if period.reconciled else _reasons(period.evidence),
         **{f"denominator_{d.name}": d.value for d in period.denominators},
     )
-    with logfire.span("evaluate run {experiment_id}", _tags=["evaluation"], **run):
+    # Span names are fixed (dashboards match them); the message leads with the strategy name.
+    strategy = strategy_label(evaluation.policy_ref or "unnamed")
+    with logfire.span(
+        "{strategy} · evaluate run {experiment_id}",
+        _span_name="evaluate run {experiment_id}",
+        _tags=["evaluation"],
+        strategy=strategy,
+        **run,
+    ):
         for score in evaluation.trade_scores:
             with logfire.span(
-                "trade {symbol} {side} {status}",
+                "{strategy} · trade {symbol} {side} {status}",
+                _span_name="trade {symbol} {side} {status}",
                 _tags=["evaluation"],
+                strategy=strategy,
                 **_trade_attributes(score),
             ):
                 pass

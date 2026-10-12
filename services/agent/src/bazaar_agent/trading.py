@@ -20,6 +20,7 @@ from bazaar_protocol import (
 )
 from bazaar_protocol.registry import Reference, StrategyVersion
 from bazaar_protocol.research import ResearchRequest
+from bazaar_protocol.telemetry import strategy_label
 from pydantic import Field, StringConstraints, ValidationError
 from pydantic_ai import Agent, ModelRetry, RunContext, Tool, capture_run_messages
 from pydantic_ai.capabilities import AbstractCapability
@@ -345,7 +346,17 @@ async def run_decision(
     research_observations: list[dict[str, Any]] = []
     with (
         contextlib.ExitStack() as role_stack,
-        logfire.span("trading decision", _span_name="trading.decision", _tags=["trading"]) as span,
+        logfire.span(
+            "{strategy} · day {day} · agent decision",
+            _span_name="trading.decision",
+            _tags=["trading"],
+            strategy=strategy_label(),
+            day=(
+                trading_day[0]
+                if trading_day is not None
+                else context.experiment.simulated_at.date().isoformat()
+            ),
+        ) as span,
         capture_run_messages() as messages,
     ):
         try:

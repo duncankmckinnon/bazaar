@@ -86,12 +86,16 @@ def test_one_parent_span_with_one_child_per_trade_score(capfire):
     emit(evaluation())
     parent, children = spans(capfire)
 
-    assert parent["attributes"]["logfire.msg"] == f"evaluate run {EXPERIMENT}"
+    # Outside a run (no baggage) and with no policy_ref, the live-view label is "unnamed";
+    # the span names stay the templates dashboards match.
+    assert parent["name"] == "evaluate run {experiment_id}"
+    assert parent["attributes"]["logfire.msg"] == f"unnamed · evaluate run {EXPERIMENT}"
     assert parent["attributes"]["logfire.tags"] == ("evaluation",)
+    assert {c["name"] for c in children} == {"trade {symbol} {side} {status}"}
     assert [c["attributes"]["logfire.msg"] for c in children] == [
-        "trade AAPL buy scored",
-        "trade AAPL sell failed",
-        "trade AAPL buy unsupported",
+        "unnamed · trade AAPL buy scored",
+        "unnamed · trade AAPL sell failed",
+        "unnamed · trade AAPL buy unsupported",
     ]
     failed = children[1]["attributes"]
     assert failed["order_id"] == str(UUID(int=2))

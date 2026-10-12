@@ -84,6 +84,7 @@ SECRET_ENV = (
     "LOGFIRE_API_WRITE_KEY",  # the strategist eval's dataset push (bazaar_agent.strategist_eval)
 )
 REDACTED = "[REDACTED]"
+STRATEGY_NAME_BAGGAGE = "bazaar.strategy_name"
 # Shorter values are not credentials and would redact ordinary text.
 MIN_SECRET_LENGTH = 8
 # "api_key=…", "Authorization: Bearer …", 'runner_token="…"', '"api_key": "…"': keep the name and
@@ -268,3 +269,12 @@ def configure(
             **variables,
         )
         return True
+
+
+def strategy_label(fallback: str = "unnamed") -> str:
+    """The run's strategy name from Logfire baggage (record_run sets it), for a span's message.
+
+    It is attendee text: pass it as an attribute value formatted by a fixed template
+    ("{strategy} · ..."), never inside the template itself."""
+    value = logfire.get_baggage().get(STRATEGY_NAME_BAGGAGE)
+    return str(value) if value else fallback
