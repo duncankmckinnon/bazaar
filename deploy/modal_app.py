@@ -9,7 +9,9 @@ BAZAAR_MODAL_TARGET is required: live, or staging for the separate load-test app
 deploy/README.md).
 One container (min and max 1) runs the market on 127.0.0.1:8000 as a subprocess and serves the
 web app. A Volume at /data keeps runs, the web database and a writable copy of the market
-database, committed every 10 seconds and after each scored run. See deploy/README.md.
+database, committed every 10 seconds, after each scored run and within about 2 seconds of a new
+lead or submission. A second Volume at /backup keeps the newest 48 online backups of the web
+database, one every 15 minutes and one at shutdown. See deploy/README.md.
 """
 
 from __future__ import annotations
@@ -31,11 +33,13 @@ APP_NAME = TARGET.app
 if modal.is_local():
     print(
         f"deploying target={TARGET.name} app={TARGET.app} volume={TARGET.volume} "
-        f"secret={TARGET.secret} cpu={CPU:g} memory={MEMORY_MIB}MiB",
+        f"backup_volume={TARGET.backup_volume} secret={TARGET.secret} "
+        f"cpu={CPU:g} memory={MEMORY_MIB}MiB",
         file=sys.stderr,
     )
 REPO = Path(__file__).resolve().parents[1]
 DATA = "/data"
+BACKUP = "/backup"
 SEED_DB = "/app/seed/market.sqlite3"
 SEED_RUNS = "/app/seed/runs"
 FONTS_DIR = "/app/fonts"
@@ -84,6 +88,7 @@ if modal.is_local():
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(TARGET.volume, create_if_missing=True)
+backup_volume = modal.Volume.from_name(TARGET.backup_volume, create_if_missing=True)
 secret = modal.Secret.from_name(
     TARGET.secret,
     required_keys=[
@@ -113,7 +118,7 @@ if modal.is_local() and os.environ.get("BAZAAR_MAX_CONCURRENT", "").strip():
 
 @app.cls(
     image=image,
-    volumes={DATA: volume},
+    volumes={DATA: volume, BACKUP: backup_volume},
     secrets=[secret],
     env=WEB_ENV,
     cpu=CPU,
@@ -137,6 +142,9 @@ class Live:
         db, _ = live_runtime.prepare_data(Path(DATA), Path(SEED_DB), Path(SEED_RUNS))
         self.committer = live_runtime.VolumeCommitter(volume.commit).start()
         self.committer.commit_now("seed")
+        self.backups = live_runtime.WebBackups(
+            Path(WEB_ENV["BAZAAR_WEB_DB"]), Path(BACKUP), backup_volume.commit
+        ).start()
         self.market = live_runtime.start_market(db)
         live_runtime.wait_healthy(f"{MARKET_URL}/health", timeout=30, process=self.market)
         self.stopping = threading.Event()
@@ -148,7 +156,7 @@ class Live:
 
     @modal.exit()
     def stop(self) -> None:
-        live_runtime.shutdown(self.market, self.committer, self.stopping)
+        live_runtime.shutdown(self.market, self.committer, self.stopping, backups=self.backups)
 
     @modal.asgi_app()
     def web(self):
@@ -156,4 +164,7 @@ class Live:
 
         # The web worker calls this after each scored run, so the result survives a restart.
         web_app.state.on_scored = self.committer.on_scored
+        # After each new lead or submission: a debounced commit, so the row is on the volume
+        # within about 2 seconds instead of the 10-second timer.
+        web_app.state.on_saved = self.committer.on_saved
         return web_app

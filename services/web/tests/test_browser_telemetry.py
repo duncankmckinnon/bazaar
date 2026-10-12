@@ -23,6 +23,7 @@ IGNORES = (
     r"/\/api\/board(\?|$)/",
     r"/\/api\/tickers(\?|$)/",
     r"/\/api\/submissions\/[^/?]+/",
+    r"/\/api\/leads(\?|$)/",
     r"/\/api\/admin\//",
 )
 
@@ -114,6 +115,8 @@ def test_the_route_is_not_traced_by_the_backend():
         ("/api/admin/house", True), ("/api/admin/house/pause", True),
         ("/api/admin/submissions/abc/rerun", True), ("/api/administer", False),
         ("/api/boards", False),
+        # The form's email step: personal data.
+        ("/api/leads", True), ("/api/leads?x=1", True), ("/api/leadsx", False),
     ],
 )  # fmt: skip
 def test_the_ignore_patterns(path, ignored):

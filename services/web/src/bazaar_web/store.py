@@ -5,6 +5,7 @@ Each operation opens its own connection, so worker threads can report progress s
 
 import json
 import logging
+import secrets
 import sqlite3
 import threading
 from collections import Counter
@@ -56,8 +57,20 @@ CREATE TABLE IF NOT EXISTS submissions (
     dataset_error_class TEXT,
     -- The case's id in the dataset, and when it was deleted after the row was hidden.
     dataset_case_id TEXT,
-    dataset_deleted_at TEXT
+    dataset_deleted_at TEXT,
+    -- The leads row for this submission's email (null on house runs and older rows).
+    lead_id TEXT
 );
+-- Emails from the form's first step (POST /api/leads) and from every submission, one row per
+-- normalised email. Personal data, like submissions.email. ip_hash is the first poster's.
+CREATE TABLE IF NOT EXISTS leads (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    ip_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS leads_by_ip ON leads (ip_hash, created_at);
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
     text TEXT NOT NULL,
@@ -129,6 +142,15 @@ LOCK_ERRORS = LockErrors()
 
 class NameTaken(Exception):
     pass
+
+
+NAME_ATTEMPTS = 20  # the name as given, then up to 19 suffixed tries
+SUFFIX_LENGTH = 4
+SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def name_suffix() -> str:
+    return "".join(secrets.choice(SUFFIX_ALPHABET) for _ in range(SUFFIX_LENGTH))
 
 
 class NotFound(Exception):
@@ -238,6 +260,7 @@ class Store:
                 "dataset_error_class",
                 "dataset_case_id",
                 "dataset_deleted_at",
+                "lead_id",
             ):
                 if column not in columns:  # existing rows start pending: the backfill
                     conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
@@ -278,12 +301,22 @@ class Store:
         trace_context: str | None = None,
         contact: Contact | None = None,
     ) -> str:
-        """Insert a queued submission, checking the name and every cap in one transaction."""
+        """Insert a queued submission, checking the name and every cap in one transaction.
+
+        A taken name (any row, hidden included) gets "-" and 4 random [a-z0-9] characters, the
+        base cut so the whole stays within 40; read the final name back with get(). The email,
+        if any, is linked to its leads row, made here when it is new.
+        """
         contact = contact or Contact()
         now = self.now()
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         with self._tx() as conn:
-            if conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
+            base = name
+            for _ in range(NAME_ATTEMPTS):
+                if not conn.execute("SELECT 1 FROM submissions WHERE name = ?", (name,)).fetchone():
+                    break
+                name = f"{base[: 40 - 1 - SUFFIX_LENGTH].rstrip('-')}-{name_suffix()}"
+            else:
                 raise NameTaken
             # Admin reruns occupy the queue, so they count here, but not in the daily or per-IP caps.
             # House runs have their own slots and count toward no cap.
@@ -310,10 +343,11 @@ class Store:
                     "Too many submissions from your network in the last hour. Please wait a bit."
                 )
             submission_id = uuid4().hex
+            lead_id = self._lead(conn, contact.email, ip_hash, now) if contact.email else None
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, trace_context, email, company, role, lane) "
-                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 'human')",
+                "created_at, trace_context, email, company, role, lane, lead_id) "
+                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, 'human', ?)",
                 (
                     submission_id,
                     name,
@@ -325,10 +359,51 @@ class Store:
                     contact.email,
                     contact.company,
                     contact.role,
+                    lead_id,
                 ),
             )
             self._event(conn, f"{name} joined the queue", submission_id)
         return submission_id
+
+    def _lead(self, conn: TracedConnection, email: str, ip_hash: str, now: datetime) -> str:
+        """The leads row id for this email, made when new; a known email is only touched."""
+        email = email.lower()  # the API has stripped and lowercased it already
+        stamp = now.isoformat()
+        row = conn.execute("SELECT id FROM leads WHERE email = ?", (email,)).fetchone()
+        if row is not None:
+            conn.execute("UPDATE leads SET last_seen_at = ? WHERE id = ?", (stamp, row["id"]))
+            return row["id"]
+        lead_id = uuid4().hex
+        conn.execute(
+            "INSERT INTO leads (id, email, created_at, last_seen_at, ip_hash) VALUES (?, ?, ?, ?, ?)",
+            (lead_id, email, stamp, stamp, ip_hash),
+        )
+        return lead_id
+
+    def add_lead(self, *, email: str, ip_hash: str, max_per_ip_hour: int) -> None:
+        """Keep an email (idempotent). The cap counts the leads this network added in the last
+        hour, and is checked before the lookup, so a refusal says nothing about the email."""
+        now = self.now()
+        with self._tx() as conn:
+            (recent,) = conn.execute(
+                "SELECT COUNT(*) FROM leads WHERE ip_hash = ? AND created_at >= ?",
+                (ip_hash, (now - timedelta(hours=1)).isoformat()),
+            ).fetchone()
+            if recent >= max_per_ip_hour:
+                raise CapReached(
+                    "Too many sign-ups from your network in the last hour. Please wait a bit."
+                )
+            self._lead(conn, email, ip_hash, now)
+
+    def leads_without_submission(self) -> int:
+        """Leads no submission links to (operator email left out)."""
+        with closing(self._connect()) as conn:
+            (count,) = conn.execute(
+                "SELECT COUNT(*) FROM leads AS l WHERE l.email != ? AND NOT EXISTS "
+                "(SELECT 1 FROM submissions AS s WHERE s.lead_id = l.id)",
+                (OPERATOR_CONTACT_EMAIL,),
+            ).fetchone()
+        return count
 
     def factory_inputs(self) -> tuple[frozenset[str], list[str], int]:
         """What the strategist is told: names it must leave out (hidden rows and operator
@@ -560,8 +635,8 @@ class Store:
             new_id = uuid4().hex
             conn.execute(
                 "INSERT INTO submissions (id, name, handle, instructions, ip_hash, status, "
-                "created_at, trace_context, rerun_of, email, company, role) "
-                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+                "created_at, trace_context, rerun_of, email, company, role, lead_id) "
+                "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     old["name"],
@@ -574,6 +649,7 @@ class Store:
                     old["email"],  # the same person's run: their contact details carry over
                     old["company"],
                     old["role"],
+                    old["lead_id"],
                 ),
             )
             self._event(conn, f"{old['name']} re-queued", new_id)
@@ -772,18 +848,33 @@ class Store:
             )
 
     def contacts(self) -> list[dict[str, Any]]:
-        """Visible submissions that left contact details, oldest first (for the admin CSV).
+        """The admin CSV's people: visible submissions that left contact details (source
+        "submission", oldest first), then leads whose email no submission carries, hidden ones
+        included (source "lead", oldest first). Emails are matched normalised (lowercase).
 
-        Operator rows are left out. House runs never carry contact details, so the NOT NULL test
-        already leaves them out too.
+        A submission's created_at is the earliest of its own and its email's lead's, so an email
+        left before submitting keeps its first time. Operator rows and the operator's lead are
+        left out. House runs never carry contact details, so the NOT NULL test leaves them out.
         """
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                "SELECT id, name, handle, email, company, role, created_at FROM submissions "
-                "WHERE email IS NOT NULL AND lower(email) != ? AND hidden = 0 ORDER BY rowid",
+            people = conn.execute(
+                "SELECT s.id, s.name, s.handle, s.email, s.company, s.role, "
+                "min(s.created_at, coalesce(l.created_at, s.created_at)) AS created_at, "
+                "'submission' AS source FROM submissions AS s "
+                "LEFT JOIN leads AS l ON l.email = lower(s.email) "
+                "WHERE s.email IS NOT NULL AND lower(s.email) != ? AND s.hidden = 0 "
+                "ORDER BY s.rowid",
                 (OPERATOR_CONTACT_EMAIL,),
             ).fetchall()
-        return [dict(row) for row in rows]
+            leads = conn.execute(
+                "SELECT NULL AS id, NULL AS name, NULL AS handle, l.email, NULL AS company, "
+                "NULL AS role, l.created_at, 'lead' AS source FROM leads AS l "
+                "WHERE l.email != ? AND NOT EXISTS "
+                "(SELECT 1 FROM submissions AS s WHERE lower(s.email) = l.email) "
+                "ORDER BY l.created_at, l.rowid",
+                (OPERATOR_CONTACT_EMAIL,),
+            ).fetchall()
+        return [dict(row) for row in (*people, *leads)]
 
     def by_run_dir(self) -> dict[str, dict[str, Any]]:
         with closing(self._connect()) as conn:

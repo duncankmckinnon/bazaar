@@ -14,6 +14,7 @@ EXCLUDED_URLS = (
     r"/api/tickers(\?|$)",
     r"/api/admin/stats(\?|$)",
     r"/api/admin/contacts(\?|$)",
+    r"/api/leads(\?|$)",  # personal data: an email and nothing else
     r"/api/submissions/[^/?]+(\?|$)",
     r"/fonts/",
     r"/static/",
