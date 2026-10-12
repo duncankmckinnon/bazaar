@@ -6,7 +6,7 @@ import httpx
 import logfire
 import pytest
 from bazaar_protocol import telemetry as protocol_telemetry
-from bazaar_protocol.telemetry import scrubbing_options
+from bazaar_protocol.telemetry import REDACTED, scrubbing_options
 from bazaar_runner import submission
 from bazaar_runner.agent import fixture_model_factory
 from bazaar_runner.submission import SubmissionFailed, run_submission, submission_experiment_id
@@ -256,7 +256,8 @@ def test_captured_headers_have_their_secrets_scrubbed(monkeypatch, tmp_path):
         "http.request.header.x-bazaar-admin-token",
         "http.request.header.authorization",
     ):
-        assert by_key[key] and all("[Scrubbed due to" in v for v in by_key[key]), key
+        # SC1: a credential header's value becomes the neutral marker (never "due to <match>").
+        assert by_key[key] and all(REDACTED in v for v in by_key[key]), key
     assert not [v for values in by_key.values() for v in values if approval in v]
     assert_no_secret(spans)
     assert any(isinstance(s["attributes"].get("gen_ai.usage.input_tokens"), int) for s in spans)

@@ -252,9 +252,12 @@ def test_web_startup_turns_on_the_shared_scrubbing(settings, helpers, real_confi
         real(send_to_logfire=False, console=False)  # leave no exporter behind for later tests
 
     assert seen["service_name"] == "bazaar-web"
-    assert seen["scrubbing"].extra_patterns == list(bazaar_protocol.telemetry.EXTRA_SCRUB_PATTERNS)
+    # SC1: the shared precise scrubbing (secret values, emails and credential keys).
+    shared = bazaar_protocol.telemetry.scrubbing_options()
+    assert seen["scrubbing"].callback is shared.callback
+    assert seen["scrubbing"].extra_patterns == shared.extra_patterns
     exported = exporter.exported_spans
     assert {s.resource.attributes["service.name"] for s in exported} == {"bazaar-web"}
     dumped = json.dumps(exporter.exported_spans_as_dict(), default=str)
     assert "SENTINEL" not in dumped
-    assert "Scrubbed due to" in dumped
+    assert bazaar_protocol.telemetry.REDACTED in dumped  # credential keys' values

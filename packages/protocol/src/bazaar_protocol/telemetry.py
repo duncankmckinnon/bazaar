@@ -4,15 +4,17 @@
 configuration that is already in place, whether it came from here or from a direct
 `logfire.configure` call. Library code does not configure; process entry points do.
 
-Logfire never scrubs `exception.message` or `exception.stacktrace` (they are safe keys), and its
-patterns match secret names, not secret values. So exception text that crosses a span boundary
-goes through `redact` / `redacted_exceptions`, which remove the configured secret values.
+Span scrubbing replaces only real secrets: the configured secret values, emails and
+credential keys' values (see precise_scrub); free text is never scrubbed for a word. Logfire never
+scrubs `exception.message` or `exception.stacktrace` (they are safe keys), so exception text that
+crosses a span boundary goes through `redact` / `redacted_exceptions`, which remove the
+configured secret values.
 """
 
 import os
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, NoReturn
@@ -22,54 +24,113 @@ import logfire
 from logfire._internal.config import GLOBAL_CONFIG
 from logfire._internal.scrubbing import DEFAULT_PATTERNS
 
-# Logfire's defaults have no "token" pattern, so the runner and admin token headers are added; a
-# bare "token" would also scrub gen_ai.usage.*_tokens. The approval header is the market
-# capability, so it is scrubbed too even though the approval id is not a secret.
+# Span scrubbing (SC1): only real secrets, never free text by a word match.
+# Logfire always applies its DEFAULT_PATTERNS ("auth", "secret", "session", "cookie"...) to keys
+# and string values, and hands the FIRST match to the callback. Our patterns only add triggers:
+# each loaded secret value, emails, and credential-shaped keys. precise_scrub then decides:
+# a secret value or an email is replaced, a credential key's value is replaced, and anything
+# else (role text, news, "market-authoritative", "trading session", cache_read_tokens) is kept.
 EMAIL_PATTERN = r"(?<=[\w.+-])@[\w-]+(?:\.[\w-]+)+"
 EMAIL_SCRUBBED = "[Scrubbed email]"
-EXTRA_SCRUB_PATTERNS = (
-    r"runner[._ -]?token",
-    r"admin[._ -]?token",
-    # The strategist's Logfire query token (LOGFIRE_READ_TOKEN, logfire_read_token, read-token).
-    r"read[._ -]?token",
-    r"x[._ -]?bazaar[._ -]?approval",
-    # Email addresses (submitters' contact details), as defence in depth: the web app never puts
-    # them in a span. Logfire matches patterns against attribute names AND string values, so any
-    # value holding an email-like string (news text, an agent message) is scrubbed too; that
-    # over-redaction is accepted. It needs an "@" and a dotted domain, so no attribute name such
-    # as gen_ai.usage.input_tokens can match. It matches from the "@" on: Logfire keeps a value
-    # that matches as a WHOLE, so a pattern spanning a bare address would never scrub it.
-    EMAIL_PATTERN,
+_EMAIL = re.compile(EMAIL_PATTERN)
+# Key triggers only (the callback keeps a value that is not under a credential key): header and
+# attribute names such as x-bazaar-runner-token or read_token, never the counts *_tokens.
+_KEY_TRIGGERS = (r"[._-]token\b", r"x[._ -]?bazaar[._ -]?approval")
+# A secret value this short is not used as a pattern (it could match ordinary text).
+MIN_SCRUB_SECRET_LENGTH = 16
+_CREDENTIAL_KEYS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-bazaar-approval",
+        "api_key",
+        "apikey",
+        "api-key",
+        "password",
+        "secret",
+    }
 )
-
-# Logfire scrubs any value or key matching a pattern. "session" is everyday trading language
-# ("trading session"), so a value whose only match is "session" is kept. Logfire hands the
-# callback only the FIRST match, so the whole value and its key path are searched again for every
-# other pattern; any hit keeps it scrubbed. Scrubbing is never turned off.
-_OTHER_SECRET_PATTERNS = re.compile(
-    "|".join([*(p for p in DEFAULT_PATTERNS if p != "session"), *EXTRA_SCRUB_PATTERNS]),
-    re.IGNORECASE,
-)
+_BAZAAR_TOKEN_HEADER = re.compile(r"x-bazaar-[\w-]+-token")
 
 
-def keep_trading_sessions(match: logfire.ScrubMatch) -> Any:
-    """Keep a value whose only match is "session"; replace an email-led one with EMAIL_SCRUBBED.
+def _credential_key(key: object) -> bool:
+    """A key whose value is a credential: checked as a whole and after its last '.', so
+    http.request.header.authorization counts. A *_tokens count never does."""
+    whole = str(key).lower()
+    for name in {whole, whole.rsplit(".", 1)[-1]}:
+        if name in _CREDENTIAL_KEYS or _BAZAAR_TOKEN_HEADER.fullmatch(name):
+            return True
+        if name.endswith(("_token", "-token")):
+            return True
+    return False
 
-    Logfire's own replacement, "[Scrubbed due to '<match>']", would copy the address into the
-    span (and its logfire.scrubbed note), so an email match gets a neutral value instead.
-    """
-    if match.pattern_match.group(0).startswith("@"):
+
+def _holds_secret(path: tuple, value: object) -> bool:
+    secrets = _secrets or ()
+    texts = [str(value), *map(str, path)]
+    return any(secret in text for secret in secrets for text in texts)
+
+
+def _precise(path: tuple, value: Any) -> Any:
+    """The value to export: a neutral marker for a secret, an email or a credential key's value;
+    otherwise the value itself (a mapping or sequence is checked item by item)."""
+    if _holds_secret(path, value):
+        # Never None: Logfire's default replacement quotes the match, which could be the secret.
+        return REDACTED
+    if path and _credential_key(path[-1]):
+        # Header values come as sequences; keep the shape.
+        return type(value)(REDACTED for _ in value) if isinstance(value, list | tuple) else REDACTED
+    if isinstance(value, Mapping):
+        return {k: _precise((*path, k), v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return type(value)(_precise((*path, i), v) for i, v in enumerate(value))
+    if isinstance(value, str) and _EMAIL.search(value):
         return EMAIL_SCRUBBED
-    if match.pattern_match.group(0).lower() != "session":
-        return None
-    text = " ".join(map(str, match.path)) + " " + str(match.value)
-    return None if _OTHER_SECRET_PATTERNS.search(text) else match.value
+    return value
+
+
+def precise_scrub(match: logfire.ScrubMatch) -> Any:
+    """Logfire's scrubbing callback: replace only secrets, emails and credential keys' values.
+
+    It never returns None, so Logfire's own "[Scrubbed due to '<match>']" (which quotes the
+    match) is never used."""
+    return _precise(tuple(match.path), match.value)
+
+
+def _secret_pattern(secret: str) -> str:
+    # Logfire keeps a value its pattern matches as a WHOLE, so a value that is exactly the secret
+    # must not be a whole match: match all but the last character and look ahead for it.
+    return re.escape(secret[:-1]) + "(?=" + re.escape(secret[-1]) + ")"
 
 
 def scrubbing_options() -> logfire.ScrubbingOptions:
-    return logfire.ScrubbingOptions(
-        callback=keep_trading_sessions, extra_patterns=list(EXTRA_SCRUB_PATTERNS)
+    """The scrubbing rule, with the secret values loaded now (configure calls this)."""
+    _load_secrets()
+    secrets = sorted(
+        {s for s in (_secrets or ()) if len(s) >= MIN_SCRUB_SECRET_LENGTH}, key=len, reverse=True
     )
+    return logfire.ScrubbingOptions(
+        callback=precise_scrub,
+        extra_patterns=[EMAIL_PATTERN, *_KEY_TRIGGERS, *map(_secret_pattern, secrets)],
+    )
+
+
+# For redact() only (exception text, a separate path): a value NAMED like a secret
+# ("api_key=…", "runner_token: …") is dropped there. Span scrubbing does not use these words.
+_REDACT_NAME_PATTERNS = (
+    r"runner[._ -]?token",
+    r"admin[._ -]?token",
+    r"read[._ -]?token",
+    r"x[._ -]?bazaar[._ -]?approval",
+    EMAIL_PATTERN,
+)
+_OTHER_SECRET_PATTERNS = re.compile(
+    "|".join([*(p for p in DEFAULT_PATTERNS if p != "session"), *_REDACT_NAME_PATTERNS]),
+    re.IGNORECASE,
+)
 
 
 # The secrets a Bazaar process may hold. Their values are read once, at configure, and kept only
@@ -82,6 +143,7 @@ SECRET_ENV = (
     "LOGFIRE_TOKEN",
     "LOGFIRE_READ_TOKEN",
     "LOGFIRE_API_WRITE_KEY",  # the strategist eval's dataset push (bazaar_agent.strategist_eval)
+    "BAZAAR_LOGFIRE_BROWSER_TOKEN",
 )
 REDACTED = "[REDACTED]"
 STRATEGY_NAME_BAGGAGE = "bazaar.strategy_name"
