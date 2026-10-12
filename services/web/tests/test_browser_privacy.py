@@ -13,9 +13,9 @@ Without Playwright or a launchable Chromium (plain `uv run pytest`, the CI test 
 here SKIPS with a named reason; it never passes silently. With BAZAAR_REQUIRE_BROWSER_PROOF=1
 (the CI browser-privacy job) a missing browser FAILS instead.
 
-Handle, email, company, role and instructions must never appear: any trace of them in an export
-fails. Only the strategy name is public (the board and the Logfire link show it): a trace of it
-is reported as a NOTE warning.
+The email and the strategy text must never appear: any trace of them in an export fails. Only
+the strategy name is public (the board and the Logfire link show it): a trace of it is reported
+as a NOTE warning. The email is also left (blurred), so the /api/leads capture really runs.
 """
 
 import gzip
@@ -88,15 +88,12 @@ REPLAY_URL = "https://logfire-us.pydantic.dev/v1/replay"
 SECOND_INTERACTION_AT = 11.0
 STAY_ON_PAGE = 16.0
 # Text that session replay must mask on /submit (maskAllText is on everywhere but the board).
-UNMASKED_TEXT = ("Enter your trading agent", "use your email only to contact you")
+UNMASKED_TEXT = ("Enter your trading agent", "use it only to contact winners")
 
-PRIVATE = ("handle", "email", "company", "role", "instructions")
+PRIVATE = ("email", "instructions")
 FIELDS = {
     "name": "name-sentinel-53",
-    "handle": "HandleSentinel-29",
     "email": "zz-sentinel-mail@example.org",
-    "company": "ZebraSentinel Holdings",
-    "role": "Chief Sentinel Officer",
     "instructions": "Buy 10 shares of KO on day one, INSTR-SENTINEL-41, and hold to the end.",
 }
 
@@ -105,6 +102,41 @@ def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+def v11_stub(app):
+    """Replay's v11 API stand-in until this branch has it, and a no-op once the app serves
+    /api/leads: a lead POST gets 204, and a submission gets the placeholder company and role the
+    older API still requires (the page sends only name, email and instructions)."""
+    if any(getattr(route, "path", None) == "/api/leads" for route in app.routes):
+        return app
+
+    async def wrapped(scope, receive, send):
+        post = scope["type"] == "http" and scope["method"] == "POST"
+        if post and scope["path"] == "/api/leads":
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if post and scope["path"] == "/api/submissions":
+            body, more = b"", True
+            while more:
+                message = await receive()
+                body += message.get("body", b"")
+                more = message.get("more_body", False)
+            data = json.loads(body) | {"company": "Stub company", "role": "Stub role"}
+            body = json.dumps(data).encode()
+            headers = [(k, v) for k, v in scope["headers"] if k != b"content-length"]
+            scope = scope | {"headers": [*headers, (b"content-length", str(len(body)).encode())]}
+
+            pending = [{"type": "http.request", "body": body, "more_body": False}]
+
+            async def replayed():
+                return pending.pop() if pending else await receive()
+
+            return await app(scope, replayed, send)
+        return await app(scope, receive, send)
+
+    return wrapped
 
 
 @pytest.fixture
@@ -123,7 +155,7 @@ def serve(tmp_path, monkeypatch, helpers):
             monkeypatch.setenv(TOKEN_ENV, token)
         runner = helpers.FakeRunner()  # scores at once; the page still polls its status
         runners.append(runner)
-        app = create_app(Settings.from_env(), run_submission=runner)
+        app = v11_stub(create_app(Settings.from_env(), run_submission=runner))
         port = free_port()
         server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
@@ -255,12 +287,26 @@ def locate(export: dict, needle: str) -> list[str]:
 
 
 def fill_and_submit(page, base: str) -> tuple[str, float]:
-    """Fill every field and submit; returns the submission id and when the page loaded."""
+    """Fill both fields, use the builder, write a custom strategy and submit; returns the
+    submission id and when the page loaded. Leaving the email field first saves it as a lead."""
     page.goto(base + "/submit")
     loaded = time.monotonic()
-    for field, value in FIELDS.items():
-        page.locator(f"#{field}").click()  # a user-interaction span per field, if any are made
-        page.keyboard.type(value)
+    page.locator("#name").click()  # a user-interaction span per field, if any are made
+    page.keyboard.type(FIELDS["name"])
+    page.locator("#email").click()
+    page.keyboard.type(FIELDS["email"])
+    with page.expect_response(lambda r: r.url.split("?")[0] == base + "/api/leads") as lead:
+        page.locator("#sectors .chip", has_text="Energy").click()  # leaving the email posts it
+    assert (lead.value.request.method, lead.value.url, lead.value.status) == (
+        "POST", base + "/api/leads", 204
+    )  # fmt: skip
+    assert json.loads(lead.value.request.post_data) == {"email": FIELDS["email"]}
+    page.locator("#email-saved").wait_for(state="visible")
+    page.locator("#aggr").focus()
+    page.keyboard.press("ArrowRight")
+    page.locator("#instructions").click()
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.type(FIELDS["instructions"])
     poll = re.compile(re.escape(base) + r"/api/submissions/[^/?]+$")
     with (
         page.expect_response(lambda r: bool(poll.match(r.url)) and r.request.method == "GET"),
@@ -270,6 +316,8 @@ def fill_and_submit(page, base: str) -> tuple[str, float]:
     ):
         page.locator("#submit").click()  # then the page polls the submission's status once
     assert posted.value.status == 201, posted.value.text()
+    sent = json.loads(posted.value.request.post_data)
+    assert sent == {k: FIELDS[k] for k in ("name", "email", "instructions")}, sorted(sent)
     return posted.value.json()["id"], loaded
 
 
