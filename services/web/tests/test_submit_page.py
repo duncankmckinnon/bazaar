@@ -18,10 +18,18 @@ def test_page_exists_with_a_viewport_meta():
     assert re.search(r'<meta name="viewport" content="width=device-width', page())
 
 
+def test_the_only_script_src_is_the_same_origin_telemetry_module_in_the_head():
+    html = page()
+    tags = re.findall(r"<script\b[^>]*\bsrc\s*=[^>]*>", html, re.IGNORECASE)
+
+    assert tags == ['<script type="module" src="/browser-telemetry.js">']
+    head = html[: html.index("</head>")]
+    assert '<script type="module" src="/browser-telemetry.js"></script>' in head
+
+
 def test_no_external_scripts_and_only_google_font_urls():
     html = page()
 
-    assert not re.search(r"<script[^>]*\bsrc\s*=", html, re.IGNORECASE)
     hosts = {
         re.match(r"https?://([^/\"'\s)]+)", url).group(1)
         for url in re.findall(r"https?://[^\s\"')]+", html)
