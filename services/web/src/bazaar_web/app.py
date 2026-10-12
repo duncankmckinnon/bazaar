@@ -229,11 +229,11 @@ def create_app(
         return FileResponse(fonts / name, media_type="font/woff2")
 
     @app.get("/browser-telemetry.js", include_in_schema=False)
-    def browser_telemetry() -> Response:
+    def browser_telemetry(request: Request) -> Response:
         """The page's Logfire setup (bazaar_web.browser); a bare comment when it is off. Never
         cached: a token change or removal takes effect on the next page load."""
         return Response(
-            telemetry_module(settings.logfire_browser_token),
+            telemetry_module(settings.logfire_browser_token, request.query_params.getlist("page")),
             media_type="application/javascript",
             headers={"Cache-Control": "no-store"},
         )

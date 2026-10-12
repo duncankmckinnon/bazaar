@@ -10,13 +10,15 @@ import subprocess
 
 import pytest
 from bazaar_web.app import STATIC, create_app
-from bazaar_web.browser import IGNORE_URLS, VENDORED
+from bazaar_web.browser import IGNORE_URLS, VENDORED, VENDORED_REPLAY
 from bazaar_web.settings import Settings
 from bazaar_web.telemetry import EXCLUDED_URLS
 from fastapi.testclient import TestClient
 
 SENTINEL = "pylf_v1_us_BROWSERSENTINEL0123456789"
 VENDOR = STATIC / "vendor" / "logfire-browser-0.25.0.js"
+VENDOR_REPLAY = STATIC / "vendor" / "logfire-session-replay-0.5.0.js"
+BOARD_HTML = (STATIC / "board.html").read_text()
 IGNORES = (
     r"/\/api\/board(\?|$)/",
     r"/\/api\/tickers(\?|$)/",
@@ -24,21 +26,23 @@ IGNORES = (
 )
 
 
-def module(settings, helpers, token):
+def module(settings, helpers, token, query=""):
     config = dataclasses.replace(settings, logfire_browser_token=token)
     with TestClient(create_app(config, helpers.FakeRunner())) as client:
-        return client.get("/browser-telemetry.js")
+        return client.get(f"/browser-telemetry.js{query}")
 
 
 @pytest.mark.parametrize("token", [None, ""])
-def test_unset_serves_only_a_comment(settings, helpers, token):
-    response = module(settings, helpers, token)
+@pytest.mark.parametrize("query", ["", "?page=board", "?page=submit"])
+def test_unset_serves_only_a_comment(settings, helpers, token, query):
+    response = module(settings, helpers, token, query)
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/javascript")
     assert response.headers["cache-control"] == "no-store"
     assert all(line.startswith("//") for line in response.text.strip().splitlines())
     assert "import" not in response.text and "logfire-us" not in response.text
+    assert "replay" not in response.text.lower()
 
 
 def test_set_configures_exactly_the_agreed_options(settings, helpers):
@@ -49,7 +53,8 @@ def test_set_configures_exactly_the_agreed_options(settings, helpers):
     assert response.headers["content-type"].startswith("application/javascript")
     assert f'import {{ configure }} from "{VENDORED}";' in body
     assert f"const TOKEN = {json.dumps(SENTINEL)};" in body
-    assert 'traceUrl: "https://logfire-us.pydantic.dev/v1/traces",' in body
+    assert 'const TRACE_URL = "https://logfire-us.pydantic.dev/v1/traces";' in body
+    assert "traceUrl: TRACE_URL," in body
     assert "traceExporterHeaders: () => ({ Authorization: `Bearer ${TOKEN}` })," in body
     assert '"@opentelemetry/instrumentation-fetch": { ignoreUrls: IGNORE },' in body
     assert '"@opentelemetry/instrumentation-xml-http-request": { ignoreUrls: IGNORE },' in body
@@ -116,7 +121,7 @@ def test_the_ignore_patterns(path, ignored):
 def test_the_page_loads_the_module():
     page = (STATIC / "board.html").read_text()
     head = page.split("</head>", 1)[0]
-    assert '<script type="module" src="/browser-telemetry.js"></script>' in head
+    assert '<script type="module" src="/browser-telemetry.js?page=board"></script>' in head
 
 
 def test_the_vendored_bundle_is_one_self_contained_module():
@@ -136,21 +141,108 @@ def test_the_vendored_bundle_is_one_self_contained_module():
 NODE = shutil.which("node")
 
 
+# ---------- session replay (B2) ----------
+
+
+def unmask_line(body):
+    (line,) = re.findall(r"^const UNMASK_BOARD = .*$", body, re.MULTILINE)
+    return line
+
+
+def test_replay_uses_the_vendored_sdk_and_the_trace_url_origin(settings, helpers):
+    body = module(settings, helpers, SENTINEL, "?page=board").text
+
+    assert "sessionReplay: {" in body
+    assert f'load: () => import("{VENDORED_REPLAY}"),' in body
+    assert 'replayUrl: new URL("/v1/replay", TRACE_URL).href,' in body
+    assert "headers: () => ({ Authorization: `Bearer ${TOKEN}` })," in body
+    assert 'maskAllText: !(UNMASK_BOARD && location.pathname === "/"),' in body
+
+
+@pytest.mark.parametrize("query", ["", "?page=board", "?page=submit"])
+def test_replay_keeps_the_sdk_defaults(settings, helpers, query):
+    body = module(settings, helpers, SENTINEL, query).text
+    # Default sampling (every session) is the policy; inputs stay masked; no capture changes.
+    for forbidden in ("sessionSampleRate", "onErrorSampleRate", "maskAllInputs", "capture",
+                      "serviceName", "serviceNamespace", "environment", "redactUrlPatterns",
+                      "blockSelector", "maskTextSelector", "rum: { webVitals: true, session"):  # fmt: skip
+        assert forbidden not in body, forbidden
+
+
+def test_only_page_board_exactly_unmasks_board_text(settings, helpers):
+    assert unmask_line(module(settings, helpers, SENTINEL, "?page=board").text) == (
+        "const UNMASK_BOARD = true;"
+    )
+    for query in ("", "?page=", "?page=submit", "?page=BOARD", "?page=board&page=x",
+                  "?page=x&page=board", "?page=xyz", "?page=board%20", "?pages=board"):  # fmt: skip
+        body = module(settings, helpers, SENTINEL, query).text
+        assert unmask_line(body) == "const UNMASK_BOARD = false;", query
+
+
+def test_the_submit_page_gets_a_masked_module(settings, helpers):
+    config = dataclasses.replace(settings, logfire_browser_token=SENTINEL)
+    with TestClient(create_app(config, helpers.FakeRunner())) as client:
+        page = client.get("/submit").text
+        sources = re.findall(r'<script[^>]*\bsrc="(/browser-telemetry\.js[^"]*)"', page)
+        # evals adds the submit page's tag; until it is on this branch, the plain path.
+        src = sources[0] if sources else "/browser-telemetry.js"
+        body = client.get(src).text
+
+    assert unmask_line(body) == "const UNMASK_BOARD = false;"
+
+
+def test_the_board_asks_for_its_page_exactly():
+    sources = re.findall(r'<script[^>]*\bsrc="([^"]*browser-telemetry[^"]*)"', BOARD_HTML)
+    assert sources == ["/browser-telemetry.js?page=board"]
+
+
+def test_the_vendored_replay_bundle_is_one_self_contained_module():
+    text = VENDOR_REPLAY.read_text(encoding="utf-8")
+
+    assert text.startswith(
+        "/*!\n * @pydantic/logfire-session-replay 0.5.0 (MIT), bundled by esbuild"
+    )
+    header = text.split("*/", 1)[0]
+    for package in ("@rrweb/record@2.1.1", "fflate@0.8.3"):
+        assert package in header
+    assert "rrweb-io/rrweb/graphs/contributors" in header  # rrweb's own MIT notice
+    assert "no license file" not in header
+    code = text[len(header) :]
+    for bare in ('from"@', 'from "@', 'import("@', "import('@", "import(`@", 'from"fflate'):
+        assert bare not in code, bare
+    assert re.search(r"\bimport\(", code) is None
+    assert re.search(r"export\{\w+ as startSessionReplay\};?\s*$", code)
+
+
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_the_module_runs_in_node_against_a_stub(settings, helpers, tmp_path):
     """The served module, with the vendored import pointed at a stub that records the options."""
-    body = module(settings, helpers, SENTINEL).text
-    (tmp_path / "stub.mjs").write_text("export function configure(o) { globalThis.options = o; }")
-    (tmp_path / "page.mjs").write_text(body.replace(VENDORED, "./stub.mjs"))
+    board = module(settings, helpers, SENTINEL, "?page=board").text
+    plain = module(settings, helpers, SENTINEL).text
+    (tmp_path / "stub.mjs").write_text(
+        "export function configure(o) { (globalThis.options ??= []).push(o); }"
+    )
+    (tmp_path / "board.mjs").write_text(board.replace(VENDORED, "./stub.mjs"))
+    (tmp_path / "plain.mjs").write_text(plain.replace(VENDORED, "./stub.mjs"))
     (tmp_path / "run.mjs").write_text(
         """
-        await import("./page.mjs");
-        const o = globalThis.options;
+        // maskAllText is computed when the module runs, from the page's own path.
+        globalThis.location = { pathname: "/" };
+        await import("./board.mjs?a");
+        globalThis.location = { pathname: "/submit" };
+        await import("./board.mjs?b");
+        globalThis.location = { pathname: "/" };
+        await import("./plain.mjs");
+        const [o, onSubmit, plain] = globalThis.options;
+        const r = o.sessionReplay;
         const fetchIgnore = o.autoInstrumentations["@opentelemetry/instrumentation-fetch"].ignoreUrls;
         const paths = ["/api/board", "/api/submissions/abc", "/api/submissions", "/api/admin/x"];
         console.log(JSON.stringify({
           keys: Object.keys(o).sort(), traceUrl: o.traceUrl, headers: o.traceExporterHeaders(),
-          rum: o.rum, sameXhr: o.autoInstrumentations["@opentelemetry/instrumentation-xml-http-request"].ignoreUrls === fetchIgnore,
+          rum: o.rum, replayKeys: Object.keys(r).sort(), replayUrl: r.replayUrl,
+          replayHeaders: r.headers(), loads: String(r.load),
+          masked: [o, onSubmit, plain].map((x) => x.sessionReplay.maskAllText),
+          sameXhr: o.autoInstrumentations["@opentelemetry/instrumentation-xml-http-request"].ignoreUrls === fetchIgnore,
           ignored: paths.map((p) => fetchIgnore.some((r) => r.test("https://x" + p))),
         }));
         """
@@ -161,10 +253,23 @@ def test_the_module_runs_in_node_against_a_stub(settings, helpers, tmp_path):
     result = json.loads(out.stdout)
 
     assert result == {
-        "keys": ["autoInstrumentations", "rum", "traceExporterHeaders", "traceUrl"],
+        "keys": [
+            "autoInstrumentations",
+            "rum",
+            "sessionReplay",
+            "traceExporterHeaders",
+            "traceUrl",
+        ],
         "traceUrl": "https://logfire-us.pydantic.dev/v1/traces",
         "headers": {"Authorization": f"Bearer {SENTINEL}"},
         "rum": {"webVitals": True},
+        "replayKeys": ["headers", "load", "maskAllText", "replayUrl"],
+        "replayUrl": "https://logfire-us.pydantic.dev/v1/replay",
+        "replayHeaders": {"Authorization": f"Bearer {SENTINEL}"},
+        "loads": f'() => import("{VENDORED_REPLAY}")',
+        # board page on "/": text unmasked; the board module on /submit, or the plain module on
+        # "/": masked.
+        "masked": [False, True, True],
         "sameXhr": True,
         "ignored": [True, True, False, False],
     }
