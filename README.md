@@ -47,18 +47,24 @@ First-time setup:
 1. Copy `.env.example` to `.env` and fill in `BAZAAR_RUNNER_TOKEN` (a long random value),
    `PYDANTIC_AI_GATEWAY_API_KEY`, `LOGFIRE_TOKEN`, the Alpaca credentials, and
    `SEC_USER_AGENT` with your name and contact email. No database URL is required.
-2. Download frozen source snapshots into Docker storage:
+2. Build the S&P 500 list at `data/raw/universe/sp500-2026-09-25.csv`, as
+   `config/sp500-2026-09-25.md` describes. It is not committed, because the repository is public.
+   `data-download` and `data-init` read it from there through a read-only mount; set
+   `BAZAAR_UNIVERSE_CSV` for another file.
+3. Download frozen source snapshots into Docker storage:
 
    ```sh
    docker compose run --rm --build data-download
    ```
 
-   This can take tens of minutes and uses `config/demo-sources.toml`. Bars and news resume
+   This can take tens of minutes and uses `config/sp500-sources.toml` (set `BAZAAR_SOURCES_CONFIG`
+   to change it). `data-init` then imports demo-bundle-v2, the runner's default bundle: bars, its
+   universe, news and filings under the v2 data versions. Bars and news resume
    cached pages when rerun. EDGAR refetches live metadata: if it reports a frozen snapshot
    conflict during initial setup, choose a new `BAZAAR_SNAPSHOT_VERSION` in `.env` and retry.
    Source credentials are used only by this setup container. Once setup succeeds, normal
    application startup uses the stored snapshots without downloading again.
-3. Start the entire application:
+4. Start the entire application:
 
    ```sh
    docker compose up -d --build

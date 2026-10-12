@@ -1,0 +1,23 @@
+# CI-only sources config for the Docker smoke test (scripts/tests/docker_snapshots.py). Never real
+# data: the universe is a synthetic CSV the smoke script writes, with made-up names and CIKs, and
+# the snapshots it pairs with are synthetic too. Shaped like config/sp500-sources.toml (a
+# [universe] CSV plus the SPY benchmark) so the Docker job exercises the v2 import path.
+
+[period]
+start = 2026-09-01
+end = 2026-10-09
+
+[news]
+start = 2026-09-01
+
+[universe]
+csv = "/snapshots/universe/docker-smoke.csv"
+benchmarks = ["SPY"]
+
+[sp500]
+commit = "docker-smoke-not-a-commit"
+
+[edgar]
+forms = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
+documents_since = 2026-01-01
+user_agent = "bazaar-docker-smoke ci@example.invalid"
