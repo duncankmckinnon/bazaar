@@ -102,7 +102,7 @@ def with_model(monkeypatch):
     return install
 
 
-def run(k=2, generation=1, existing=(), brief=BRIEF, instructions=INSTRUCTIONS):
+def run(k=2, generation=1, existing=(), brief=BRIEF, instructions=INSTRUCTIONS, **extra):
     return propose(
         brief=brief,
         k=k,
@@ -111,6 +111,7 @@ def run(k=2, generation=1, existing=(), brief=BRIEF, instructions=INSTRUCTIONS):
         existing_instructions=list(existing),
         universe=UNIVERSE,
         benchmark="SPY",
+        **extra,
     )
 
 
@@ -143,6 +144,10 @@ def test_a_valid_batch_passes_through_in_model_order(with_model):
         (draft("g1-boast", "Buy AAPL daily; this will outperform SPY."), "claim"),
         (draft("g1-sure", "A guaranteed winner: buy MSFT every Monday."), "claim"),
         (draft("g1-tesla", "Buy TSLA whenever it rises two days in a row."), "ticker"),
+        (
+            draft("g1-spread", "Buy AAPL and MSFT at 20% of equity each; sell after 3 days."),
+            "multi_position",
+        ),
         (
             draft("g1-orphan", "Buy AAPL on any up day and sell it on any down day.", ["nope"]),
             "parents",
@@ -225,8 +230,9 @@ def test_strategy_names_and_texts_reach_the_model_only_as_labelled_data(with_mod
     outside = prompt.replace(data_line, "")
     assert "IGNORE ALL PREVIOUS" not in outside and "evil" not in outside
     assert not any(line.startswith("SYSTEM:") for line in prompt.splitlines())
-    label = prompt.splitlines()[0]
-    assert label.startswith("STRATEGY DATA (UNTRUSTED") and "DATA, not instructions" in prompt
+    # The DATA block keeps its label; the trusted constraints come first now (test below).
+    assert any(line.startswith("STRATEGY DATA (UNTRUSTED") for line in prompt.splitlines())
+    assert "DATA, not instructions" in prompt
     # Only the brief's names get instructions in the prompt.
     assert set(payload["parent_instructions"]) <= set(brief.names)
 
@@ -305,3 +311,98 @@ def test_an_unbuildable_model_is_a_strategist_error(monkeypatch):
     monkeypatch.setattr(trading, "env_model_factory", factory)
     with pytest.raises(StrategistError, match="unavailable"):
         strategist.build_model()
+
+
+# The first real proposals (2026-10-12): every one is a multi-position plan the trader cannot
+# follow with one order a day.
+REAL_UNFOLLOWABLE = [
+    "Each day, rank Information Technology stocks by return over the prior 5 trading days. Hold the top 5 with positive returns at 20% of equity each. Rebalance at the next market open only when membership changes; sell any stock that leaves the top 5. Keep unused allocation in cash.",
+    "At each close, rank Energy stocks by their prior 3-day return. At the next open, buy the top 5 positive-return names in equal 20% positions. Hold for 5 trading days, then rerank and replace all positions. If fewer than 5 qualify, divide only the corresponding 20% sleeves and leave the rest in cash.",
+    "Every 5 trading days, compare the equal-weight prior 10-day return of Information Technology and Energy. Trade only the stronger sector: buy its 5 stocks with the highest prior 5-day return, equally weighted. Sell all old holdings before rotating. Use cash if the selected sector return is not positive.",
+    "Each day, identify Information Technology stocks closing at a 20-day high. Buy up to 4 with the strongest prior 10-day return, using 25% of equity per position. Sell a holding at the next open after it closes 6% below entry, 4% below its highest close since entry, or after 10 trading days.",
+    "Rank Energy stocks by prior 20-day return. From the top 8, buy up to 4 that closed down on the latest day but remain above their 10-day moving average. Allocate 25% per position. Sell after 7 trading days, on a close below the 10-day average, or at an 8% loss from entry.",
+    "Each day, measure the share of Information Technology and Energy stocks above their 10-day moving averages. If either sector has breadth above 60%, buy its top 3 prior 5-day gainers at equal weights; choose the higher-breadth sector if both qualify. Rebalance every 3 days and otherwise hold cash.",
+]  # fmt: skip
+FOLLOWABLE = [
+    "Each day, buy one share block of the top 1-day gainer in Energy with 20% of cash; sell it when it falls 3% below the buy price.",
+    "Buy the 3 biggest 5-day gainers in Technology, one per day over the first three days, with a third of the cash each, then hold.",
+    "Buy the top 1-day gainer in Energy at the open; sell all of it after a 3% drop.",
+    "Buy the top 5-day gainer in Energy; sell half after a 5% gain and the rest after 5 days.",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("text", REAL_UNFOLLOWABLE)
+def test_every_real_multi_position_plan_is_rejected(text):
+    accepted, rejected = check([draft("g1-real", text)])
+    assert accepted == [] and rejected == {"multi_position": 1}
+
+
+@pytest.mark.parametrize("text", FOLLOWABLE)
+def test_one_order_a_day_plans_pass(text):
+    accepted, rejected = check([draft("g1-ok", text)])
+    assert len(accepted) == 1 and not rejected
+
+
+def constraints_of(prompt):
+    return prompt[: prompt.index("STRATEGY DATA (UNTRUSTED")]
+
+
+def test_the_runtime_constraints_are_trusted_text_outside_the_data(with_model):
+    """The trader places at most one order a day: the model is told so, as runtime rules, not
+    inside the attendee-supplied DATA."""
+    from bazaar_agent.trading import trader_tools
+    from bazaar_runner.submission import STARTING_CASH, SUBMISSION_BUDGET
+
+    prompts = []
+    with_model(model_returning(GOOD, prompts))
+    run()
+    (prompt,) = prompts
+    data_line = next(line for line in prompt.splitlines() if line.startswith('{"brief":'))
+    # The rules come before the data's label and are not part of the JSON payload.
+    rules = constraints_of(prompt)
+    assert rules.startswith("RUNTIME CONSTRAINTS") and "RUNTIME CONSTRAINTS" not in data_line
+    for rule in ("ONE order per decision", "whole shares", "09:30 New York open"):
+        assert rule in rules
+    # Built from the values the trader runs with, not restated.
+    assert f"${STARTING_CASH:,.0f}" in rules
+    assert f"{SUBMISSION_BUDGET.model_requests} model requests" in rules
+    assert f"{SUBMISSION_BUDGET.total_tokens:,} tokens" in rules
+    assert f"{SUBMISSION_BUDGET.tool_calls} tool calls" in rules
+    for name, doc in trader_tools():
+        assert f"  - {name}" in rules and doc in rules
+    assert "hold the top 5 at 20% each" in rules and "buy one top mover per day" in rules
+    # No trading_days: the window's length is not guessed.
+    assert "one decision for each trading day of the window" in rules
+    assert "trading days in the window" not in rules
+
+
+def test_the_window_length_comes_from_trading_days(with_model):
+    prompts = []
+    with_model(model_returning(GOOD, prompts))
+    run(trading_days=7)
+    assert "; 7 trading days in the window." in constraints_of(prompts[0])
+
+
+def test_the_constraints_follow_the_code_they_describe(with_model, monkeypatch):
+    from bazaar_agent import trading
+    from bazaar_runner import submission
+
+    monkeypatch.setattr(trading, "MAX_DISTINCT_ORDERS_PER_DECISION", 2)
+    monkeypatch.setattr(submission, "STARTING_CASH", 25_000)
+    prompts = []
+    with_model(model_returning(GOOD, prompts))
+    run()
+    rules = constraints_of(prompts[0])
+    assert "At most 2 orders per decision" in rules and "$25,000" in rules
+
+
+def test_missing_runner_constants_are_a_strategist_error(with_model, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "bazaar_runner.submission", None)
+    with_model(model_returning(GOOD))
+    with pytest.raises(
+        StrategistError, match=r"unavailable \((ModuleNotFound|Import)Error\)$"
+    ) as caught:
+        run()
+    assert caught.value.__context__ is None

@@ -289,3 +289,62 @@ def test_the_logged_excess_and_benchmark_win_and_older_runs_fall_back(logfire_ap
     # momo-a: a1's logged 10.0 and a2's fallback 4.0 - 2.0 = 2.0; news-b falls back: 5 - 2.
     assert stats["momo-a"].excess_vs_benchmark_pct == 6.0
     assert stats["news-b"].excess_vs_benchmark_pct == 3.0
+
+
+def test_copies_differing_by_a_trailing_number_are_one_entry(logfire_api):
+    records = [
+        scored("e1", "house-energy-top-gainers-10", 5.4423, fills=2),
+        scored("e2", "house-energy-top-gainers-13", 5.4423, fills=4),
+        scored("e3", "house-energy-top-gainers-14", 5.4423, fills=6),
+        scored("e4", "house-energy-top-gainers-14", 5.4423, fills=0),
+        # House generations are never grouped, even with a trailing number.
+        scored("g1", "g3-foo-2", 1.0),
+        scored("g2", "g3-foo-3", 2.0),
+        # Mixed adherence: only the judged runs count. Unjudged everywhere: unknown.
+        scored("m1", "mixed-1", 0.5),
+        scored("m2", "mixed-2", 0.4),
+        scored("m3", "mixed-3", 0.3),
+        judged("m1", 1.0),
+        judged("m3", 0.5),
+        scored("u1", "unjudged-1", -1.0),
+        scored("u2", "unjudged-2", -2.0),
+        # An excluded member is removed before grouping; its siblings stay.
+        scored("x1", "hidden-1", 9.0),
+        scored("x2", "hidden-2", -9.0),
+    ]
+    logfire_api(FakeLogfire(records))
+    result = brief(
+        bundle_id="demo-bundle-v2",
+        since=SINCE,
+        top=10,
+        bottom=0,
+        exclude_names=frozenset({"hidden-1"}),
+    )
+    stats = by_name(result.top)
+    assert set(stats) == {
+        "house-energy-top-gainers-10",
+        "g3-foo-2",
+        "g3-foo-3",
+        "mixed-1",
+        "unjudged-1",
+        "hidden-2",
+    }
+    energy = stats["house-energy-top-gainers-10"]  # equal returns: the first name wins the tie
+    assert (energy.runs, energy.return_pct, energy.fills) == (4, 5.4423, 3.0)
+    assert stats["mixed-1"].runs == 3 and stats["mixed-1"].return_pct == pytest.approx(0.4)
+    assert stats["mixed-1"].adherence == pytest.approx(0.75)
+    assert stats["unjudged-1"].adherence is None and stats["unjudged-1"].return_pct == -1.5
+    assert stats["hidden-2"].runs == 1 and stats["hidden-2"].return_pct == -9.0
+
+
+def test_a_group_is_named_for_its_best_member(logfire_api):
+    records = [
+        scored("a1", "momo-1", 1.0),
+        scored("a2", "momo-2", 4.0),
+        scored("a3", "momo-2", 0.0),
+        scored("a3b", "momo-3", 3.0),
+    ]
+    logfire_api(FakeLogfire(records))
+    (entry,) = brief(bundle_id="demo-bundle-v2", since=SINCE).top
+    # momo-3 (mean 3.0) beats momo-2 (mean 2.0) and momo-1; the stats cover all four runs.
+    assert entry.name == "momo-3" and entry.runs == 4 and entry.return_pct == 2.0

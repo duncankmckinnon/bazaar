@@ -115,6 +115,17 @@ TRADING_ROLE_VARIABLE = logfire.var(
     description="Trusted runtime instructions for the simulated stock-trading agent.",
 )
 
+# A decision places at most this many distinct orders: market_order refuses one more, and the
+# strategist states it to its model. DecisionResult records a single order, so this is 1.
+MAX_DISTINCT_ORDERS_PER_DECISION = 1
+MARKET_ORDER_DOC = """Submit one structured market buy/sell using the runner-reserved client order ID.
+
+quantity is a number of WHOLE SHARES, not dollars. Cost = quantity x price. For a
+dollar or percent amount compute shares = floor(dollars / price) using the close
+from the quotes tool or POSITIONS; never exceed max_whole_shares for a buy or
+your holding for a sell.
+"""
+
 # Fixed builtin surface: candidate/legacy strategy text never selects capabilities.
 BUILTIN_TOOLS = (
     "account",
@@ -131,6 +142,19 @@ BUILTIN_TOOLS = (
     "search",
     "news_batch",
 )
+
+
+def _first_sentence(doc: str | None) -> str:
+    text = " ".join((doc or "").split())
+    return text.split(". ")[0].rstrip(".") if text else ""
+
+
+def trader_tools() -> list[tuple[str, str]]:
+    """The trader's registered tool names, each with the first sentence of its docstring."""
+    tools = [
+        (name, _first_sentence(getattr(ResearchTools, name).__doc__)) for name in BUILTIN_TOOLS
+    ]
+    return [*tools, ("market_order", _first_sentence(MARKET_ORDER_DOC))]
 
 
 class MarketIdentity(WireModel):
@@ -312,6 +336,7 @@ async def run_decision(
     usage = RunUsage()
     calls = 0
     submitted: OrderRequest | None = None
+    distinct_orders = 0
     settled: OrderResult | None = None
     decision: Decision | None = None
     error: ToolError | None = None
@@ -450,24 +475,18 @@ async def run_decision(
                 return Tool(wraps(fn)(invoke), name=name, takes_ctx=False, sequential=True)
 
             async def market_order(request: OrderRequest):
-                """Submit one structured market buy/sell using the runner-reserved client order ID.
-
-                quantity is a number of WHOLE SHARES, not dollars. Cost = quantity x price. For a
-                dollar or percent amount compute shares = floor(dollars / price) using the close
-                from the quotes tool or POSITIONS; never exceed max_whole_shares for a buy or
-                your holding for a sell.
-                """
-                nonlocal submitted, settled, calls
+                nonlocal submitted, settled, calls, distinct_orders
                 if calls >= budget.tool_calls:
                     _stop("conflict", "Decision tool budget exhausted; do not retrade")
                 calls += 1
                 if request.client_order_id != client_order_id:
                     _stop("invalid_request", "Order must use the runner-reserved client order ID")
-                if submitted is not None:
-                    if request != submitted:
-                        _stop("conflict", "Decision already submitted a different order")
+                if submitted is not None and request == submitted:
                     # Model/output retries may replay evidence, never retransmit an order.
                     return settled
+                if distinct_orders >= MAX_DISTINCT_ORDERS_PER_DECISION:
+                    _stop("conflict", "Decision already submitted a different order")
+                distinct_orders += 1
                 submitted = request
                 result = await tools.place_order(request)
                 if result.error is not None:
@@ -475,6 +494,7 @@ async def run_decision(
                 settled = result.data
                 return settled
 
+            market_order.__doc__ = MARKET_ORDER_DOC
             registered = [wrap(name) for name in BUILTIN_TOOLS]
             registered.append(Tool(market_order, takes_ctx=False, sequential=True))
 

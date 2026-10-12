@@ -333,6 +333,17 @@ async def test_no_fresh_ids_or_changed_order_after_submission(change):
     assert result.decision is None
 
 
+async def test_the_order_tool_enforces_the_exported_order_limit(monkeypatch):
+    from bazaar_agent import trading
+
+    assert trading.MAX_DISTINCT_ORDERS_PER_DECISION == 1  # the second distinct order: above
+    # The tool reads the constant: at 0 even the first order is refused and nothing is posted.
+    monkeypatch.setattr(trading, "MAX_DISTINCT_ORDERS_PER_DECISION", 0)
+    model, _ = script([ToolCallPart("market_order", order_request().model_dump(mode="json"))])
+    result, calls = await invoke(model, tools=("orders",))
+    assert result.error.code == "conflict" and not calls and result.order_request is None
+
+
 async def test_wrong_initial_id_never_posts():
     request = {**order_request().model_dump(mode="json"), "client_order_id": str(UUID(int=2))}
     model, _ = script([ToolCallPart("market_order", request)])
@@ -1468,6 +1479,12 @@ async def test_market_order_says_quantity_is_whole_shares():
     assert "WHOLE SHARES, not dollars" in tool.description
     assert "floor(dollars / price)" in tool.description and "max_whole_shares" in tool.description
     assert "quotes tool" in tool.description and "MARKET QUOTES" not in tool.description
+    # The strategist describes the same tools from the same text.
+    from bazaar_agent.trading import trader_tools
+
+    described = dict(trader_tools())
+    assert tool.description.startswith(described["market_order"])
+    assert {t.name for t in calls[0][1].function_tools} <= set(described) | {"final_result"}
 
 
 def runner_context(messages):
