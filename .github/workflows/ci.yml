@@ -30,6 +30,9 @@ jobs:
       COMPOSE_PROJECT_NAME: bazaar-docker-test
       BAZAAR_RUNNER_TOKEN: ci-only-runner-token
       BAZAAR_SNAPSHOT_VERSION: docker-smoke
+      # Synthetic v2-shaped universe and config (scripts/tests/docker_snapshots.py); never the real list.
+      BAZAAR_SOURCES_CONFIG: config/docker-smoke-sources.toml
+      BAZAAR_UNIVERSE_CSV: /snapshots/universe/docker-smoke.csv
     steps:
       - uses: actions/checkout@v4
       - run: docker compose build market api web data-init data-download
