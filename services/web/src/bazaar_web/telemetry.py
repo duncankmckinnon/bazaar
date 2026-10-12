@@ -17,6 +17,7 @@ EXCLUDED_URLS = (
     r"/api/submissions/[^/?]+(\?|$)",
     r"/fonts/",
     r"/static/",
+    r"/browser-telemetry\.js(\?|$)",
     r"/health(\?|$)",
 )
 
