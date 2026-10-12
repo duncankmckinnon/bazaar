@@ -1,15 +1,31 @@
-// Builds static/vendor/logfire-browser-0.25.0.js (the path given as argv[2]): one ESM
-// file, every dependency (and every dynamic import) inlined, with a license header that lists
-// each bundled package, its version and its license text.
+// Builds the vendored browser files into the directory given as argv[2]:
+//   logfire-browser-0.25.0.js         @pydantic/logfire-browser, exporting configure
+//   logfire-session-replay-0.5.0.js   @pydantic/logfire-session-replay, exporting
+//                                     startSessionReplay (loaded lazily, only for replay)
+// Each is one ESM file with every dependency (and every dynamic import) inlined, and a license
+// header that lists each bundled package, its version and its license text.
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { build } from "esbuild";
 
-const out = process.argv[2];
-if (!out) throw new Error("usage: node build.mjs <output .js path>");
+// Packages published without a license file: their repository's LICENSE, kept in licenses/.
+// @rrweb/record: https://github.com/rrweb-io/rrweb/blob/rrweb%402.1.1/LICENSE
+const LICENSE_FILES = { "@rrweb/record": "licenses/rrweb-2.1.1-LICENSE" };
 
+const dir = process.argv[2];
+if (!dir) throw new Error("usage: node build.mjs <output directory>");
+
+await bundle("entry.js", "logfire-browser-0.25.0.js", "@pydantic/logfire-browser 0.25.0 (MIT)");
+await bundle(
+  "entry-session-replay.js",
+  "logfire-session-replay-0.5.0.js",
+  "@pydantic/logfire-session-replay 0.5.0 (MIT)",
+);
+
+async function bundle(entry, name, title) {
+const out = join(dir, name);
 const result = await build({
-  entryPoints: ["entry.js"],
+  entryPoints: [entry],
   bundle: true,
   format: "esm",
   platform: "browser",
@@ -35,12 +51,16 @@ for (const input of Object.keys(result.metafile.inputs)) {
     name: pkg.name,
     version: pkg.version,
     license: pkg.license ?? "SEE LICENSE",
-    text: file ? readFileSync(join(root, file), "utf8").trim() : null,
+    text: file
+      ? readFileSync(join(root, file), "utf8").trim()
+      : LICENSE_FILES[pkg.name]
+        ? readFileSync(LICENSE_FILES[pkg.name], "utf8").trim()
+        : null,
   });
 }
 const sorted = [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 const lines = [
-  "@pydantic/logfire-browser 0.25.0 (MIT), bundled by esbuild for Bazaar.",
+  `${title}, bundled by esbuild for Bazaar.`,
   "Build recipe: README-logfire-browser.md next to this file.",
   "",
   "Bundled packages:",
@@ -57,3 +77,4 @@ for (const [text, names] of byText) lines.push("", `--- ${names.join(", ")} ---`
 const header = "/*!\n" + lines.map((l) => (" * " + l.replaceAll("*/", "* /")).trimEnd()).join("\n") + "\n */\n";
 writeFileSync(out, header + result.outputFiles[0].text);
 console.log(`${out}: ${sorted.length} packages, ${(header.length + result.outputFiles[0].text.length)} bytes`);
+}

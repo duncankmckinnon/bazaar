@@ -2,12 +2,13 @@
   "name": "bazaar-logfire-browser-vendor",
   "private": true,
   "version": "0.0.0",
-  "description": "Builds static/vendor/logfire-browser-0.25.0.js; not part of the app",
+  "description": "Builds the vendored logfire-browser and logfire-session-replay files in static/vendor; not part of the app",
   "type": "module",
   "dependencies": {
     "@opentelemetry/sdk-trace-web": "2.12.0",
     "@opentelemetry/semantic-conventions": "1.43.0",
     "@pydantic/logfire-browser": "0.25.0",
+    "@pydantic/logfire-session-replay": "0.5.0",
     "esbuild": "0.28.2"
   }
 }
