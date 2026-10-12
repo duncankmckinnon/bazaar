@@ -626,11 +626,23 @@ class LogfireServer:
         self.names, self.reverse, self.inputs_name = names, reverse, inputs_name
         self.post_status, self.delete_status = post_status, delete_status
         self.cases = {}  # case name -> case id
-        self.posts = self.deletes = 0
+        self.posts = self.deletes = self.creates = 0
+        self.exists = True  # False: deleted in the Logfire UI
 
     def __call__(self, request):
+        dataset = {"id": str(uuid.UUID(int=999)), "name": DATASET}
+        missing = httpx.Response(404, json={"detail": "Dataset not found"})
+        if request.method == "POST" and request.url.path == "/v1/datasets/":
+            self.creates += 1
+            self.exists = True
+            return httpx.Response(200, json=dataset)
+        if not self.exists:
+            if request.method == "POST":
+                self.posts += 1
+            self.deletes += request.method == "DELETE"
+            return missing
         if request.method == "GET":
-            return httpx.Response(200, json={"id": str(uuid.UUID(int=999)), "name": DATASET})
+            return httpx.Response(200, json=dataset)
         if request.method == "DELETE":
             self.deletes += 1
             return httpx.Response(self.delete_status)
@@ -752,3 +764,25 @@ def test_a_dataset_deleted_after_startup_is_created_again(tmp_path, keyed):
 
     assert [m for m, _, _ in fake.calls].count("create_dataset") == 2
     assert store.get("r001")["dataset_synced_at"] is not None
+
+
+def test_a_dataset_deleted_while_a_case_delete_waits_is_recovered(tmp_path, keyed):
+    store = Store(tmp_path / "web.sqlite3")
+    insert(store.path, rows_named(1))
+    server = LogfireServer()
+    sync = DatasetSync(store, real_client(server))
+    sync.round()
+    store.hide("r000")
+    insert(store.path, rows_named(1, start=1))
+    server.exists = False  # the whole dataset deleted in the Logfire UI
+    server.cases.clear()
+
+    sync.round()  # the delete finds no dataset: its case is gone with it
+    gone = store.get("r000")
+    sync.round()
+
+    assert gone["dataset_deleted_at"] is not None and gone["dataset_error_class"] is None
+    assert server.creates == 1 and server.exists  # created again, at most 2 rounds in
+    fresh = store.get("r001")
+    assert fresh["dataset_synced_at"] is not None
+    assert fresh["dataset_case_id"] == server.cases["strategy-bot-001-r001"]

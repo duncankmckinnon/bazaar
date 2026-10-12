@@ -228,7 +228,8 @@ class DatasetSync:
 
     def delete(self, rows: list[dict[str, Any]]) -> tuple[int, int]:
         """Delete each hidden row's case; (deleted, refused). A case already gone counts as
-        deleted, a refusal skips just that row, and anything else stops the round."""
+        deleted, and so does a missing dataset (a case can't outlive it; the push pass creates
+        the dataset again). A refusal skips just that row, and anything else stops the round."""
         done = refused = 0
         for row in rows:
             try:
@@ -238,8 +239,9 @@ class DatasetSync:
                     self.refused(row, exc)
                     refused += 1
                     continue
-                if not is_gone(exc):
-                    self.ensured = self.ensured and not is_missing(exc)
+                if is_missing(exc):
+                    self.ensured = False
+                elif not is_gone(exc):
                     raise Failed([row["id"]], type(exc).__name__) from None
             with logfire.suppress_instrumentation():
                 self.store.dataset_deleted([row["id"]])
