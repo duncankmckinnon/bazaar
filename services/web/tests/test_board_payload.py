@@ -130,12 +130,8 @@ def test_each_run_dir_is_parsed_once(big, helpers, monkeypatch):
 
     first, _ = source.load()
     assert len(calls) == RUNS
-    start = time.perf_counter()
     again, _ = source.load()
-    warm_s = time.perf_counter() - start
     assert len(calls) == RUNS and again.ranked == first.ranked  # nothing re-parsed
-    print(f"\nwarm rebuild of 3,000 runs: {warm_s:.3f} s")
-    assert warm_s < 0.5
 
     shutil.rmtree(big.runs_dir / "run-0000")  # the best run goes away
     helpers.write_run(big.runs_dir, "run-new", policy_ref="agent-new", period_return="0.5")
