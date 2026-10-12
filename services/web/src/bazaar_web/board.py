@@ -100,9 +100,12 @@ class BoardSource:
         self._lock = threading.Lock()
         self._runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
         self._cached: tuple[float, frozenset[str], Leaderboard, Histories] | None = None
+        self.on_invalidate: Callable[[], None] | None = None  # the app's payload cache
 
     def invalidate(self) -> None:
         self._cached = None
+        if self.on_invalidate is not None:
+            self.on_invalidate()
 
     def load(self, hidden: frozenset[str] = frozenset()) -> tuple[Leaderboard, Histories]:
         """The board without the run dirs named in hidden."""
@@ -335,26 +338,31 @@ def build_board(
     house_enabled: bool = False,
 ) -> dict[str, Any]:
     rows, starting_cash = board_rows(source, store, logfire_url)
-    house = store.house_state()
-    # Public: the lane's state and how many of its runs are in flight; nothing an admin sees.
-    factory = {
-        "state": "off" if not house_enabled else "paused" if house["paused"] else "running",
-        "running": house["running"],
+    return {
+        "window": board_window(bundle, float(starting_cash)),
+        "rows": page_rows(rows),
+        "total": {"rows": len(rows), **Counter(row["status"] for row in rows)},
+        "events": store.recent_events(20),
+        "factory": board_factory(store, house_enabled),
     }
 
-    # The window and universe are the data bundle's; without one the board shows neither.
-    window = {
+
+def board_window(bundle: Bundle | None, starting_cash: float) -> dict[str, Any]:
+    """The window and universe are the data bundle's; without one the board shows neither."""
+    return {
         "start": bundle.start.isoformat() if bundle else None,
         "end": bundle.end.isoformat() if bundle else None,
-        "starting_cash": float(starting_cash),
+        "starting_cash": starting_cash,
         "universe": bundle.universe if bundle else None,
         "symbols": list(bundle.symbols) if bundle else None,
         "days": bundle.days if bundle else None,
     }
+
+
+def board_factory(store: Store, house_enabled: bool) -> dict[str, Any]:
+    """Public: the lane's state and how many of its runs are in flight; nothing an admin sees."""
+    house = store.house_state()
     return {
-        "window": window,
-        "rows": page_rows(rows),
-        "total": {"rows": len(rows), **Counter(row["status"] for row in rows)},
-        "events": store.recent_events(20),
-        "factory": factory,
+        "state": "off" if not house_enabled else "paused" if house["paused"] else "running",
+        "running": house["running"],
     }

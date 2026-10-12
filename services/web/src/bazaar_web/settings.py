@@ -113,6 +113,9 @@ class Settings:
     # per house_propose_interval_s while it succeeds.
     house_since: datetime | None = None
     house_propose_interval_s: int = 300
+    # How long a board request waits for the rebuild that covers a state change (a submit, a
+    # day of progress, a score, a hide) before it serves the previous board instead.
+    board_fresh_wait_ms: int = 1000
 
     def __post_init__(self) -> None:
         if (
@@ -183,6 +186,12 @@ class Settings:
                 range(1, 100_001),
             ),
             house_since=parse_since(env.get("BAZAAR_HOUSE_SINCE")),
+            board_fresh_wait_ms=parse_int(
+                "BAZAAR_BOARD_FRESH_WAIT_MS",
+                env.get("BAZAAR_BOARD_FRESH_WAIT_MS") or None,
+                1000,
+                range(60_001),
+            ),
             house_propose_interval_s=parse_int(
                 "BAZAAR_HOUSE_PROPOSE_INTERVAL_S",
                 env.get("BAZAAR_HOUSE_PROPOSE_INTERVAL_S") or None,

@@ -88,13 +88,14 @@ def test_the_payload_is_small_and_a_warm_request_parses_nothing(big, helpers, mo
         start = time.perf_counter()
         warm = client.get("/api/board")
         warm_s = time.perf_counter() - start  # reported only; CI asserts no timing
-        runner.gate.set()
+        warm_parsed, warm_read = len(calls), len(reads)
+        runner.gate.set()  # live-bot then scores, and its own new run dir is parsed
 
     body = warm.json()
     print(f"\n3,000 runs: {len(cold.content)} bytes, warm rebuild {warm_s:.3f} s (not asserted)")
     assert cold_parsed == RUNS and cold_read == RUNS  # each dir parsed once, by the first build
     # The warm rebuild, chart grouping included, parsed nothing and read no history.
-    assert len(calls) == cold_parsed and len(reads) == cold_read
+    assert warm_parsed == cold_parsed and warm_read == cold_read
     assert sum(r["chart_members"] is not None for r in body["rows"]) == 10
     assert len(warm.content) < 100_000
     assert body["total"]["rows"] == RUNS + 1 and body["total"]["scored"] == RUNS
@@ -335,6 +336,7 @@ def test_a_cold_board_never_parses_hidden_dirs(big, helpers, monkeypatch):
         with sqlite3.connect(big.web_db) as conn:  # un-hide the best run
             conn.execute("UPDATE submissions SET hidden = 0 WHERE run_dir = 'run-0000'")
         conn.close()
+        client.app.state.board_cache.invalidate()  # raw SQL bypasses the store's change hook
         shown = client.get("/api/board").json()
 
     print(f"\n2,800 of 3,000 hidden: parsed {parsed}")

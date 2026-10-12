@@ -224,6 +224,7 @@ class Store:
     def __init__(self, path: Path, now: Now = lambda: datetime.now(UTC)) -> None:
         self.path = path
         self.now = now
+        self.on_change: Callable[[], None] | None = None  # after each committed write (the board)
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -284,6 +285,8 @@ class Store:
                 conn.control("ROLLBACK")
                 raise
             conn.control("COMMIT")
+        if self.on_change is not None:
+            self.on_change()
 
     def _stamp(self) -> str:
         return self.now().isoformat()
@@ -738,6 +741,11 @@ class Store:
                 "finished_at = ? WHERE id = ?",
                 (status, run_dir, error, error_class, self._stamp(), submission_id),
             )
+
+    def hidden_ids(self) -> frozenset[str]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute("SELECT id FROM submissions WHERE hidden = 1").fetchall()
+        return frozenset(row["id"] for row in rows)
 
     def hide(self, submission_id: str) -> bool:
         with self._tx() as conn:
