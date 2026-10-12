@@ -178,6 +178,7 @@ def test_board_defines_the_helpers_its_functions_call():
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
         "renderBoard", "renderTape", "showTip", "applyFocus", "loadTickers", "tabFromHash",
         "onTab", "tabView", "factoryText", "renderTabs", "makeRow", "fillRow", "chartSeries",
+        "fitPending",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -253,6 +254,15 @@ def test_the_conference_layout_puts_the_qr_strip_under_the_chart():
     ) in BOARD
     body = BOARD.split("<main", 1)[1]
     assert body.index('class="chart"') < body.index('class="side"')
+
+
+def test_pending_rows_that_do_not_fit_become_a_more_line():
+    assert '<p class="pending-more" id="pending-more" hidden></p>' in BOARD
+    # .ar-row sets display: grid, which would override the hidden attribute.
+    assert ".pending .ar-row[hidden] { display: none; }" in BOARD
+    script = BOARD.split("<script>", 1)[1]
+    assert "more.textContent = `+${rows.length - shown} more`;" in script
+    assert "new ResizeObserver(fitPending).observe(pendingList);" in script
 
 
 def test_the_board_has_no_market_wire():

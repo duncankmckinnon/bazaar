@@ -68,7 +68,9 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
 .ar-row .sc.prov { opacity: .7; }
 .ar-row.new .nm::after { content: "NEW"; margin-left: .8em; font: 400 calc(var(--px)*13)/1 var(--pixel); color: var(--ink); background: var(--lime); padding: .3em .5em; animation: blink .5s steps(1) 16; }
 .pending-head { margin: calc(var(--px)*6) 0 0; border-top: 1px solid var(--line); padding-top: calc(var(--px)*8); font: 400 calc(var(--px)*14)/1 var(--pixel); color: var(--aqua); }
-.pending { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; }
+.pending { position: relative; list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; }
+.pending-more { flex: none; margin: 0; padding: 0 calc(var(--px)*8); font: 400 calc(var(--px)*18)/calc(var(--px)*34) var(--pixel); color: var(--muted); }
+.pending .ar-row[hidden] { display: none; }
 .pending .ar-row { height: calc(var(--px)*34); font-size: calc(var(--px)*18); color: var(--muted); }
 /* The day text stays steady (readable in photos); a dot before it blinks as the live cue. */
 .pending .ar-row.st-running .rt { color: var(--aqua); }
@@ -170,6 +172,7 @@ body { margin: 0; background: var(--ink); font-family: var(--sans); }
       <ol class="ar-list" id="list"><li class="empty" id="connecting">CONNECTING...</li></ol>
       <p class="pending-head" id="pending-head">Pending · 0</p>
       <ol class="pending" id="pending" aria-labelledby="pending-head"></ol>
+      <p class="pending-more" id="pending-more" hidden></p>
     </div>
     <p class="ar-note"><span class="ai">AI</span> = house strategy · <span class="ai">Gn</span> = bred from this window's results (in-sample)</p>
   </section>
@@ -449,6 +452,20 @@ function renderBoard(data) {
   reconcile(list, keyed(view.scored), makeRow, (li, r) => fillRow(li, r, start, now));
 }
 
+// Pending rows that would run under the QR block are hidden and counted on a "+K more" line.
+function fitPending() {
+  const rows = [...pendingList.children], more = $("pending-more");
+  for (const li of rows) li.hidden = false;
+  more.hidden = true;
+  // Layout offsets, not client rects or scrollHeight: a row's entry animation transforms it.
+  const overflows = (li) => li.offsetTop + li.offsetHeight > pendingList.clientHeight;
+  if (!rows.length || !overflows(rows[rows.length - 1])) return;
+  more.hidden = false;
+  let shown = rows.length;
+  while (shown > 0 && overflows(rows[shown - 1])) rows[--shown].hidden = true;
+  more.textContent = `+${rows.length - shown} more`;
+}
+
 /* ---------- chart (right) ---------- */
 // chartSeries:start
 // One line per distinct path on this tab (the server groups rows whose values agree within $1 a
@@ -558,7 +575,7 @@ function showTip(event) {
 }
 plot.addEventListener("mousemove", showTip);
 plot.addEventListener("mouseleave", () => { tip.hidden = true; const c = document.getElementById("cursor"); if (c) { c.setAttribute("x1", -10); c.setAttribute("x2", -10); c.setAttribute("visibility", "hidden"); } setFocus(null); });
-addEventListener("resize", () => { if (lastData) renderChart(lastData); });
+addEventListener("resize", () => { fitPending(); if (lastData) renderChart(lastData); });
 
 /* ---------- the replay tape: each day's top movers (bottom) ---------- */
 const tape = $("tape"), track = $("track"), tapeLabel = $("tape-label");
@@ -614,11 +631,14 @@ function renderHeader(data) {
   $("sub-c").textContent = factoryText(data.factory);
 }
 
+new ResizeObserver(fitPending).observe(pendingList);
+
 /* ---------- polling ---------- */
 function render(data) {
   lastData = data;
   renderHeader(data);
   renderBoard(data);
+  fitPending();
   renderChart(data);
 }
 
