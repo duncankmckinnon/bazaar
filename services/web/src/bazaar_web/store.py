@@ -48,7 +48,12 @@ CREATE TABLE IF NOT EXISTS submissions (
     role TEXT,
     -- House rows from the strategy factory: its generation and parent names (a JSON list).
     generation INTEGER,
-    parents TEXT
+    parents TEXT,
+    -- The strategy's case in the Logfire dataset (bazaar_web.dataset): when it was pushed, how
+    -- many pushes failed since, and the last failure's exception class (never its message).
+    dataset_synced_at TEXT,
+    dataset_attempts INTEGER NOT NULL DEFAULT 0,
+    dataset_error_class TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     t TEXT NOT NULL,
@@ -225,6 +230,13 @@ class Store:
                 conn.execute("ALTER TABLE submissions ADD COLUMN generation INTEGER")
             if "parents" not in columns:
                 conn.execute("ALTER TABLE submissions ADD COLUMN parents TEXT")
+            for column in ("dataset_synced_at", "dataset_error_class"):
+                if column not in columns:  # existing rows start pending: the backfill
+                    conn.execute(f"ALTER TABLE submissions ADD COLUMN {column} TEXT")
+            if "dataset_attempts" not in columns:
+                conn.execute(
+                    "ALTER TABLE submissions ADD COLUMN dataset_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _connect(self) -> "TracedConnection":
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -688,6 +700,43 @@ class Store:
                 "ORDER BY rowid"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def pending_strategies(self, limit: int) -> list[dict[str, Any]]:
+        """Up to limit strategies not yet in the Logfire dataset, oldest first: visible human-lane
+        submissions and factory house rows (generation > 0), never catalog-era house rows
+        (handle 'house' without a generation) or operator rows. Only public columns are read:
+        contact details never leave this database this way."""
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, name, instructions, handle, lane, generation, parents, created_at "
+                "FROM submissions WHERE dataset_synced_at IS NULL AND hidden = 0 "
+                "AND lower(COALESCE(email, '')) != ? AND ("
+                "(COALESCE(lane, 'human') = 'human' AND lower(COALESCE(handle, '')) != 'house') "
+                "OR (lane = 'house' AND typeof(generation) = 'integer' AND generation > 0)"
+                ") ORDER BY rowid LIMIT ?",
+                (OPERATOR_CONTACT_EMAIL, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def dataset_synced(self, submission_ids: list[str]) -> None:
+        """These strategies are in the dataset: clear their failures."""
+        marks = ", ".join("?" * len(submission_ids))
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE submissions SET dataset_synced_at = ?, dataset_attempts = 0, "
+                f"dataset_error_class = NULL WHERE id IN ({marks})",
+                (self._stamp(), *submission_ids),
+            )
+
+    def dataset_failed(self, submission_ids: list[str], error_class: str) -> None:
+        """A failed push: these stay pending, with one more attempt and the error's class."""
+        marks = ", ".join("?" * len(submission_ids))
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE submissions SET dataset_attempts = dataset_attempts + 1, "
+                f"dataset_error_class = ? WHERE id IN ({marks})",
+                (error_class, *submission_ids),
+            )
 
     def contacts(self) -> list[dict[str, Any]]:
         """Visible submissions that left contact details, oldest first (for the admin CSV).
