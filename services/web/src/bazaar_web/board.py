@@ -1,19 +1,26 @@
 """The /api/board payload: scored runs from the runs directory plus in-flight submissions."""
 
 import json
+import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from bazaar_replay.leaderboard import Entry, Leaderboard, load_board
+from bazaar_replay.leaderboard import Entry, Leaderboard, Run, load_run
+from bazaar_replay.leaderboard import build_board as rank_runs
 
 from bazaar_web.bundle import Bundle
 from bazaar_web.store import Store
 
 DEFAULT_STARTING_CASH = Decimal(10000)
 STATUS_ORDER = {"scored": 0, "running": 1, "queued": 2, "failed": 3}
+# /api/board sends the top TOP_ROWS scored rows (plus every running, queued and baseline row);
+# ranks are always over every row. Histories go only to what the chart draws.
+TOP_ROWS = 100
+CHART_TOP = 10
 
 
 def percent(fraction: Decimal | None) -> float | None:
@@ -49,34 +56,64 @@ def live_history(progress: list[tuple[int, str]]) -> list[dict[str, Any]] | None
         return None
 
 
+RunKey = tuple[int, int]  # (inode, mtime_ns) of the run dir
+
+
 class BoardSource:
-    """Caches load_board and the mark histories for a short time; the board polls every 2s."""
+    """The leaderboard over the runs directory, rebuilt at most every ttl seconds (the board
+    polls every 2 s).
+
+    Published run dirs are immutable (the runner stages them and renames them into place), so
+    each one is parsed once: its load_run result and mark history are kept by dir name, guarded
+    by the dir's inode and mtime. A rebuild lists the directory, parses only new or changed
+    dirs, drops removed ones, and ranks all of them again (cheap once parsed).
+    """
 
     def __init__(self, runs_dir: Path, ttl: float = 2.0) -> None:
         self.runs_dir = runs_dir
         self.ttl = ttl
-        self._cached: tuple[float, Leaderboard, dict[str, list[float] | None]] | None = None
+        self._lock = threading.Lock()
+        self._runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
+        self._cached: tuple[float, Leaderboard, dict[str, list[dict[str, Any]] | None]] | None = (
+            None
+        )
 
     def invalidate(self) -> None:
         self._cached = None
 
-    def load(self) -> tuple[Leaderboard, dict[str, list[float] | None]]:
-        now = time.monotonic()
-        if self._cached is None or now - self._cached[0] >= self.ttl:
-            if self.runs_dir.is_dir():
-                board = load_board(self.runs_dir)
-            else:
-                board = Leaderboard(
-                    header=None,
-                    reference_run_id=None,
-                    ranked=(),
-                    failed=(),
-                    not_comparable=(),
-                    invalid=(),
-                )
-            histories = {e.run_id: history(self.runs_dir / e.run_id) for e in board.ranked}
-            self._cached = (now, board, histories)
-        return self._cached[1], self._cached[2]
+    def load(self) -> tuple[Leaderboard, dict[str, list[dict[str, Any]] | None]]:
+        with self._lock:  # sync routes run in a threadpool: one rebuild at a time
+            now = time.monotonic()
+            if self._cached is None or now - self._cached[0] >= self.ttl:
+                self._cached = (now, *self._rebuild())
+            return self._cached[1], self._cached[2]
+
+    def _rebuild(self) -> tuple[Leaderboard, dict[str, list[dict[str, Any]] | None]]:
+        if not self.runs_dir.is_dir():
+            empty = Leaderboard(
+                header=None, reference_run_id=None, ranked=(), failed=(), not_comparable=(),
+                invalid=(),
+            )  # fmt: skip
+            return empty, {}
+        # Dot-prefixed dirs (".tmp-<uuid>") are runs still being staged by the runner.
+        dirs = sorted(
+            p for p in self.runs_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
+        runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
+        for path in dirs:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue  # removed between the listing and now
+            key = (stat.st_ino, stat.st_mtime_ns)
+            cached = self._runs.get(path.name)
+            if cached is None or cached[0] != key:
+                cached = (key, load_run(path), history(path))
+            runs[path.name] = cached
+        self._runs = runs  # removed dirs drop out here
+        board = rank_runs([loaded for _, loaded, _ in runs.values()])
+        histories = {e.run_id: runs[e.run_id][2] for e in board.ranked if e.run_id in runs}
+        return board, histories
 
 
 def entry_row(
@@ -142,12 +179,12 @@ def submission_row(
     }
 
 
-def build_board(
+def board_rows(
     source: BoardSource,
     store: Store,
     logfire_url: Callable[[str], str | None] = lambda _: None,
-    bundle: Bundle | None = None,
-) -> dict[str, Any]:
+) -> tuple[list[dict[str, Any]], Decimal]:
+    """Every row, ranked over all of them, with histories; and the starting cash."""
     board, histories = source.load()
     by_dir = store.by_run_dir()
     rows = []
@@ -174,6 +211,33 @@ def build_board(
             row["rank"] = scored
         else:
             row["rank"] = None
+    return rows, starting_cash
+
+
+def page_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What the page draws: the top TOP_ROWS scored, every running, queued and baseline row
+    (failed runs are not on the board). History only for the chart: the top CHART_TOP scored,
+    the baselines and the running rows."""
+    shown = []
+    for row in rows:
+        baseline = row["kind"] == "baseline"
+        top = row["status"] == "scored" and row["rank"] is not None and row["rank"] <= TOP_ROWS
+        if not (top or baseline or row["status"] in ("running", "queued")):
+            continue
+        charted = row["status"] == "running" or (
+            row["status"] == "scored" and (baseline or row["rank"] <= CHART_TOP)
+        )
+        shown.append(row if charted or row["history"] is None else {**row, "history": None})
+    return shown
+
+
+def build_board(
+    source: BoardSource,
+    store: Store,
+    logfire_url: Callable[[str], str | None] = lambda _: None,
+    bundle: Bundle | None = None,
+) -> dict[str, Any]:
+    rows, starting_cash = board_rows(source, store, logfire_url)
 
     # The window and universe are the data bundle's; without one the board shows neither.
     window = {
@@ -186,6 +250,7 @@ def build_board(
     }
     return {
         "window": window,
-        "rows": rows,
+        "rows": page_rows(rows),
+        "total": {"rows": len(rows), **Counter(row["status"] for row in rows)},
         "events": store.recent_events(20),
     }
