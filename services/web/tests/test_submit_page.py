@@ -23,6 +23,8 @@ def test_the_only_script_src_is_the_same_origin_telemetry_module_in_the_head():
     tags = re.findall(r"<script\b[^>]*\bsrc\s*=[^>]*>", html, re.IGNORECASE)
 
     assert tags == ['<script type="module" src="/browser-telemetry.js">']
+    # A query string (?page=board) unmasks session replay text; the form must never carry one.
+    assert "browser-telemetry.js?" not in html
     head = html[: html.index("</head>")]
     assert '<script type="module" src="/browser-telemetry.js"></script>' in head
 
