@@ -130,7 +130,7 @@ def test_board_escapes_server_text():
                   "s.name", "q.symbol", "day.date"):  # fmt: skip
         assert f"${{{field}}}" not in script
     assert 'innerHTML = \'<span class="rk">' in script  # static row skeleton only
-    assert "day ${Number(r.day) || 0}/${DAYS}" in script  # numeric coercion, via textContent
+    assert "pct(r.return_pct)" in script and "ordinal(r.place)" in script  # via textContent
 
 
 def test_board_uses_the_v11_prototype_design():
@@ -143,7 +143,7 @@ def test_board_uses_the_v11_prototype_design():
         "<span>Return</span></div>"
     ) in BOARD
     assert (
-        "background: radial-gradient(90% 70% at 40% 10%, #5a1d5e 0%, #2a1230 55%, #1c1220 100%);"
+        "background: radial-gradient(90% 70% at 40% 0%, #4e1a52 0%, #2a1230 50%, #1c1220 100%);"
     ) in BOARD
     stylesheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', BOARD)
     assert len(stylesheets) == 1
@@ -178,7 +178,7 @@ def test_board_defines_the_helpers_its_functions_call():
         "setName", "reconcile", "countTo", "qrSVG", "render", "poll", "svgEl", "renderChart",
         "renderBoard", "renderTape", "showTip", "applyFocus", "loadTickers", "tabFromHash",
         "onTab", "tabView", "factoryText", "renderTabs", "makeRow", "fillRow", "chartSeries",
-        "fitPending", "qrPlace", "placeQR",
+        "fitNote", "pendingText",
     ):  # fmt: skip
         assert f"function {function}(" in script, function
     assert "esc(url)" in script  # qrSVG's fallback and aria-label
@@ -252,93 +252,6 @@ def test_the_header_and_tape_take_the_window_from_the_data():
     assert '$("sub-c").textContent = factoryText(data.factory);' in script
 
 
-def test_the_conference_layout_puts_the_qr_strip_under_the_chart():
-    assert '"hd hd" "board chart" "board side" "tape tape"' in BOARD
-    # The prototype's 900 px table column and 330 px QR strip; the chart takes the rest.
-    assert (
-        "grid-template-columns: calc(var(--px)*900) minmax(0,1fr); grid-template-rows: auto "
-        "minmax(0,1fr) calc(var(--px)*330) auto;"
-    ) in BOARD
-    body = BOARD.split("<main", 1)[1]
-    assert body.index('class="chart"') < body.index('class="side"')
-
-
-def test_a_tall_window_moves_the_qr_block_under_the_table():
-    # qr-left: the chart takes the whole right column and the QR block sits at the bottom of the
-    # left column, above the footnote.
-    assert (
-        '.dash.qr-left { grid-template-rows: auto minmax(0,1fr) auto; grid-template-areas: "hd hd" '
-        '"board chart" "tape tape"; }'
-    ) in BOARD
-    assert ".board .ar-qr { width: var(--qr); box-sizing: border-box; }" in BOARD
-    script = BOARD.split("<script>", 1)[1]
-    assert 'if (left) board.insertBefore(side, note); else dash.insertBefore(side, $("tape"));' in (
-        script
-    )
-    assert "new ResizeObserver(placeQR).observe(board);" in script
-
-
-def test_the_biggest_qr_wins_strip_beside_or_stacked():
-    def place(px, board, above, note, width, cta):
-        m = {"px": px, "board": board, "above": above, "note": note, "width": width, "cta": cta}
-        return run_tabs(f"qrPlace({json.dumps(m)})")
-
-    # free = board - above - 15 rows (40) - 3 pending rows and a "+K more" line (34) - note
-    #        - two 16 px gaps
-    # beside = min(free, 420, width - CTA - 36 px gap)
-    # stacked = min(free - CTA height, 420, width), the CTA height being
-    #           min(48 px, 7.4% width) x 1.1 + 12 px + min(24 px, 4.6% width) x 1.3 + 16 px
-    # A left place needs >= 220 px and more than the strip's 300 px (at 1920).
-    # 960x966 as measured live: free 347, beside 252, stacked 347 - 56 = 291.
-    assert place(0.5, 855, 88, 36, 450, 180) == {"left": True, "mode": "stacked", "size": 291}
-    # 1920x1080: 37 px free, so the strip, unchanged.
-    assert place(1, 945, 120, 20, 900, 360) == {"left": False, "mode": "strip", "size": 300}
-    # 1440x1440: beside 378, stacked capped at 420.
-    assert place(0.75, 1338, 90, 17, 675, 270) == {"left": True, "mode": "stacked", "size": 420}
-    # Wide and short: beside 400 beats stacked 400 - 112 = 288.
-    assert place(1, 1308, 120, 20, 900, 360) == {"left": True, "mode": "beside", "size": 400}
-    # 292 left: under the strip's 300, so the strip.
-    assert place(1, 1200, 120, 20, 900, 360) == {"left": False, "mode": "strip", "size": 300}
-    # Narrow: stacked is 200, bigger than the strip's 120 but under 220.
-    assert place(0.4, 900, 50, 20, 200, 60) == {"left": False, "mode": "strip", "size": 120}
-
-
-def test_the_stacked_cta_sits_above_the_qr():
-    assert ".dash.qr-stacked .board .side { flex-direction: column;" in BOARD
-    assert ".dash.qr-stacked .board .side .ins { order: -1; flex: none; }" in BOARD
-    assert 'dash.classList.toggle("qr-stacked", mode === "stacked");' in BOARD
-
-
-def test_placement_reruns_on_render_and_when_the_fonts_load():
-    script = BOARD.split("<script>", 1)[1]
-    assert "new ResizeObserver(placeQR).observe(board);" in script
-    assert "document.fonts.ready.then(placeQR);" in script
-    assert "  renderBoard(data);\n  placeQR();" in script
-    assert "const cta = Math.round(b.width * CTA_SHARE);" in script  # the CTA's share
-
-
-def test_a_running_rows_day_text_widens_its_column_instead_of_clipping():
-    # The blinking dot (20886e3) made "day 4/10" overflow the fixed 110 px return column.
-    assert (
-        ".pending .ar-row { grid-template-columns: calc(var(--px)*80) calc(var(--px)*140) "
-        "minmax(0,1fr) minmax(calc(var(--px)*110), max-content); }"
-    ) in BOARD
-    phone = BOARD.split("@media (max-width: 760px) {", 1)[1].split("\n}", 1)[0]
-    assert (
-        ".pending .ar-row { grid-template-columns: 42px 80px minmax(0,1fr) "
-        "minmax(70px, max-content); }"
-    ) in phone
-
-
-def test_pending_rows_that_do_not_fit_become_a_more_line():
-    assert '<p class="pending-more" id="pending-more" hidden></p>' in BOARD
-    # .ar-row sets display: grid, which would override the hidden attribute.
-    assert ".pending .ar-row[hidden] { display: none; }" in BOARD
-    script = BOARD.split("<script>", 1)[1]
-    assert "more.textContent = `+${rows.length - shown} more`;" in script
-    assert "new ResizeObserver(fitPending).observe(pendingList);" in script
-
-
 def test_the_board_has_no_market_wire():
     # L3: the market wire panel is gone, markup, style and script. /api/board still sends
     # "events"; the board just doesn't render them.
@@ -357,19 +270,6 @@ def test_the_chart_has_no_legend():
     assert "legend" not in BOARD.lower()
 
 
-def test_the_running_day_text_is_steady_and_a_marker_blinks():
-    # 'day d/10' sits in .rt; a blinking .rt hid it half of each second (and from photos).
-    rules = dict(re.findall(r"^\s*([^{}@/][^{}]*?)\s*\{([^}]*)\}", BOARD, re.MULTILINE))
-    data_text = [sel for sel in rules if sel.endswith((".rt", ".ar-coin"))]
-    assert data_text, "the day text's rules"
-    for selector in data_text:
-        assert "animation" not in rules[selector], selector
-    marker = rules[".pending .ar-row.st-running .rt::before"]
-    assert "animation: blink 1s steps(1) infinite" in marker and "var(--lime)" in marker
-    reduced = BOARD.split("@media (prefers-reduced-motion: reduce)", 1)[1]
-    assert ".pending .ar-row.st-running .rt::before" in reduced.split("}", 1)[0]
-
-
 def test_the_hover_cursor_is_hidden_until_hovered():
     script = BOARD.split("<script>", 1)[1]
     assert 'id: "cursor", visibility: "hidden" }, svg);' in script  # parked at x=-10, unseen
@@ -386,7 +286,7 @@ def run_tabs(expression):
         r"^const (?:COLORS|DIM|BASELINE_COLORS|ordinal) = .*$", BOARD, re.MULTILINE
     )
     sources += re.findall(r"^const baseLabel = .*$", BOARD, re.MULTILINE)
-    for marker in ("tabs", "chartSeries", "qrPlace"):
+    for marker in ("tabs", "chartSeries"):
         sources += re.findall(rf"// {marker}:start(.*?)// {marker}:end", BOARD, re.DOTALL)
     script = "\n".join(sources) + f"\nconsole.log(JSON.stringify({expression}));"
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
@@ -410,7 +310,7 @@ def test_tabs_are_real_tab_buttons_44px_tall():
     assert tabs == ["Human", "Agent factory", "Both"]
     assert 'role="tablist"' in BOARD and 'role="tabpanel"' in BOARD
     assert 'b.setAttribute("aria-selected", String(on));' in BOARD
-    assert re.search(r"\.tab \{ min-height: max\(44px,", BOARD)
+    assert re.search(r"\.tab \{ min-height: 44px;", BOARD)
     assert re.search(r'\.tab\[aria-selected="true"\] \{ background: var\(--lime\);', BOARD)
 
 
@@ -589,8 +489,14 @@ def test_the_board_page_has_the_in_sample_footnote(settings, helpers):
         '<p class="ar-note"><span class="ai">AI</span> = house strategy \u00b7 '
         "names starting gN- were bred from this window's results (in-sample)</p>"
     ) in page
-    # Static markup under the table, never built by the script.
-    assert "ar-note" not in page.split("<script>", 1)[1]
+    # Static markup under the table: the board's script only hides it when it would wrap.
+    script = page.split("<script>", 1)[1].split("</script>", 1)[0]
+    assert (
+        script.count("ar-note") == 1
+        and 'const note = document.querySelector(".ar-note");' in script
+    )
+    assert "note.hidden = note.scrollWidth > note.clientWidth + 1;" in script
+    assert "note.textContent" not in script and "note.innerHTML" not in script
     assert page.index('id="list"') < page.index('class="ar-note"')
 
 
@@ -599,3 +505,67 @@ def test_the_header_names_the_universe_from_the_board_data():
     assert 'const universe = typeof w.universe === "string" ? w.universe : "";' in script
     assert "S&P" not in BOARD  # never hardcoded
     assert "STOCKS" not in script  # the count label comes from the server too
+
+
+def test_v2_puts_the_chart_on_top_and_the_leaderboard_and_qr_under_it():
+    assert 'grid-template-areas: "hd" "chart" "bottom" "tape";' in BOARD
+    assert "grid-template-rows: auto minmax(0,1fr) auto auto;" in BOARD  # the chart takes the rest
+    body = BOARD.split("<main", 1)[1]
+    assert body.index('class="chart"') < body.index('class="bottom"') < body.index('class="tape"')
+    bottom = body.split('<div class="bottom">', 1)[1].split('<footer class="tape"', 1)[0]
+    assert bottom.index('class="board"') < bottom.index(
+        'class="side"'
+    )  # leaderboard left, QR right
+    # The CTA above the QR, each on one line.
+    side = bottom.split('<aside class="side">', 1)[1]
+    assert side.index('class="ar-coin"') < side.index('class="ar-qr"')
+    assert "<p>Scan to play · start with $10,000</p>" in side
+
+
+def test_the_qr_is_as_large_as_its_cell_allows():
+    assert ".side { min-width: 0; container-type: size;" in BOARD
+    assert (
+        "width: min(100cqw, 100cqh - var(--coin)*1.1 - var(--scan)*1.3 - 2*var(--gap)); }" in BOARD
+    )
+    assert (
+        ".ar-coin { font: 400 var(--coin)/1.1 var(--pixel); color: var(--lime); white-space: nowrap; }"
+        in BOARD
+    )
+    for gone in ("qrPlace", "placeQR", "CTA_SHARE", "qr-left", "qr-stacked"):
+        assert gone not in BOARD, gone
+
+
+def test_wide_windows_list_the_top_15_in_two_columns_of_8_and_7():
+    wide = BOARD.split("@media (min-aspect-ratio: 16/10) {", 1)[1].split("\n}\n", 1)[0]
+    assert "grid-auto-flow: column; grid-template-rows: repeat(8, var(--rh));" in wide
+    assert ".ar-head .ar-cols + .ar-cols { display: grid; }" in wide  # a header per column
+    # The wide rules come after the base ones, so they win.
+    assert BOARD.index(".ar-head .ar-cols + .ar-cols { display: none; }") < BOARD.index(
+        "@media (min-aspect-ratio: 16/10)"
+    )
+
+
+def test_pending_is_one_line_of_counts():
+    rows = [
+        {"status": "running"}, {"status": "running"}, {"status": "queued"},
+    ]  # fmt: skip
+    assert run_tabs(f"pendingText({json.dumps(rows)})") == "2 running, 1 queued"
+    assert run_tabs("pendingText([])") == "0 running, 0 queued"
+    script = BOARD.split("<script>", 1)[1]
+    assert '$("pending-line").textContent = pendingText(view.pending);' in script
+    assert '<p class="pending-line" id="pending-line"></p>' in BOARD
+    for gone in ("fitPending", "pending-more", "pending-head", "pendingList", "+K more"):
+        assert gone not in BOARD, gone
+
+
+def test_the_chart_redraws_when_its_box_changes():
+    script = BOARD.split("<script>", 1)[1]
+    assert (
+        "new ResizeObserver(() => { if (lastData) renderChart(lastData); }).observe(plot);"
+        in script
+    )
+    assert 'addEventListener("resize"' not in script
+
+
+def test_the_admin_pill_gets_its_own_strip():
+    assert "body:has(> .adm) .dash { padding-bottom: max(52px, calc(var(--px)*72)); }" in BOARD
