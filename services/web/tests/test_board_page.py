@@ -145,12 +145,27 @@ def test_board_uses_the_v11_prototype_design():
     assert (
         "background: radial-gradient(90% 70% at 40% 0%, #4e1a52 0%, #2a1230 50%, #1c1220 100%);"
     ) in BOARD
-    stylesheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', BOARD)
-    assert len(stylesheets) == 1
-    assert stylesheets[0].startswith("https://fonts.googleapis.com/css2?")
-    assert "family=Silkscreen" in stylesheets[0] and "Press+Start" not in BOARD
+    # The fonts are inlined, nothing to fetch (or wait on) before the first paint.
+    assert '<link rel="stylesheet"' not in BOARD and "fonts.googleapis.com" not in BOARD
+    faces = re.findall(r'@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);', BOARD)
+    assert faces == [("Silkscreen", "400")] + [("IBM Plex Mono", w) for w in ("400", "500", "700")]
+    assert "Press+Start" not in BOARD
     assert '<img class="logo" src="/static/brand/pydantic-name-dark.svg" alt="Pydantic"' in BOARD
     assert 'const COLORS = ["#d0ff71", "#00ffeb", "#e520e9"];' in BOARD  # 1st, 2nd, 3rd
+
+
+def test_the_inlined_fonts_carry_their_copyright_and_licence(settings, helpers):
+    # SIL OFL 1.1: the copyright notice and the licence travel with the font data.
+    assert "Copyright 2001 The Silkscreen Project Authors" in BOARD
+    assert "Copyright 2017 IBM Corp." in BOARD
+    licences = re.findall(r"/static/fonts/OFL-\w+\.txt", BOARD)
+    assert licences == ["/static/fonts/OFL-Silkscreen.txt", "/static/fonts/OFL-IBMPlexMono.txt"]
+    with client_for(settings, helpers) as client:
+        texts = [client.get(path) for path in licences]
+
+    assert all(
+        t.status_code == 200 and "SIL OPEN FONT LICENSE Version 1.1" in t.text for t in texts
+    )
 
 
 def test_board_respects_reduced_motion():

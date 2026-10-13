@@ -5,7 +5,7 @@ it is shown on. Needs Playwright and its Chromium:
 
 Without them (plain `uv run pytest`) every test here SKIPS with a named reason; with
 BAZAAR_REQUIRE_BROWSER_PROOF=1 a missing browser FAILS instead. Offline: every request that
-isn't the app's own is aborted (the fonts fall back, so the check holds with either).
+isn't the app's own is aborted (the board's fonts are inlined, so it needs nothing else).
 """
 
 import asyncio
@@ -153,3 +153,111 @@ def test_the_qr_is_full_size_before_the_board_data_arrives(held_board, width, he
     assert held["connecting"] and held["rows"] == 0  # measured before any data
     assert held["qr"] >= 0.95 * settled["qr"], (held, settled)
     assert abs(held["bottom"] - settled["bottom"]) <= 1, (held, settled)  # nothing moves
+
+
+FIRST_FRAME = """
+window.__shift = 0;
+new PerformanceObserver(list => {
+  for (const e of list.getEntries()) if (!e.hadRecentInput) window.__shift += e.value;
+}).observe({type: "layout-shift", buffered: true});
+const firstShown = () => {
+  if (document.body && getComputedStyle(document.body).visibility === "visible") {
+    window.__fontsAtFirstFrame = document.fonts.check("16px Silkscreen")
+      && document.fonts.check('500 16px "IBM Plex Mono"');
+  } else requestAnimationFrame(firstShown);
+};
+requestAnimationFrame(firstShown);
+"""
+
+STABLE = """() => {
+  const box = s => [...document.querySelectorAll(s)].map(e => {
+    const b = e.getBoundingClientRect();
+    return [b.x, b.y, b.width, b.height];
+  });
+  const sub = document.querySelector('.hd .sub').getBoundingClientRect();
+  return {title: box('.hd h1'), h2: box('.chart h2'), tabs: box('.tab'), cta: box('.ar-coin'),
+          qr: box('.ar-qr'), sub: [[sub.y, sub.height]]};
+}"""
+
+
+@pytest.mark.parametrize(("width", "height"), [(1110, 1045), (960, 966)])
+def test_the_board_paints_in_its_own_fonts_and_nothing_moves(held_board, width, height):
+    # The fonts are inlined (no Google stylesheet to wait on) and the board shows once they have
+    # decoded, so the first frame is already in Silkscreen and Plex Mono; the header's meta lines
+    # are reserved, so the data filling them moves nothing either.
+    url, release = held_board
+    outside = []
+    with sync_api.sync_playwright() as playwright:
+        # Offline without routing every request through Playwright (that slows the page enough to
+        # hide a first frame in fallback fonts): only 127.0.0.1 resolves.
+        browser = playwright.chromium.launch(
+            args=["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"]
+        )
+        page = browser.new_page(viewport={"width": width, "height": height})
+        page.add_init_script(FIRST_FRAME)
+        page.on(
+            "request", lambda r: None if r.url.startswith((url, "data:")) else outside.append(r.url)
+        )
+        page.goto(f"{url}/")
+        page.wait_for_function("window.__fontsAtFirstFrame !== undefined")
+        page.wait_for_timeout(300)
+        held = page.evaluate(STABLE)
+        release()
+        page.wait_for_function("document.querySelectorAll('#list .ar-row').length === 15")
+        page.wait_for_timeout(2000)
+        settled = page.evaluate(STABLE)
+        fonts_at_first_frame = page.evaluate("window.__fontsAtFirstFrame")
+        shift = page.evaluate("window.__shift")
+        browser.close()
+
+    assert outside == []  # nothing to fetch from elsewhere, nothing to wait on
+    assert fonts_at_first_frame is True
+    assert shift < 0.01, shift
+    for name, boxes in held.items():
+        assert len(boxes) == len(settled[name]), name
+        for before, after in zip(boxes, settled[name]):
+            assert all(abs(x - y) <= 1 for x, y in zip(before, after)), (name, before, after)
+
+
+FONT_API = {
+    "decodes in 600 ms": "const real = document.fonts.load.bind(document.fonts);"
+    " document.fonts.load = (...a) => new Promise(ok => setTimeout(() => ok(real(...a)), 600));",
+    "never decodes": "document.fonts.load = () => new Promise(() => {});",
+    "load throws": 'FontFaceSet.prototype.load = () => { throw new Error("no fonts"); };',
+    "no font API": 'Object.defineProperty(Document.prototype, "fonts", {get: () => undefined});',
+}
+
+
+@pytest.mark.parametrize(
+    ("font_api", "shown_from", "shown_by"),
+    [("decodes in 600 ms", 550, 900), ("never decodes", 900, 1500), ("load throws", 0, 1500),
+     ("no font API", 0, 1500)],
+)  # fmt: skip
+def test_the_board_waits_for_its_fonts_to_decode_but_not_forever(
+    board_url, font_api, shown_from, shown_by
+):
+    # Here the inlined faces usually decode before the first frame, but not always (a live run
+    # showed a frame of fallback tabs): slow the decode down and the board stays hidden until it
+    # is done; if it never is, or the font API fails, the board still shows within 1 s.
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            args=["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"]
+        )
+        page = browser.new_page(viewport={"width": 1110, "height": 1045})
+        page.add_init_script(
+            FONT_API[font_api]
+            + """
+            const seen = () => {
+              if (document.body && getComputedStyle(document.body).visibility === "visible") {
+                window.__shownAt = performance.now();
+              } else requestAnimationFrame(seen);
+            };
+            requestAnimationFrame(seen);
+            """
+        )
+        page.goto(f"{board_url}/")
+        page.wait_for_function("window.__shownAt !== undefined", timeout=5000)
+        shown_at = page.evaluate("window.__shownAt")
+        browser.close()
+
+    assert shown_from <= shown_at <= shown_by, shown_at
