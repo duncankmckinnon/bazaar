@@ -8,6 +8,7 @@ BAZAAR_REQUIRE_BROWSER_PROOF=1 a missing browser FAILS instead. Offline: every r
 isn't the app's own is aborted (the fonts fall back, so the check holds with either).
 """
 
+import asyncio
 import os
 import socket
 import threading
@@ -89,3 +90,66 @@ def test_the_in_sample_disclosure_is_visible_on_one_line(board_url, width, heigh
     assert note["visible"] and note["oneLine"], note
     assert note["text"].startswith("AI") and "in-sample" in note["text"], note
     assert note["fontSize"] >= 12
+
+
+@pytest.fixture
+def held_board(settings, helpers):
+    """The app with 16 scored runs, its /api/board held until release() (CONNECTING till then)."""
+    if UNAVAILABLE is not None:
+        pytest.fail(f"BAZAAR_REQUIRE_BROWSER_PROOF=1 but no browser: {UNAVAILABLE}", pytrace=False)
+    for i in range(16):
+        ret = 0.05 - i * 0.002
+        marks = tuple(str(round(10000 * (1 + ret * d / 10), 2)) for d in range(1, 11))
+        helpers.write_run(
+            settings.runs_dir, f"run-{i}", policy_ref=f"agent-{i}", period_return=str(ret),
+            marks=marks,
+        )  # fmt: skip
+    gate = threading.Event()
+    app = create_app(settings, helpers.FakeRunner())
+
+    @app.middleware("http")
+    async def hold(request, call_next):
+        if request.url.path == "/api/board":
+            await asyncio.to_thread(gate.wait, 30)
+        return await call_next(request)
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    helpers.wait_for(lambda: server.started, timeout=10)
+    yield f"http://127.0.0.1:{port}", gate.set
+    gate.set()
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+@pytest.mark.parametrize(("width", "height"), SCREENS)
+def test_the_qr_is_full_size_before_the_board_data_arrives(held_board, width, height):
+    # Live, the first load after a deploy showed a 77 px QR until the data came: the bottom row
+    # (the QR's height) was as short as the empty list. The list now reserves the top 15's room.
+    url, release = held_board
+    measure = """() => {
+      const q = document.querySelector('.ar-qr').getBoundingClientRect();
+      return {qr: q.width, bottom: document.querySelector('.bottom').getBoundingClientRect().height,
+              rows: document.querySelectorAll('#list .ar-row').length,
+              connecting: !!document.getElementById('connecting')};
+    }"""
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page(viewport={"width": width, "height": height})
+        page.route("**/*", lambda r: r.continue_() if r.request.url.startswith(url) else r.abort())
+        page.goto(f"{url}/")
+        page.wait_for_timeout(500)  # a few frames with the data held
+        held = page.evaluate(measure)
+        release()
+        page.wait_for_function("document.querySelectorAll('#list .ar-row').length === 15")
+        page.wait_for_timeout(300)
+        settled = page.evaluate(measure)
+        browser.close()
+
+    assert held["connecting"] and held["rows"] == 0  # measured before any data
+    assert held["qr"] >= 0.95 * settled["qr"], (held, settled)
+    assert abs(held["bottom"] - settled["bottom"]) <= 1, (held, settled)  # nothing moves

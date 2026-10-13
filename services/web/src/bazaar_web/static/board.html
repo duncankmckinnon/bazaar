@@ -91,7 +91,9 @@ body:has(> .adm) .dash { padding-bottom: max(52px, calc(var(--px)*72)); }
 .ar-cols, .ar-row { display: grid; grid-template-columns: 3.6em 6.4em minmax(0,1fr) 5.4em; column-gap: .6em; align-items: center; }
 .ar-cols { padding: .3em .4em; font: 500 max(12px, .8em)/1 var(--mono); color: var(--muted); }
 .ar-cols span:nth-child(4) { text-align: right; }
-.ar-list { list-style: none; margin: 0; padding: 0; }
+/* Room for the top 15 from the first paint (CONNECTING, an empty tab), so the bottom row and
+   the QR, which is sized to it, are final before any data arrives and never jump. */
+.ar-list { list-style: none; margin: 0; padding: 0; min-height: calc(var(--rh)*15); }
 .ar-row { height: var(--rh); padding: 0 .4em; font: 400 1em/1 var(--pixel); color: var(--c, var(--text)); border-radius: 4px; }
 .ar-row.hl { background: rgba(239,230,242,.08); }
 /* Policy names in mono, as submitted (the pixel font in capitals was the hard part to read); the
@@ -112,7 +114,7 @@ body:has(> .adm) .dash { padding-bottom: max(52px, calc(var(--px)*72)); }
 /* Wide windows (1920x1080): two columns of 8 and 7, and taller rows. */
 @media (min-aspect-ratio: 16/10) {
   .dash { --rh: clamp(30px, 4.25vh, 46px); --rfs: max(12px, calc(var(--rh)*.44)); --qrcol: 22%; }
-  .ar-list { display: grid; grid-auto-flow: column; grid-template-rows: repeat(8, var(--rh)); grid-template-columns: repeat(2, minmax(0,1fr)); column-gap: 2.4em; }
+  .ar-list { display: grid; grid-auto-flow: column; grid-template-rows: repeat(8, var(--rh)); grid-template-columns: repeat(2, minmax(0,1fr)); column-gap: 2.4em; min-height: 0; }  /* the 8 rows reserve it */
   .ar-head { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .ar-head .ar-cols + .ar-cols { display: grid; }
 }
