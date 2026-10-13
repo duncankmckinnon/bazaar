@@ -145,10 +145,11 @@ def test_board_uses_the_v11_prototype_design():
     assert (
         "background: radial-gradient(90% 70% at 40% 0%, #4e1a52 0%, #2a1230 50%, #1c1220 100%);"
     ) in BOARD
-    stylesheets = re.findall(r'<link rel="stylesheet" href="([^"]+)"', BOARD)
-    assert len(stylesheets) == 1
-    assert stylesheets[0].startswith("https://fonts.googleapis.com/css2?")
-    assert "family=Silkscreen" in stylesheets[0] and "Press+Start" not in BOARD
+    # The fonts are inlined, nothing to fetch (or wait on) before the first paint.
+    assert '<link rel="stylesheet"' not in BOARD and "fonts.googleapis.com" not in BOARD
+    faces = re.findall(r'@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);', BOARD)
+    assert faces == [("Silkscreen", "400")] + [("IBM Plex Mono", w) for w in ("400", "500", "700")]
+    assert "Press+Start" not in BOARD
     assert '<img class="logo" src="/static/brand/pydantic-name-dark.svg" alt="Pydantic"' in BOARD
     assert 'const COLORS = ["#d0ff71", "#00ffeb", "#e520e9"];' in BOARD  # 1st, 2nd, 3rd
 
