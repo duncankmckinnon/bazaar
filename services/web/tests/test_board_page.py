@@ -485,17 +485,23 @@ def test_the_board_page_has_the_in_sample_footnote(settings, helpers):
     with TestClient(create_app(settings, helpers.FakeRunner())) as client:
         page = client.get("/").text
 
+    # The full footnote and a short form (shown when the full one would wrap): the in-sample
+    # disclosure is on screen at every size (test_browser_board.py checks it in Chromium).
     assert (
-        '<p class="ar-note"><span class="ai">AI</span> = house strategy \u00b7 '
-        "names starting gN- were bred from this window's results (in-sample)</p>"
+        '<p class="ar-note"><span class="ai">AI</span> <span class="full">= house strategy \u00b7 '
+        "names starting gN- were bred from this window's results (in-sample)</span>"
+        '<span class="short">house \u00b7 gN- = bred in-sample</span></p>'
     ) in page
+    assert ".ar-note .short, .ar-note.brief .full { display: none; }" in page
+    assert ".ar-note.brief .short { display: inline; }" in page
     # Static markup under the table: the board's script only hides it when it would wrap.
     script = page.split("<script>", 1)[1].split("</script>", 1)[0]
     assert (
         script.count("ar-note") == 1
         and 'const note = document.querySelector(".ar-note");' in script
     )
-    assert "note.hidden = note.scrollWidth > note.clientWidth + 1;" in script
+    assert 'note.classList.toggle("brief", note.scrollWidth > note.clientWidth + 1);' in script
+    assert "note.hidden" not in script  # never hidden: the short form instead
     assert "note.textContent" not in script and "note.innerHTML" not in script
     assert page.index('id="list"') < page.index('class="ar-note"')
 

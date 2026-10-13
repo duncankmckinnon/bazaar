@@ -10,7 +10,8 @@ jobs:
       - run: uv run ruff check
       - run: uv run pytest
   browser-privacy:
-    # The browser privacy proof (test_browser_privacy.py) skips in the test job; here it must run.
+    # The browser proofs (the submit page's privacy, the board's in-sample disclosure) skip in the
+    # test job; here they must run.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +22,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-1.63.0-${{ runner.os }}
       - run: uv run --with playwright==1.63.0 python -m playwright install --with-deps chromium
-      - run: uv run --with playwright==1.63.0 python -m pytest services/web/tests/test_browser_privacy.py -v -rs
+      - run: uv run --with playwright==1.63.0 python -m pytest services/web/tests/test_browser_privacy.py services/web/tests/test_browser_board.py -v -rs
         env:
           BAZAAR_REQUIRE_BROWSER_PROOF: "1"
   docker:
