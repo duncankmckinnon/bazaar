@@ -219,30 +219,39 @@ def test_the_board_paints_in_its_own_fonts_and_nothing_moves(held_board, width, 
             assert all(abs(x - y) <= 1 for x, y in zip(before, after)), (name, before, after)
 
 
+FONT_API = {
+    "decodes in 600 ms": "const real = document.fonts.load.bind(document.fonts);"
+    " document.fonts.load = (...a) => new Promise(ok => setTimeout(() => ok(real(...a)), 600));",
+    "never decodes": "document.fonts.load = () => new Promise(() => {});",
+    "load throws": 'FontFaceSet.prototype.load = () => { throw new Error("no fonts"); };',
+    "no font API": 'Object.defineProperty(Document.prototype, "fonts", {get: () => undefined});',
+}
+
+
 @pytest.mark.parametrize(
-    ("decode_ms", "shown_from", "shown_by"), [(600, 550, 900), (None, 900, 1500)]
-)
+    ("font_api", "shown_from", "shown_by"),
+    [("decodes in 600 ms", 550, 900), ("never decodes", 900, 1500), ("load throws", 0, 1500),
+     ("no font API", 0, 1500)],
+)  # fmt: skip
 def test_the_board_waits_for_its_fonts_to_decode_but_not_forever(
-    board_url, decode_ms, shown_from, shown_by
+    board_url, font_api, shown_from, shown_by
 ):
     # Here the inlined faces usually decode before the first frame, but not always (a live run
     # showed a frame of fallback tabs): slow the decode down and the board stays hidden until it
-    # is done, or 1 s if it never is.
-    slow = f"setTimeout(() => done(real(...a)), {decode_ms})" if decode_ms else ""
+    # is done; if it never is, or the font API fails, the board still shows within 1 s.
     with sync_api.sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             args=["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"]
         )
         page = browser.new_page(viewport={"width": 1110, "height": 1045})
         page.add_init_script(
-            f"""
-            const real = document.fonts.load.bind(document.fonts);
-            document.fonts.load = (...a) => new Promise(done => {{ {slow} }});
-            const seen = () => {{
-              if (document.body && getComputedStyle(document.body).visibility === "visible") {{
+            FONT_API[font_api]
+            + """
+            const seen = () => {
+              if (document.body && getComputedStyle(document.body).visibility === "visible") {
                 window.__shownAt = performance.now();
-              }} else requestAnimationFrame(seen);
-            }};
+              } else requestAnimationFrame(seen);
+            };
             requestAnimationFrame(seen);
             """
         )

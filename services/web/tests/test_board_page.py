@@ -154,6 +154,20 @@ def test_board_uses_the_v11_prototype_design():
     assert 'const COLORS = ["#d0ff71", "#00ffeb", "#e520e9"];' in BOARD  # 1st, 2nd, 3rd
 
 
+def test_the_inlined_fonts_carry_their_copyright_and_licence(settings, helpers):
+    # SIL OFL 1.1: the copyright notice and the licence travel with the font data.
+    assert "Copyright 2001 The Silkscreen Project Authors" in BOARD
+    assert "Copyright 2017 IBM Corp." in BOARD
+    licences = re.findall(r"/static/fonts/OFL-\w+\.txt", BOARD)
+    assert licences == ["/static/fonts/OFL-Silkscreen.txt", "/static/fonts/OFL-IBMPlexMono.txt"]
+    with client_for(settings, helpers) as client:
+        texts = [client.get(path) for path in licences]
+
+    assert all(
+        t.status_code == 200 and "SIL OPEN FONT LICENSE Version 1.1" in t.text for t in texts
+    )
+
+
 def test_board_respects_reduced_motion():
     script = BOARD.split("<script>", 1)[1]
     assert "...(RM ? [] : quotes.map(quote))" in script  # one static copy of the tape
