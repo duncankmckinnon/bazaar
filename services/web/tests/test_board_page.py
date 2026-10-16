@@ -33,6 +33,36 @@ def test_board_page_falls_back_to_the_request_url(settings, helpers):
     assert 'const SUBMIT_URL = "http://testserver/submit";' in page.text
 
 
+def qr_text(page: str) -> str:
+    line = next(line for line in page.splitlines() if line.startswith("const SUBMIT_URL"))
+    return json.loads(line.removeprefix("const SUBMIT_URL = ").removesuffix(";"))
+
+
+def test_a_random_qr_never_leads_to_the_submit_page(settings, helpers):
+    real = "https://bazaar.example/submit"
+    with client_for(settings, helpers, public_url="https://bazaar.example", qr_random=True) as c:
+        first, second = qr_text(c.get("/").text), qr_text(c.get("/").text)
+        submit_page = c.get("/submit")
+
+    # Random text of the link's length (the same size of code), new on every load.
+    assert len(first) == len(second) == len(real) and first != second
+    assert re.fullmatch(r"[a-z0-9]+", first) and "bazaar.example" not in first
+    # Only the code changes: the submit page itself still serves.
+    assert submit_page.status_code == 200
+
+
+def test_the_random_qr_flag_comes_from_the_environment(monkeypatch):
+    from bazaar_web.settings import Settings
+
+    monkeypatch.delenv("BAZAAR_QR_RANDOM", raising=False)
+    assert Settings.from_env().qr_random is False
+    monkeypatch.setenv("BAZAAR_QR_RANDOM", "1")
+    assert Settings.from_env().qr_random is True
+    monkeypatch.setenv("BAZAAR_QR_RANDOM", "sometimes")
+    with pytest.raises(ValueError, match="BAZAAR_QR_RANDOM"):
+        Settings.from_env()
+
+
 def test_board_page_loads_no_cdn_scripts():
     sources = re.findall(r"<script[^>]*\bsrc=\"([^\"]+)\"", BOARD)
 
