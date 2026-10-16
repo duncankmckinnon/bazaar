@@ -115,7 +115,7 @@ def run(k=2, generation=1, existing=(), brief=BRIEF, instructions=INSTRUCTIONS, 
     )
 
 
-def check(drafts, k=5, generation=1, existing=(), names=BRIEF.names):
+def check(drafts, k=5, generation=1, existing=(), names=BRIEF.names, max_orders=5):
     return validate(
         [Draft(**d) for d in drafts],
         k=k,
@@ -123,6 +123,7 @@ def check(drafts, k=5, generation=1, existing=(), names=BRIEF.names):
         brief_names=names,
         existing_instructions=existing,
         allowed_symbols={m["symbol"] for m in UNIVERSE} | {"SPY"},
+        max_orders=max_orders,
     )
 
 
@@ -145,7 +146,7 @@ def test_a_valid_batch_passes_through_in_model_order(with_model):
         (draft("g1-sure", "A guaranteed winner: buy MSFT every Monday."), "claim"),
         (draft("g1-tesla", "Buy TSLA whenever it rises two days in a row."), "ticker"),
         (
-            draft("g1-spread", "Buy AAPL and MSFT at 20% of equity each; sell after 3 days."),
+            draft("g1-spread", "Buy AAPL and MSFT at 10% of equity each; sell after 3 days."),
             "multi_position",
         ),
         (
@@ -313,9 +314,9 @@ def test_an_unbuildable_model_is_a_strategist_error(monkeypatch):
         strategist.build_model()
 
 
-# The first real proposals (2026-10-12): every one is a multi-position plan the trader cannot
-# follow with one order a day.
-REAL_UNFOLLOWABLE = [
+# The first real proposals (2026-10-12): multi-position plans of 3 to 5 positions, which a
+# trader can follow with 5 orders a day but not with one.
+REAL_MULTI_POSITION = [
     "Each day, rank Information Technology stocks by return over the prior 5 trading days. Hold the top 5 with positive returns at 20% of equity each. Rebalance at the next market open only when membership changes; sell any stock that leaves the top 5. Keep unused allocation in cash.",
     "At each close, rank Energy stocks by their prior 3-day return. At the next open, buy the top 5 positive-return names in equal 20% positions. Hold for 5 trading days, then rerank and replace all positions. If fewer than 5 qualify, divide only the corresponding 20% sleeves and leave the rest in cash.",
     "Every 5 trading days, compare the equal-weight prior 10-day return of Information Technology and Energy. Trade only the stronger sector: buy its 5 stocks with the highest prior 5-day return, equally weighted. Sell all old holdings before rotating. Use cash if the selected sector return is not positive.",
@@ -331,10 +332,38 @@ FOLLOWABLE = [
 ]  # fmt: skip
 
 
-@pytest.mark.parametrize("text", REAL_UNFOLLOWABLE)
-def test_every_real_multi_position_plan_is_rejected(text):
+# More positions at once than 5 orders open, or a count the plan never states.
+TOO_MANY_POSITIONS = [
+    "Hold the top 10 Energy stocks at 10% each; rebalance weekly.",
+    "Buy up to 8 Technology gainers a day and sell each after 3 days.",
+    "Keep seven positions in the strongest Energy stocks; replace the weakest weekly.",
+    "Buy Energy gainers at 12.5% of equity each; sell after a 3% drop.",
+    "Equal-weight every Energy stock above its 10-day average and rebalance monthly.",
+    "Rebalance the portfolio every Friday toward the week's biggest gainers.",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("text", REAL_MULTI_POSITION)
+def test_real_multi_position_plans_pass_within_the_order_limit(text):
     accepted, rejected = check([draft("g1-real", text)])
+    assert len(accepted) == 1 and not rejected
+    accepted, rejected = check([draft("g1-real", text)], max_orders=1)
     assert accepted == [] and rejected == {"multi_position": 1}
+
+
+@pytest.mark.parametrize("text", TOO_MANY_POSITIONS)
+def test_plans_past_the_order_limit_are_rejected(text):
+    accepted, rejected = check([draft("g1-many", text)])
+    assert accepted == [] and rejected == {"multi_position": 1}
+
+
+def test_a_period_is_not_a_position_count():
+    for text in (
+        "Buy the top 10-day gainer in Energy with 20% of cash; sell after 5 days.",
+        "Buy AAPL with 12.5% of cash each day it rises; sell after a 3% drop.",
+    ):
+        accepted, rejected = check([draft("g1-period", text)])
+        assert len(accepted) == 1 and not rejected, text
 
 
 @pytest.mark.parametrize("text", FOLLOWABLE)
@@ -348,9 +377,10 @@ def constraints_of(prompt):
 
 
 def test_the_runtime_constraints_are_trusted_text_outside_the_data(with_model):
-    """The trader places at most one order a day: the model is told so, as runtime rules, not
-    inside the attendee-supplied DATA."""
+    """The trader places at most ORDERS_PER_DECISION orders a day: the model is told so, as
+    runtime rules, not inside the attendee-supplied DATA."""
     from bazaar_agent.trading import trader_tools
+    from bazaar_runner.agent_step import ORDERS_PER_DECISION
     from bazaar_runner.submission import STARTING_CASH, SUBMISSION_BUDGET
 
     prompts = []
@@ -361,7 +391,8 @@ def test_the_runtime_constraints_are_trusted_text_outside_the_data(with_model):
     # The rules come before the data's label and are not part of the JSON payload.
     rules = constraints_of(prompt)
     assert rules.startswith("RUNTIME CONSTRAINTS") and "RUNTIME CONSTRAINTS" not in data_line
-    for rule in ("ONE order per decision", "whole shares", "09:30 New York open"):
+    per_decision = f"At most {ORDERS_PER_DECISION} orders per decision, each one symbol"
+    for rule in (per_decision, "whole shares", "09:30 New York open"):
         assert rule in rules
     # Built from the values the trader runs with, not restated.
     assert f"${STARTING_CASH:,.0f}" in rules
@@ -370,7 +401,9 @@ def test_the_runtime_constraints_are_trusted_text_outside_the_data(with_model):
     assert f"{SUBMISSION_BUDGET.tool_calls} tool calls" in rules
     for name, doc in trader_tools():
         assert f"  - {name}" in rules and doc in rules
-    assert "hold the top 5 at 20% each" in rules and "buy one top mover per day" in rules
+    top = ORDERS_PER_DECISION
+    assert f"hold the top {top} gainers at {100 // top}% each" in rules
+    assert f"never 'hold the top {2 * top} at" in rules and "buy one top mover per day" in rules
     # No trading_days: the window's length is not guessed.
     assert "one decision for each trading day of the window" in rules
     assert "trading days in the window" not in rules
@@ -384,10 +417,9 @@ def test_the_window_length_comes_from_trading_days(with_model):
 
 
 def test_the_constraints_follow_the_code_they_describe(with_model, monkeypatch):
-    from bazaar_agent import trading
-    from bazaar_runner import submission
+    from bazaar_runner import agent_step, submission
 
-    monkeypatch.setattr(trading, "MAX_DISTINCT_ORDERS_PER_DECISION", 2)
+    monkeypatch.setattr(agent_step, "ORDERS_PER_DECISION", 2)
     monkeypatch.setattr(submission, "STARTING_CASH", 25_000)
     prompts = []
     with_model(model_returning(GOOD, prompts))

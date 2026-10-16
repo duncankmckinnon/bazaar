@@ -34,6 +34,7 @@ from bazaar_agent.strategist import (
     makes_claim,
     near_duplicate,
     normalized,
+    orders_per_decision,
     qualified_name,
     similarity,
     tickers,
@@ -50,7 +51,7 @@ WRITE_KEY_ENV = "LOGFIRE_API_WRITE_KEY"
 PROMPT_VARIANT = (
     STRATEGIST_ROLE + " Before writing, find what the top performers share that the bottom ones "
     "lack, build each strategy on one shared trait of the top, and write rules a trader can "
-    "carry out with one order per decision."
+    "carry out with the few orders each decision allows."
 )
 
 
@@ -107,7 +108,7 @@ class Executable(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]
             return (
                 valid_length(text)
                 and not makes_claim(text)
-                and not is_multi_position(text)
+                and not is_multi_position(text, orders_per_decision())
                 and tickers_allowed(text, allowed)
             )
 
@@ -117,7 +118,10 @@ class Executable(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]
 @dataclass
 class NoMultiPosition(Evaluator[StrategistCase, StrategistOutput, StrategistCaseMeta]):
     def evaluate(self, ctx: Context) -> float:
-        return _fraction(ctx.output.drafts, lambda d: not is_multi_position(d.instructions))
+        max_orders = orders_per_decision()
+        return _fraction(
+            ctx.output.drafts, lambda d: not is_multi_position(d.instructions, max_orders)
+        )
 
 
 @dataclass

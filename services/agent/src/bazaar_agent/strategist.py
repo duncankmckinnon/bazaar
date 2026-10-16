@@ -311,21 +311,38 @@ ACRONYMS = frozenset(
         "US", "USD", "VWAP",
     }
 )  # fmt: skip
-# A plan the trader cannot follow with one order a day (target weights, several positions
-# opened together, rebalancing) is rejected as multi_position. Matched case-insensitively.
-MULTI_POSITION = [
+# A plan that needs more positions at once than the trader can order in one decision is
+# rejected as multi_position. The count is the plan's own: the numbers it buys or holds ("hold the
+# top 5", "buy up to 4", "3 positions"), else what a per-position percentage implies (20% each:
+# 5). Weights or rebalancing with neither can mean any number of positions. Case-insensitive.
+NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15, "twenty": 20,
+}  # fmt: skip
+_NUMBER = r"(\d+|" + "|".join(NUMBER_WORDS) + r")\b(?![-\s]*(?:day|week|month|session)s?\b)"
+POSITION_COUNTS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\d+(\.\d+)?\s*%\s*(of\s+(cash|equity|the\s+portfolio)\s+)?each\b",
-        r"\bequal(ly)?[- ]weight",
-        r"\bequal\s+\d+(\.\d+)?\s*%",
-        r"\brebalanc",
-        r"\bhold\s+the\s+top\s+\d+",
-        r"\b(\d+|two|three|four|five)\s+(positions|names|stocks)\s+at\b",
-        r"\bpositions?\s+of\s+\d+(\.\d+)?\s*%",
-        r"\bper\s+position\b",
-        r"\bbuy\s+up\s+to\s+(\d+|two|three|four|five)\b",
+        r"\b(?:buy|buys|buying|hold|holds|holding|own|keep)\s+(?:(?:up\s+to|at\s+most|the|its|"
+        r"top|best|strongest|biggest)\s+)*" + _NUMBER,
+        r"\b" + _NUMBER + r"\s+(?:positions|holdings)\b",
+        r"\b" + _NUMBER + r"\s+(?:names|stocks|symbols)\s+at\b",
     )
+]
+PER_POSITION_PERCENT = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        (
+            r"(\d+(?:\.\d+)?)\s*%\s*(?:of\s+(?:cash|equity|the\s+portfolio)\s+)?"
+            r"(?:each(?!\s+(?:day|week|month|session|morning|open|close)s?\b)|per\s+position)\b"
+        ),
+        r"\bpositions?\s+of\s+(\d+(?:\.\d+)?)\s*%",
+        r"\bequal\s+(\d+(?:\.\d+)?)\s*%",
+    )
+]
+UNCOUNTED_POSITIONS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (r"\bequal(?:ly)?[- ]weight", r"\brebalanc", r"\bper\s+position\b")
 ]
 STRATEGIST_ROLE = (
     "You design simulated stock-trading strategies for a house lane that evolves on ONE fixed "
@@ -395,24 +412,45 @@ def runtime_constraints(
         else "one decision for each trading day of the window"
     )
     orders = "ONE order" if max_orders == 1 else f"{max_orders} orders"
+    daily = "one order" if max_orders == 1 else f"{max_orders} orders"
+    # Examples that fit the limit, and one that is just past it.
+    more = (
+        ""
+        if max_orders == 1
+        else f" or 'hold the top {max_orders} gainers at {100 // max_orders}% each'"
+    )
+    too_many = 2 * max_orders
     tool_lines = "\n".join(f"  - {name}" + (f": {doc}" if doc else "") for name, doc in tools)
     return (
         "RUNTIME CONSTRAINTS (how every strategy is run; write rules a trader can follow under "
         "them):\n"
         f"- One decision per trading day, at the 09:30 New York open; {days}.\n"
-        f"- At most {orders} per decision: one symbol, buy or sell. Quantities are whole "
-        "shares. So a plan must be followable with at most one order per day.\n"
+        f"- At most {orders} per decision, each one symbol, buy or sell. Quantities are whole "
+        f"shares. So a plan must be followable with at most {daily} per day.\n"
         f"- Starting cash is ${starting_cash:,.0f}.\n"
         f"- Each decision has at most {budget.model_requests} model requests, "
         f"{budget.total_tokens:,} tokens and {budget.tool_calls} tool calls.\n"
         f"- The trader's tools:\n{tool_lines}\n"
-        "- So write rules such as 'buy one top mover per day' or 'sell the weakest holding', "
-        "never 'hold the top 5 at 20% each', 'rebalance' or 'buy up to 4 a day'."
+        f"- So write rules such as 'buy one top mover per day', 'sell the weakest holding'{more}, "
+        f"never 'hold the top {too_many} at {100 // too_many}% each', 'equal-weight the sector' "
+        "or 'rebalance the portfolio'."
     )
 
 
+def orders_per_decision() -> int:
+    """How many orders the trader may place in one decision: the runner's reserved ids."""
+    # Layering inversion, as in _runtime_constraints.
+    try:
+        from bazaar_runner.agent_step import ORDERS_PER_DECISION
+    except ImportError as exc:
+        failure = StrategistError(f"the runner's constants are unavailable ({type(exc).__name__})")
+    else:
+        return ORDERS_PER_DECISION
+    raise failure  # outside the except block: the original error is not its context
+
+
 def _runtime_constraints(trading_days: int | None) -> str:
-    from bazaar_agent.trading import MAX_DISTINCT_ORDERS_PER_DECISION, trader_tools
+    from bazaar_agent.trading import trader_tools
 
     # Layering inversion: agent reads runner constants at call time; follow-up: caller passes
     # starting_cash/budget.
@@ -422,7 +460,7 @@ def _runtime_constraints(trading_days: int | None) -> str:
         failure = StrategistError(f"the runner's constants are unavailable ({type(exc).__name__})")
     else:
         return runtime_constraints(
-            max_orders=MAX_DISTINCT_ORDERS_PER_DECISION,
+            max_orders=orders_per_decision(),
             tools=trader_tools(),
             starting_cash=STARTING_CASH,
             budget=SUBMISSION_BUDGET,
@@ -499,8 +537,27 @@ def makes_claim(text: str) -> bool:
     return CLAIMS.search(text) is not None
 
 
-def is_multi_position(text: str) -> bool:
-    return any(p.search(text) for p in MULTI_POSITION)
+def _count(token: str) -> int:
+    return int(token) if token.isdigit() else NUMBER_WORDS[token.lower()]
+
+
+def position_count(text: str) -> int | None:
+    """How many positions the plan holds at once, as its words say; None if they never say."""
+    counts = [_count(m.group(1)) for p in POSITION_COUNTS for m in p.finditer(text)]
+    if counts:
+        return max(counts)
+    percents = [float(m.group(1)) for p in PER_POSITION_PERCENT for m in p.finditer(text)]
+    if percents:
+        return max(int(100 // percent) if percent > 0 else 0 for percent in percents)
+    return None
+
+
+def is_multi_position(text: str, max_orders: int) -> bool:
+    """The plan needs more positions at once than max_orders orders can open in one decision."""
+    count = position_count(text)
+    if count is None:
+        return any(p.search(text) for p in UNCOUNTED_POSITIONS)
+    return count > max_orders
 
 
 def tickers_allowed(text: str, allowed: Iterable[str]) -> bool:
@@ -541,6 +598,7 @@ def validate(
     brief_names: Iterable[str],
     existing_instructions: Iterable[str],
     allowed_symbols: Iterable[str],
+    max_orders: int,
 ) -> tuple[list[Proposal], Counter]:
     """The drafts that pass every rule, in model order, at most k; and why the others failed."""
     brief_names = list(dict.fromkeys(brief_names))
@@ -565,7 +623,7 @@ def validate(
             reject("length")
         elif makes_claim(text):
             reject("claim")
-        elif is_multi_position(text):
+        elif is_multi_position(text, max_orders):
             reject("multi_position")
         elif not tickers_allowed(text, allowed):
             reject("ticker")
@@ -627,6 +685,7 @@ async def draft_proposals(
         brief_names=brief.names,
         existing_instructions=existing_instructions,
         allowed_symbols=allowed_symbols(universe, benchmark),
+        max_orders=orders_per_decision(),
     )
     return drafts, proposals, rejected
 

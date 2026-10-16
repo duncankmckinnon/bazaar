@@ -277,7 +277,7 @@ def judge_model(http_client: httpx2.AsyncClient) -> ProbabilityJudgeModel:
 class StrategyAdherence(Evaluator):
     async def evaluate(self, ctx: EvaluatorContext) -> EvaluatorOutput:
         evidence = ctx.attributes.get(EVIDENCE_ATTRIBUTE)
-        if evidence is None or (ctx.output.decision is None and ctx.output.order_request is None):
+        if evidence is None or (ctx.output.decision is None and not ctx.output.orders):
             return {
                 "strategy_adherence_status": EvaluationReason(
                     value="not_evaluated",

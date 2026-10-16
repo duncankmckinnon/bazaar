@@ -3,8 +3,9 @@
 `bazaar_agent.trading.run_decision` implements one PydanticAI invocation with a bounded
 model/tool loop, not a period runner. Registration remains nonexecuting. The caller supplies a
 trusted `MarketIdentity`, immutable `StrategyVersion`, fixed `ResearchContext`, an owned HTTPX
-client, a runner-reserved `client_order_id`, and optionally `RuntimeConfig`, `DecisionBudget`,
-`ModelFactory`, and the existing `PrivateHistoryReader`.
+client, runner-reserved `client_order_ids` (1 to `MAX_ORDERS_PER_DECISION`, distinct), and
+optionally `RuntimeConfig`, `DecisionBudget`, `ModelFactory`, and the existing
+`PrivateHistoryReader`.
 Identity/version/context must agree; inputs are
 revalidated and copied before use. No API endpoint, CLI execution path, artifact loading,
 database access, approval implementation or scheduler is added.
@@ -41,14 +42,14 @@ identity = MarketIdentity(
     experiment_id=context.experiment.experiment_id,
     strategy_version_id=context.experiment.strategy_version_id,
 )
-# version/context/client/order_id are runner-owned synthetic fixture inputs.
+# version/context/client/order_ids are runner-owned synthetic fixture inputs.
 # MockTransport must serve valid, coherent account and portfolio snapshots first.
 result = await run_decision(
     identity=identity,
     version=version,
     context=context,
     client=client,  # fixed MockTransport base URL, bounded timeout, no logging hooks
-    client_order_id=order_id,  # reserve once; preserve across recovery
+    client_order_ids=order_ids,  # reserve once; preserve across recovery
     runtime=RuntimeConfig(model_settings={"temperature": 0, "max_tokens": 4_000}),
     budget=DecisionBudget(model_requests=4, tool_calls=20, total_tokens=16_000),
     model_factory=lambda ref: TestModel(
@@ -235,14 +236,17 @@ output-tool collisions) before SDK dispatch: dispatch-key collisions must never 
 order for an earlier scoped read. IDs may repeat across separate responses; order replay still
 returns only the existing evidence.
 
-At most one distinct order is submitted. Its ID must equal the runner-reserved ID. Repeating the
-identical order within a decision returns existing evidence without another POST; a changed body
-or fresh ID fails closed. Ambiguous failures abort immediately, even if #21 marks the transport
-error retryable. `DecisionResult.order_request` and `order_result` retain reconciliation evidence
-when final output is invalid or budgets expire after submission. **An error does not imply no
-side effects.** The caller must reconcile with the market using the original ID/body; never rerun
-with a fresh ID or advance the clock just because the decision failed. Cancellation propagates;
-the runner already owns the reserved ID and must reconcile it even when no result is returned.
+At most one order is submitted under each runner-reserved ID, so the number of reserved IDs is
+the decision's order limit (the runner reserves `agent_step.ORDERS_PER_DECISION`, 5). Every order's
+ID must be one of them. Repeating the identical order under its ID within a decision returns
+existing evidence without another POST; a changed body under a used ID, or an unreserved ID, fails
+closed. Ambiguous failures abort immediately, even if #21 marks the transport error retryable.
+`DecisionResult.orders` (each a request and its result, in submission order) retains
+reconciliation evidence when final output is invalid or budgets expire after submission. **An
+error does not imply no side effects.** The caller must reconcile with the market using the
+original IDs/bodies; never rerun with fresh IDs or advance the clock just because the decision
+failed. Cancellation propagates; the runner already owns the reserved IDs and must reconcile them
+even when no result is returned.
 Across invocations this harness has no durable order ledger: the future runner/market own that.
 
 Default hard limits: 4 model requests (including validation retries), 20 executed tools, 16,000
