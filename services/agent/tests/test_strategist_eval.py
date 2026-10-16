@@ -90,7 +90,7 @@ def draft(name, instructions, parents=("momo-a",)):
 
 
 GOOD = draft("g1-dip", "Buy AAPL after two down days with 25% of cash; sell after 3 days.")
-MULTI = draft("g1-spread", "Hold the top 3 Fixture Tech stocks at 30% of equity each.")
+MULTI = draft("g1-spread", "Hold the top 8 Fixture Tech stocks at 12% of equity each.")
 TESLA = draft("g1-tesla", "Buy TSLA whenever it rises two days in a row; hold a week.")
 OUTSIDER = draft("g1-orphan", "Buy KO on any up day and sell it on any down day.", ["nope"])
 MIXED = draft("g1-mixed", "Buy KO on any up day and sell it on any down day!", ["momo-a", "x"])

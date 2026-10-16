@@ -13,7 +13,7 @@ from uuid import UUID, uuid5
 import httpx
 from bazaar_protocol import AccountSnapshot, ExperimentContext
 
-from bazaar_runner.agent_step import AgentDecision, CycleReader, DecideWithAgent
+from bazaar_runner.agent_step import AgentDecision, AgentOrder, CycleReader, DecideWithAgent
 from bazaar_runner.clock import TradingSession, trading_day
 from bazaar_runner.run import AgentUsage
 
@@ -79,7 +79,7 @@ def make_agent_decider(
         ctx: ExperimentContext,
         account: AccountSnapshot,
         client: httpx.AsyncClient,
-        client_order_id: UUID,
+        client_order_ids: tuple[UUID, ...],
         cycles: CycleReader | None = None,
     ) -> AgentDecision:
         async def trusted_cycle(symbol: str) -> ResearchFiscalCycle | None:
@@ -101,7 +101,7 @@ def make_agent_decider(
             context=ResearchContext(experiment=ctx),
             fiscal_cycles=trusted_cycle if cycles is not None else None,
             client=client,
-            client_order_id=client_order_id,
+            client_order_ids=client_order_ids,
             budget=budget,
             runtime=runtime,
             model_factory=model_factory,
@@ -115,7 +115,8 @@ def make_agent_decider(
             tool_calls=result.usage.tool_calls,
             total_tokens=result.usage.total_tokens,
         )
-        return AgentDecision(result.order_request, result.order_result, error, usage)
+        orders = tuple(AgentOrder(order.request, order.result) for order in result.orders)
+        return AgentDecision(orders, error, usage)
 
     return decide
 
@@ -125,8 +126,8 @@ def fixture_model_factory(symbol: str = "AAPL", quantity: int = 10) -> Callable[
 
     At its first decision it reads one small page of `symbol` news (FIXTURE_NEWS_LIMIT articles)
     for the week before the decision, then buys
-    `quantity` whole shares of `symbol` under the runner-reserved id (run_decision states the id
-    and the decision time in its context prompt). It does not interpret news content; if the
+    `quantity` whole shares of `symbol` under the first runner-reserved id (run_decision states
+    the ids and the decision time in its context prompt). It does not interpret news content; if the
     news read returns an error it holds instead of buying. At every later decision it holds. One factory
     per run, since it remembers its first decision.
     """
@@ -164,7 +165,7 @@ def fixture_model_factory(symbol: str = "AAPL", quantity: int = 10) -> Callable[
         if returns["news"].error is not None:
             return output("hold")
         order = {
-            "client_order_id": _prompt_value(prompt, r"reserved client_order_id=([0-9a-f-]{36})"),
+            "client_order_id": _prompt_value(prompt, r"reserved client_order_ids=([0-9a-f-]{36})"),
             "symbol": symbol,
             "side": "buy",
             "quantity": str(quantity),

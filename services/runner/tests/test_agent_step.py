@@ -13,8 +13,9 @@ from bazaar_protocol import ErrorCode, OrderRequest, OrderSide, order_result_ada
 from bazaar_runner.agent_step import (
     ACCOUNT_HEADER,
     AgentDecision,
+    AgentOrder,
     AgentStep,
-    reserved_order_id,
+    reserved_order_ids,
 )
 from bazaar_runner.http_market import (
     APPROVAL_HEADER,
@@ -51,14 +52,14 @@ async def post_order(client: httpx.AsyncClient, ctx, order: OrderRequest):
 
 
 def buys_at_first_decision(then=None):
-    async def decide(ctx, account, client, client_order_id, cycles=None):
+    async def decide(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        order = buy_order(client_order_id)
+            return AgentDecision((), None)
+        order = buy_order(client_order_ids[0])
         result = await post_order(client, ctx, order)
         if then is not None:
             then()
-        return AgentDecision(order, result, None)
+        return AgentDecision((AgentOrder(order, result),), None)
 
     return decide
 
@@ -94,8 +95,8 @@ def reserved_for(event_sequence: int) -> UUID:
 
 
 async def test_a_hold_places_nothing_and_the_run_continues():
-    async def hold(ctx, account, client, client_order_id, cycles=None):
-        return AgentDecision(None, None, None)
+    async def hold(ctx, account, client, client_order_ids, cycles=None):
+        return AgentDecision((), None)
 
     fake = InMemoryMarket()
     result = await run_strategy(SPEC, fake, agent_step(fake, hold))
@@ -123,13 +124,13 @@ async def test_an_agent_that_raises_after_its_fill_is_reconciled_without_a_secon
 
 
 async def test_an_agent_error_after_its_fill_is_reconciled_too():
-    async def errs_after_filling(ctx, account, client, client_order_id, cycles=None):
+    async def errs_after_filling(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        order = buy_order(client_order_id)
+            return AgentDecision((), None)
+        order = buy_order(client_order_ids[0])
         result = await post_order(client, ctx, order)
         return AgentDecision(
-            order, result, "invalid_response: Model did not produce a valid decision"
+            (AgentOrder(order, result),), "invalid_response: Model did not produce a valid decision"
         )
 
     fake = InMemoryMarket()
@@ -142,10 +143,10 @@ async def test_an_agent_error_after_its_fill_is_reconciled_too():
 
 
 async def test_an_agent_that_raises_before_ordering_is_reconciled_as_absent():
-    async def raises(ctx, account, client, client_order_id, cycles=None):
+    async def raises(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence == 2:
             raise TimeoutError
-        return AgentDecision(None, None, None)
+        return AgentDecision((), None)
 
     fake = InMemoryMarket()
     result = await run_strategy(SPEC, fake, agent_step(fake, raises))
@@ -157,11 +158,11 @@ async def test_an_agent_that_raises_before_ordering_is_reconciled_as_absent():
 
 
 async def test_an_order_under_another_id_is_not_trusted():
-    async def wrong_id(ctx, account, client, client_order_id, cycles=None):
+    async def wrong_id(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
+            return AgentDecision((), None)
         order = buy_order(UUID(int=12345))
-        return AgentDecision(order, await post_order(client, ctx, order), None)
+        return AgentDecision((AgentOrder(order, await post_order(client, ctx, order)),), None)
 
     fake = InMemoryMarket()
     result = await run_strategy(SPEC, fake, agent_step(fake, wrong_id))
@@ -177,7 +178,7 @@ async def test_a_failed_reconcile_fails_the_run():
         async def orders(self, ctx, start_at):
             raise httpx.ConnectError("market went away")
 
-    async def raises(ctx, account, client, client_order_id, cycles=None):
+    async def raises(ctx, account, client, client_order_ids, cycles=None):
         raise RuntimeError("boom")
 
     fake = NoOrderList()
@@ -200,7 +201,7 @@ async def test_cancellation_reconciles_then_propagates():
             reconciled.append(ctx.event_sequence)
             return await super().orders(ctx, start_at)
 
-    async def cancelled(ctx, account, client, client_order_id, cycles=None):
+    async def cancelled(ctx, account, client, client_order_ids, cycles=None):
         raise asyncio.CancelledError
 
     fake = Watching()
@@ -210,8 +211,8 @@ async def test_cancellation_reconciles_then_propagates():
 
 
 async def test_cancellation_after_a_fill_records_it_then_propagates():
-    async def fills_then_cancelled(ctx, account, client, client_order_id, cycles=None):
-        await post_order(client, ctx, buy_order(client_order_id))
+    async def fills_then_cancelled(ctx, account, client, client_order_ids, cycles=None):
+        await post_order(client, ctx, buy_order(client_order_ids[0]))
         raise asyncio.CancelledError
 
     fake = InMemoryMarket()
@@ -221,7 +222,7 @@ async def test_cancellation_after_a_fill_records_it_then_propagates():
     with pytest.raises(asyncio.CancelledError):
         await step.decide(ctx, fake.accounts[ctx.account_id], fake, orders)
     (order,) = orders
-    assert order.result.client_order_id == reserved_order_id(ctx) and submits(fake) == 1
+    assert order.result.client_order_id == reserved_order_ids(ctx)[0] and submits(fake) == 1
 
 
 async def test_cancellation_with_a_failed_reconcile_still_propagates():
@@ -229,7 +230,7 @@ async def test_cancellation_with_a_failed_reconcile_still_propagates():
         async def orders(self, ctx, start_at):
             raise httpx.ConnectError("market went away")
 
-    async def cancelled(ctx, account, client, client_order_id, cycles=None):
+    async def cancelled(ctx, account, client, client_order_ids, cycles=None):
         raise asyncio.CancelledError
 
     fake = NoOrderList()
@@ -238,12 +239,12 @@ async def test_cancellation_with_a_failed_reconcile_still_propagates():
 
 
 async def test_an_order_sent_without_a_result_is_reconciled():
-    async def lost_result(ctx, account, client, client_order_id, cycles=None):
+    async def lost_result(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        order = buy_order(client_order_id)
+            return AgentDecision((), None)
+        order = buy_order(client_order_ids[0])
         await post_order(client, ctx, order)
-        return AgentDecision(order, None, None)
+        return AgentDecision((AgentOrder(order, None),), None)
 
     fake = InMemoryMarket()
     result = await run_strategy(SPEC, fake, agent_step(fake, lost_result))
@@ -252,6 +253,37 @@ async def test_an_order_sent_without_a_result_is_reconciled():
     assert error.reconciled == "found" and order.result.client_order_id == reserved_for(0)
     assert error.error == "the agent sent an order but reported no result"
     assert submits(fake) == 1
+
+
+def buys_two_at_first_decision(error=None):
+    async def decide(ctx, account, client, client_order_ids, cycles=None):
+        if ctx.event_sequence != 0:
+            return AgentDecision((), None)
+        first, second = buy_order(client_order_ids[0]), buy_order(client_order_ids[1], quantity=1)
+        placed = [AgentOrder(o, await post_order(client, ctx, o)) for o in (first, second)]
+        return AgentDecision(() if error else tuple(placed), error)
+
+    return decide
+
+
+async def test_a_decision_places_an_order_under_each_reserved_id():
+    fake = InMemoryMarket()
+    result = await run_strategy(SPEC, fake, agent_step(fake, buys_two_at_first_decision()))
+    assert result.state is RunState.COMPLETED and result.decision_errors == ()
+    first, second = result.orders
+    assert [(o.event_sequence, o.order_index) for o in result.orders] == [(0, 0), (0, 1)]
+    assert first.result.client_order_id == reserved_for(0) != second.result.client_order_id
+    assert (first.result.quantity, second.result.quantity) == (3, 1) and submits(fake) == 2
+
+
+async def test_reconciliation_finds_every_order_the_decision_placed():
+    # The agent reports none of its two fills; the market's order list has both.
+    fake = InMemoryMarket()
+    decide = buys_two_at_first_decision(error="conflict: Decision budget exhausted")
+    result = await run_strategy(SPEC, fake, agent_step(fake, decide))
+    (error,) = result.decision_errors
+    assert error.reconciled == "found" and error.client_order_id == reserved_for(0)
+    assert [(o.order_index, o.result.quantity) for o in result.orders] == [(0, 3), (1, 1)]
 
 
 async def _first_decision_context(fake: InMemoryMarket):
@@ -280,11 +312,13 @@ def test_the_reserved_id_is_deterministic_per_decision():
         account_id=UUID(int=1),
     )
     first, second = (
-        [reserved_order_id(e.context(manifest)) for e in build_schedule(SPEC.script)]
+        [reserved_order_ids(e.context(manifest)) for e in build_schedule(SPEC.script)]
         for _ in range(2)
     )
-    assert first == second and len(set(first)) == len(first)
-    assert first[0] == reserved_for(0)
+    every = [order_id for ids in first for order_id in ids]
+    assert first == second and len(set(every)) == len(every)
+    # The first id is the one a decision reserved when it could place only one order.
+    assert first[0][0] == reserved_for(0)
 
 
 async def test_agent_spans_and_files_carry_no_token(capfire, tmp_path):
@@ -393,9 +427,10 @@ async def test_http_orders_reads_the_route_with_the_approval_only():
 
 
 def _prompt_reserved_id(messages) -> str:
-    # run_decision states the reserved id in its context prompt; a model must reuse it.
+    # run_decision states the reserved ids in its context prompt; a model must use them. This
+    # takes the first.
     text = " ".join(str(getattr(p, "content", "")) for m in messages for p in m.parts)
-    return re.search(r"reserved client_order_id=([0-9a-f-]{36})", text).group(1)
+    return re.search(r"reserved client_order_ids=([0-9a-f-]{36})", text).group(1)
 
 
 async def test_real_harness_function_model_buys_once():
@@ -422,11 +457,11 @@ async def test_real_harness_function_model_buys_once():
 
     decided = []
 
-    async def first_only(ctx, account, client, client_order_id, cycles=None):
+    async def first_only(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        decided.append(client_order_id)
-        return await real(ctx, account, client, client_order_id, cycles)
+            return AgentDecision((), None)
+        decided.append(client_order_ids)
+        return await real(ctx, account, client, client_order_ids, cycles)
 
     real = make_agent_decider("Buy two AAPL at the first open.", lambda ref: FunctionModel(trader))
     fake = InMemoryMarket()
@@ -436,7 +471,7 @@ async def test_real_harness_function_model_buys_once():
     assert result.decision_errors == ()
     (order,) = result.orders
     assert order.result.status == "filled"
-    assert order.result.client_order_id == decided[0] == reserved_for(0)
+    assert order.result.client_order_id == decided[0][0] == reserved_for(0)
     assert submits(fake) == 1
 
 
@@ -490,10 +525,10 @@ async def test_real_harness_post_order_read_error_is_feedback_without_retrading(
     real = make_agent_decider("Check orders, buy, check again.", lambda ref: FunctionModel(trader))
     outcomes = []
 
-    async def first_only(ctx, account, client, client_order_id, cycles=None):
+    async def first_only(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        outcomes.append(await real(ctx, account, client, client_order_id, cycles))
+            return AgentDecision((), None)
+        outcomes.append(await real(ctx, account, client, client_order_ids, cycles))
         return outcomes[-1]
 
     fake = InMemoryMarket()
@@ -518,10 +553,10 @@ CYCLES = (
 def asking(seen: list, *symbols: str):
     """A decision that asks the runner's reader for each symbol's cycle, as filings would."""
 
-    async def decide(ctx, account, client, client_order_id, cycles=None):
+    async def decide(ctx, account, client, client_order_ids, cycles=None):
         found = None if cycles is None else [await cycles(symbol) for symbol in symbols]
         seen.append((ctx.event_sequence, found))
-        return AgentDecision(None, None, None)
+        return AgentDecision((), None)
 
     return decide
 
@@ -644,10 +679,10 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
 
     real = make_agent_decider("Read filings, then hold.", lambda ref: FunctionModel(reader))
 
-    async def first_only(ctx, account, client, client_order_id, cycles=None):
+    async def first_only(ctx, account, client, client_order_ids, cycles=None):
         if ctx.event_sequence != 0:
-            return AgentDecision(None, None, None)
-        return await real(ctx, account, client, client_order_id, cycles)
+            return AgentDecision((), None)
+        return await real(ctx, account, client, client_order_ids, cycles)
 
     fake = InMemoryMarket()
     fake.cycles = CYCLES if with_cycle else ()
@@ -674,10 +709,10 @@ async def test_real_harness_filings_needs_the_markets_fiscal_cycle(with_cycle):
 async def test_agent_usage_is_recorded_per_error_and_in_total():
     from bazaar_runner.run import AgentUsage
 
-    async def spends(ctx, account, client, client_order_id, cycles=None):
+    async def spends(ctx, account, client, client_order_ids, cycles=None):
         usage = AgentUsage(model_requests=4, tool_calls=3, total_tokens=1000)
         error = "conflict: Decision budget exhausted; do not advance or retrade"
-        return AgentDecision(None, None, error if ctx.event_sequence == 2 else None, usage)
+        return AgentDecision((), error if ctx.event_sequence == 2 else None, usage)
 
     fake = InMemoryMarket()
     result = await run_strategy(SPEC, fake, agent_step(fake, spends))

@@ -30,7 +30,7 @@ pins the allow-list (`test_the_baggage_allow_list_is_exactly_the_strategy_attrib
 | Span | Where | Attributes beyond `bazaar.*` |
 | --- | --- | --- |
 | `runner.run` | One per run, the root | `experiment_id`, `policy_ref`, `status`; when failed, `failure_code`, `failure` at error level |
-| `runner.decision` | One per decision (each session open) | `event_sequence`, `simulated_at`, `bazaar.action` (`hold`, `ordered` or `failed`); when ordered, `bazaar.symbol`, `bazaar.side`, `bazaar.quantity` and, if filled, `bazaar.fill_price` (the decision's last order). Agent decisions add `agent`, `client_order_id`, `reconcile`, `fiscal_cycles`, `fiscal_cycles_read`, `model_requests`, `tool_calls`, `total_tokens` and, on error, `decision_error` |
+| `runner.decision` | One per decision (each session open) | `event_sequence`, `simulated_at`, `bazaar.action` (`hold`, `ordered` or `failed`); when ordered, `bazaar.symbol`, `bazaar.side`, `bazaar.quantity` and, if filled, `bazaar.fill_price` (the decision's last order). Agent decisions add `agent`, `client_order_id` (the first reserved id), `orders_reserved`, `reconcile`, `fiscal_cycles`, `fiscal_cycles_read`, `model_requests`, `tool_calls`, `total_tokens` and, on error, `decision_error` |
 | `runner.order` | One per order the runner submits (scripted policies and baselines) | `symbol`, `side`, `quantity`, `status`, `error_code` |
 | `runner.mark` | One per session close | `event_sequence`, `simulated_at`, `portfolio_value` |
 | `runner.evaluate` | Around the evaluator call | Parent of the evaluator's own spans (`evaluate run {experiment_id}`, `trade {symbol} {side} {status}`) |

@@ -116,6 +116,9 @@ class Settings:
     # How long a board request waits for the rebuild that covers a state change (a submit, a
     # day of progress, a score, a hide) before it serves the previous board instead.
     board_fresh_wait_ms: int = 1000
+    # The board's QR encodes random text in place of the submit link, so it looks the same but
+    # never leads to a submission (screenshots, streams, rehearsals). /submit itself still works.
+    qr_random: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -173,6 +176,7 @@ class Settings:
             data_bundle=data_bundle(env),
             max_concurrent=parse_max_concurrent(env.get("BAZAAR_MAX_CONCURRENT")),
             house_enabled=parse_flag("BAZAAR_HOUSE_ENABLED", env.get("BAZAAR_HOUSE_ENABLED")),
+            qr_random=parse_flag("BAZAAR_QR_RANDOM", env.get("BAZAAR_QR_RANDOM")),
             house_concurrent=parse_int(
                 "BAZAAR_HOUSE_CONCURRENT",
                 env.get("BAZAAR_HOUSE_CONCURRENT"),

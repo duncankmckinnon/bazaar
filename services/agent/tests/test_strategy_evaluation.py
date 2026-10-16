@@ -121,8 +121,7 @@ async def test_judge_receives_strategy_snapshots_research_and_hold(judge, capfir
         "decision",
         "error",
         "usage",
-        "order_request",
-        "order_result",
+        "orders",
     }
 
 
@@ -214,10 +213,10 @@ async def test_order_evidence_is_judged_even_when_final_output_fails(judge, capf
     )
     await wait_for_evaluations()
     assert result.decision is None and result.error is not None
-    assert result.order_result.status == "filled" and len(requests) == 1
+    assert result.orders[0].result.status == "filled" and len(requests) == 1
     [prompt] = judge
     assert "Buy AAPL once." in prompt and "filled" in prompt
-    assert "order_request" in prompt and "quantity" in prompt and "buy" in prompt
+    assert '"orders"' in prompt and "quantity" in prompt and "buy" in prompt
 
 
 async def test_code_mode_nested_research_reaches_judge(judge, capfire):

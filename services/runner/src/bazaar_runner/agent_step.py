@@ -1,9 +1,10 @@
 """The agent places its own order; the runner reserves the id and reconciles with the market.
 
-Per DECISION event: reserve client_order_id = uuid5(experiment_id, "decision:<event_sequence>"),
-hand the agent a fresh HTTP client that carries only the approval and account headers, call the
-decision once (never a retry, never a fresh id), and on any error or cancellation read the
-account's orders from the market to learn what actually settled.
+Per DECISION event: reserve ORDERS_PER_DECISION client order ids (the first is
+uuid5(experiment_id, "decision:<event_sequence>"), the rest append ":<index>"), hand the agent a
+fresh HTTP client that carries only the approval and account headers, call the decision once
+(never a retry, never fresh ids), and on any error or cancellation read the account's orders from
+the market to learn what actually settled under any of them.
 """
 
 import asyncio
@@ -30,11 +31,19 @@ from bazaar_runner.run import (
 logger = logging.getLogger(__name__)
 
 AGENT_TIMEOUT_SECONDS = 60.0
+# The agent places at most one order under each reserved id, so this is its limit per decision.
+ORDERS_PER_DECISION = 5
+
+
+class AgentOrder(NamedTuple):
+    request: OrderRequest
+    # None when the agent sent the order but never learned its result.
+    result: OrderResult | None
 
 
 class AgentDecision(NamedTuple):
-    order_request: OrderRequest | None
-    order_result: OrderResult | None
+    # In the order the agent sent them.
+    orders: tuple[AgentOrder, ...]
     # A readable reason when the decision went wrong; None for a clean order or hold.
     error: str | None
     # As the agent harness reports it; None when it reported none (it raised, or a fake).
@@ -43,16 +52,21 @@ class AgentDecision(NamedTuple):
 
 # One symbol's fiscal cycle as of the decision's cutoff, or None (none, or the read failed).
 CycleReader = Callable[[str], Awaitable[FiscalCycle | None]]
-# (ctx, account, the agent's client, the reserved client_order_id, a cycle reader or None).
+# (ctx, account, the agent's client, the reserved client_order_ids, a cycle reader or None).
 DecideWithAgent = Callable[
-    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, UUID, CycleReader | None],
+    [ExperimentContext, AccountSnapshot, httpx.AsyncClient, tuple[UUID, ...], CycleReader | None],
     Awaitable[AgentDecision],
 ]
 
 
-def reserved_order_id(ctx: ExperimentContext) -> UUID:
-    """Deterministic per decision, so a resume or reconciliation reuses it."""
-    return uuid5(ctx.experiment_id, f"decision:{ctx.event_sequence}")
+def reserved_order_ids(ctx: ExperimentContext) -> tuple[UUID, ...]:
+    """Deterministic per decision, so a resume or reconciliation reuses them. The first is the
+    decision's single id from before decisions could place several orders."""
+    key = f"decision:{ctx.event_sequence}"
+    return tuple(
+        uuid5(ctx.experiment_id, key if index == 0 else f"{key}:{index}")
+        for index in range(ORDERS_PER_DECISION)
+    )
 
 
 def agent_headers(ctx: ExperimentContext) -> dict[str, str]:
@@ -123,10 +137,12 @@ class AgentStep(DecisionStep):
         market: MarketPort,
         orders: list[OrderRecord],
     ) -> StepOutcome:
-        reserved = reserved_order_id(ctx)
+        reserved = reserved_order_ids(ctx)
         attributes: dict[str, str | bool | int] = {
             "agent": True,
-            "client_order_id": str(reserved),
+            # The decision's first reserved id; the others derive from the same event.
+            "client_order_id": str(reserved[0]),
+            "orders_reserved": len(reserved),
         }
         cycles = _CycleReads(ctx, market) if self._read_fiscal_cycles else None
         try:
@@ -143,18 +159,19 @@ class AgentStep(DecisionStep):
             try:
                 found = await self._find(ctx, market, reserved)
             except ReconcileFailed:
-                logger.warning("reconcile after cancellation failed for %s", reserved)
+                logger.warning("reconcile after cancellation failed for %s", reserved[0])
             else:
-                if found is not None:
-                    orders.append(order_record(ctx, 0, found))
+                orders.extend(order_record(ctx, index, r) for index, r in enumerate(found))
             raise
         except Exception as exc:  # noqa: BLE001 - an agent failure is reconciled, not trusted
-            outcome = AgentDecision(None, None, f"the agent decision raised {type(exc).__name__}")
+            outcome = AgentDecision((), f"the agent decision raised {type(exc).__name__}")
             attributes |= _cycle_attributes(cycles)
-        result = outcome.order_result
-        if outcome.error is None and result is not None and result.client_order_id != reserved:
+        results = [order.result for order in outcome.orders]
+        if outcome.error is None and any(
+            r is not None and r.client_order_id not in reserved for r in results
+        ):
             outcome = outcome._replace(error="the agent reported an order under another id")
-        if outcome.error is None and result is None and outcome.order_request is not None:
+        if outcome.error is None and None in results:
             outcome = outcome._replace(error="the agent sent an order but reported no result")
 
         usage = outcome.usage
@@ -165,20 +182,18 @@ class AgentStep(DecisionStep):
                 "total_tokens": usage.total_tokens,
             }
         if outcome.error is None:
-            if outcome.order_result is not None:
-                orders.append(order_record(ctx, 0, outcome.order_result))
+            orders.extend(order_record(ctx, index, r) for index, r in enumerate(results))
             attributes["reconcile"] = "not_needed"
             return StepOutcome(usage=usage, attributes=attributes)
 
         # An error does not mean no side effects: the market's order list is the truth.
         found = await self._find(ctx, market, reserved)
-        if found is not None:
-            orders.append(order_record(ctx, 0, found))
-        reconciled = "found" if found is not None else "absent"
+        orders.extend(order_record(ctx, index, r) for index, r in enumerate(found))
+        reconciled = "found" if found else "absent"
         error = DecisionError(
             event_sequence=ctx.event_sequence,
             decided_at=ctx.simulated_at,
-            client_order_id=reserved,
+            client_order_id=reserved[0],
             error=outcome.error,
             reconciled=reconciled,
             usage=usage,
@@ -188,10 +203,12 @@ class AgentStep(DecisionStep):
         )
 
     async def _find(
-        self, ctx: ExperimentContext, market: MarketPort, reserved: UUID
-    ) -> OrderResult | None:
+        self, ctx: ExperimentContext, market: MarketPort, reserved: tuple[UUID, ...]
+    ) -> list[OrderResult]:
+        """What settled under the reserved ids, in reserved-id order."""
         try:
             results = await market.orders(ctx, ctx.simulated_at)
         except Exception as exc:  # noqa: BLE001 - surfaced as reconcile_failed
             raise ReconcileFailed(f"order list unavailable: {type(exc).__name__}") from None
-        return next((r for r in results if r.client_order_id == reserved), None)
+        by_id = {r.client_order_id: r for r in results}
+        return [by_id[order_id] for order_id in reserved if order_id in by_id]

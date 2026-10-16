@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import secrets
+import string
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -56,6 +58,8 @@ from bazaar_web.worker import WAITING_FOR_BUNDLE, RunSubmission, Worker
 STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = "<!doctype html><title>Bazaar</title><p>{} is coming soon.</p>"
 FONT_NAME = re.compile(r"^[A-Za-z0-9_-]+\.woff2$")
+# BAZAAR_QR_RANDOM's text: lowercase and digits, like a link, so the code's density is the same.
+QR_DECOY_ALPHABET = string.ascii_lowercase + string.digits
 
 log = logging.getLogger("bazaar_web.app")
 
@@ -426,8 +430,12 @@ def create_app(
         if not page.is_file():
             return HTMLResponse(PLACEHOLDER.format("The live board"))
         base = settings.public_url or str(request.base_url)
+        qr_text = base.rstrip("/") + "/submit"
+        if settings.qr_random:
+            # Random text of the link's length: the same size of code, but it leads nowhere.
+            qr_text = "".join(secrets.choice(QR_DECOY_ALPHABET) for _ in qr_text)
         # A JS string literal inside <script>: JSON, with "</" broken so it can't end the tag.
-        submit_url = json.dumps(base.rstrip("/") + "/submit").replace("</", "<\\/")
+        submit_url = json.dumps(qr_text).replace("</", "<\\/")
         html = page.read_text(encoding="utf-8").replace("__SUBMIT_URL__", submit_url, 1)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 

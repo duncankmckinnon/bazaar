@@ -128,6 +128,8 @@ services:
       BAZAAR_ADMIN_TOKEN: ${BAZAAR_ADMIN_TOKEN:-}
       BAZAAR_LOGFIRE_DASHBOARD_URL: ${BAZAAR_LOGFIRE_DASHBOARD_URL:-}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      # 1: the board's QR is random text, not the submit link.
+      BAZAAR_QR_RANDOM: ${BAZAAR_QR_RANDOM:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

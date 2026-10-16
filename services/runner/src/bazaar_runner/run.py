@@ -103,9 +103,10 @@ class DecisionError(WireModel):
 
     event_sequence: Index
     decided_at: AwareDatetime
+    # The decision's first reserved id (see agent_step.reserved_order_ids).
     client_order_id: UUID
     error: Annotated[str, Field(min_length=1)]
-    # What the market's order list showed for the reserved id.
+    # What the market's order list showed for the reserved ids: "found" if any settled.
     reconciled: Literal["found", "absent"]
     # The decision's usage when it ended, to tell which budget limit a failure hit.
     usage: AgentUsage | None = None
