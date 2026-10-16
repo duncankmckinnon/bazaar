@@ -92,11 +92,17 @@ class BoardSource:
     ones, and ranks all of them again (cheap once parsed). Dirs of hidden submissions are
     never parsed (most of production's are hidden duplicates); a change to the hidden set
     rebuilds at once, so an un-hidden row is back on the next poll.
+
+    With a bundle, only runs on it (their manifest's data_version) are ranked: runs on another
+    bundle cover another window and are never comparable, and would otherwise anchor the board
+    and push every run on the board's own bundle out as not comparable. They stay parsed, so
+    switching back is cheap. Unparseable dirs are kept as before.
     """
 
-    def __init__(self, runs_dir: Path, ttl: float = 2.0) -> None:
+    def __init__(self, runs_dir: Path, ttl: float = 2.0, bundle: str | None = None) -> None:
         self.runs_dir = runs_dir
         self.ttl = ttl
+        self.bundle = bundle
         self._lock = threading.Lock()
         self._runs: dict[str, tuple[RunKey, Run | Entry, list[dict[str, Any]] | None]] = {}
         self._cached: tuple[float, frozenset[str], Leaderboard, Histories] | None = None
@@ -140,9 +146,14 @@ class BoardSource:
                 cached = (key, load_run(path), history(path))
             runs[path.name] = cached
         self._runs = runs  # removed dirs drop out here
-        board = rank_runs([loaded for _, loaded, _ in runs.values()])
+        board = rank_runs([loaded for _, loaded, _ in runs.values() if self._on_bundle(loaded)])
         histories = {e.run_id: runs[e.run_id][2] for e in board.ranked if e.run_id in runs}
         return board, histories
+
+    def _on_bundle(self, loaded: Run | Entry) -> bool:
+        if self.bundle is None or not isinstance(loaded, Run):
+            return True
+        return loaded.record.manifest.data_version == self.bundle
 
 
 def entry_row(

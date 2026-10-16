@@ -164,6 +164,46 @@ def test_each_run_dir_is_parsed_once(big, helpers, monkeypatch):
     assert len(board.ranked) == RUNS
 
 
+def test_the_web_and_runner_default_to_one_bundle():
+    """BAZAAR_DATA_BUNDLE unset: the board and the runs it launches still agree."""
+    from bazaar_runner.bundle import DEMO_BUNDLE
+    from bazaar_web.settings import DEFAULT_BUNDLE
+
+    assert DEFAULT_BUNDLE == DEMO_BUNDLE
+
+
+def test_the_board_ranks_only_runs_on_its_bundle(tmp_path, helpers):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    # The old-bundle run sorts first, so without a bundle it anchors the board.
+    helpers.write_run(runs, "run-a", policy_ref="agent-old", period_return="0.01")
+    for name, ret in (("run-b", "0.02"), ("run-c", "0.03")):
+        helpers.write_run(
+            runs, name, policy_ref=f"agent-{name}", period_return=ret, data_version="demo-bundle-v2"
+        )
+
+    unfiltered, _ = BoardSource(runs, ttl=0).load()
+    assert [e.run_id for e in unfiltered.ranked] == ["run-a"]
+    assert {e.run_id for e in unfiltered.not_comparable} == {"run-b", "run-c"}
+
+    board, histories = BoardSource(runs, ttl=0, bundle="demo-bundle-v2").load()
+    assert [e.run_id for e in board.ranked] == ["run-c", "run-b"]
+    assert board.not_comparable == () and set(histories) == {"run-b", "run-c"}
+
+
+def test_the_app_board_follows_the_configured_bundle(settings, helpers):
+    config = dataclasses.replace(settings, data_bundle="demo-bundle-v2")
+    helpers.write_run(config.runs_dir, "run-old", policy_ref="agent-old", period_return="0.05")
+    helpers.write_run(
+        config.runs_dir, "run-new", policy_ref="agent-new", period_return="0.01",
+        data_version="demo-bundle-v2",
+    )  # fmt: skip
+    with TestClient(create_app(config, helpers.FakeRunner())) as client:
+        rows = client.get("/api/board").json()["rows"]
+
+    assert [row["name"] for row in rows] == ["agent-new"]
+
+
 def test_a_republished_dir_is_parsed_again(tmp_path, helpers):
     write_run = helpers.write_run
     runs = tmp_path / "runs"

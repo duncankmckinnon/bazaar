@@ -152,9 +152,9 @@ async def test_a_malformed_or_mismatched_answer_fails():
     with pytest.raises(BundleError, match=r"malformed \(universe\)"):
         await read_bundle(client, DEMO_BUNDLE)
 
-    client, fake = market(body("demo-bundle-v1", *V1))
-    fake.bundles[DEMO_BUNDLE] = fake.bundles["demo-bundle-v1"]
-    with pytest.raises(BundleError, match="got demo-bundle-v1"):
+    client, fake = market(body("demo-bundle-other", *V1))
+    fake.bundles[DEMO_BUNDLE] = fake.bundles["demo-bundle-other"]
+    with pytest.raises(BundleError, match="got demo-bundle-other"):
         await read_bundle(client, DEMO_BUNDLE)
 
 

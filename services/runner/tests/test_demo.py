@@ -8,6 +8,7 @@ import httpx
 import pytest
 from bazaar_protocol import OrderRequest, OrderSide
 from bazaar_runner import __main__ as cli
+from bazaar_runner.bundle import DEMO_BUNDLE
 from bazaar_runner.demo import (
     AGENT_FIXTURE_REF,
     BUY_AND_HOLD_REF,
@@ -287,7 +288,7 @@ def test_other_value_errors_are_not_swallowed_by_the_cli(offline_cli, monkeypatc
 
 def test_cli_launches_four_runs_unless_momentum_is_dropped(offline_cli):
     args = cli.parse_args(["--demo", *cli_ids()])
-    assert args.data_version == "demo-bundle-v2"
+    assert args.data_version == DEMO_BUNDLE
     # The S&P 500 launch set (spec v5): equal-weight and momentum v1 are gone.
     assert [ref for _, ref, _ in cli.demo_launches(args)] == [
         "agent-fixture-v1",
@@ -761,11 +762,11 @@ async def test_the_twelve_symbol_bundle_still_drives_buy_and_hold(tmp_path):
 
 
 def test_the_cli_bundle_defaults_to_the_operator_env(offline_cli, monkeypatch):
-    assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v2"
+    assert cli.parse_args(["--demo", *cli_ids()]).data_version == DEMO_BUNDLE
     monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "")
+    assert cli.parse_args(["--demo", *cli_ids()]).data_version == DEMO_BUNDLE
+    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "demo-bundle-v2")
     assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v2"
-    monkeypatch.setenv("BAZAAR_DATA_BUNDLE", "demo-bundle-v1")
-    assert cli.parse_args(["--demo", *cli_ids()]).data_version == "demo-bundle-v1"
     # An explicit flag still wins over the environment.
     args = cli.parse_args(["--demo", "--data-version", "synthetic-v1", *cli_ids()])
     assert args.data_version == "synthetic-v1"

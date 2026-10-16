@@ -33,6 +33,7 @@ services:
   data-init:
     build: *market-build
     environment:
+      BAZAAR_DATA_BUNDLE: ${BAZAAR_DATA_BUNDLE:-demo-bundle-v1}
       BAZAAR_SNAPSHOT_VERSION: ${BAZAAR_SNAPSHOT_VERSION:-demo}
       BAZAAR_SOURCES_CONFIG: ${BAZAAR_SOURCES_CONFIG:-config/sp500-sources.toml}
       BAZAAR_UNIVERSE_CSV: ${BAZAAR_UNIVERSE_CSV:-/universe/sp500-2026-09-25.csv}
@@ -40,7 +41,7 @@ services:
       - source-snapshots:/snapshots:ro
       - market-data:/data
       - ./data/raw/universe:/universe:ro
-    # Imports demo-bundle-v2 (the runner's and web's default bundle): bars, its universe, news and
+    # Imports $BAZAAR_DATA_BUNDLE (demo-bundle-v2 in .env.example): bars, its universe, news and
     # filings under the v2 data versions. docs/data-sources.md has the same steps.
     command:
       - sh
@@ -59,7 +60,7 @@ services:
         set -- --config "$$BAZAAR_SOURCES_CONFIG" --universe-csv "$$BAZAAR_UNIVERSE_CSV" --db /data/market.sqlite3
         window="--required-from 2026-09-21 --required-to 2026-10-09"
         .venv/bin/python -m bazaar_market.sources import-bars "$$@" --snapshot "/snapshots/alpaca-bars/$$BAZAAR_SNAPSHOT_VERSION" --data-version alpaca-bars-v2 $$window --required-symbols SPY
-        .venv/bin/python -m bazaar_market.sources import-universe "$$@" --bundle demo-bundle-v2 --data-version alpaca-bars-v2 $$window
+        .venv/bin/python -m bazaar_market.sources import-universe "$$@" --bundle "$$BAZAAR_DATA_BUNDLE" --data-version alpaca-bars-v2 $$window
         .venv/bin/python -m bazaar_market.sources import-news "$$@" --snapshot "/snapshots/alpaca-news/$$BAZAAR_SNAPSHOT_VERSION" --data-version alpaca-news-v2
         .venv/bin/python -m bazaar_market.sources import-filings "$$@" --snapshot "/snapshots/edgar/$$BAZAAR_SNAPSHOT_VERSION" --data-version edgar-filings-v2
 
@@ -116,6 +117,8 @@ services:
       PORT: "8080"
       BAZAAR_MARKET_URL: http://market:8000
       BAZAAR_RUNNER_TOKEN: ${BAZAAR_RUNNER_TOKEN:?Set BAZAAR_RUNNER_TOKEN in .env}
+      # The one bundle: data-init imports it, the board shows it and every run trades it.
+      BAZAAR_DATA_BUNDLE: ${BAZAAR_DATA_BUNDLE:-demo-bundle-v1}
       BAZAAR_WEB_DB: /data/web.sqlite3
       BAZAAR_RUNS_DIR: /data/runs
       PYDANTIC_AI_GATEWAY_API_KEY: ${PYDANTIC_AI_GATEWAY_API_KEY:-}

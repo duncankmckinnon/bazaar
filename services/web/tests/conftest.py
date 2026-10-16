@@ -33,6 +33,7 @@ def write_run(
     fills: int = 1,
     marks: tuple[str, ...] = (),
     trace_id: str | None = None,
+    data_version: str = "demo-bundle-v1",
 ) -> Path:
     account_id = str(uuid5(NAMESPACE, f"{run_id}-account")) if status == "completed" else None
     manifest = {
@@ -41,7 +42,7 @@ def write_run(
         "account_id": account_id,
         "strategy_version_id": str(uuid5(NAMESPACE, f"{run_id}-strategy")),
         "approval_id": str(uuid5(NAMESPACE, f"{run_id}-approval")),
-        "data_version": "demo-bundle-v1",
+        "data_version": data_version,
         "execution_rule_version": "exec-v1",
         "schedule_digest": "sched-v1:0123456789abcdef",
         "period_start": START,

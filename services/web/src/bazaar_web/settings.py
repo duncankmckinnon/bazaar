@@ -6,6 +6,8 @@ from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 log = logging.getLogger("bazaar_web.settings")
+# BAZAAR_DATA_BUNDLE unset: the same default as the runner (bazaar_runner.bundle.DEMO_BUNDLE),
+# which runs in this process, so the board and its runs are always on one bundle.
 DEFAULT_BUNDLE = "demo-bundle-v1"
 
 

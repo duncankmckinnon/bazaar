@@ -64,8 +64,11 @@ def quick(monkeypatch):
 def lane(settings):
     return dataclasses.replace(
         settings, house_enabled=True, house_concurrent=2, house_since=SINCE,
-        house_propose_interval_s=0, data_bundle="demo-bundle-v2",
+        house_propose_interval_s=0, data_bundle=LANE_BUNDLE,
     )  # fmt: skip
+
+
+LANE_BUNDLE = "demo-bundle-v2"
 
 
 class AutoRunner:
@@ -77,9 +80,10 @@ class AutoRunner:
 
     def __call__(self, *, submission_id, name, instructions, runs_dir, **_):
         self.started.append((name, instructions))
+        # On the lane's bundle, as the real runner reads it from the shared $BAZAAR_DATA_BUNDLE.
         return self.helpers.write_run(
             runs_dir, expected_run_dir(runs_dir, submission_id).name,
-            policy_ref=f"submission-{name}", period_return="0.0100",
+            policy_ref=f"submission-{name}", period_return="0.0100", data_version=LANE_BUNDLE,
         )  # fmt: skip
 
 

@@ -28,6 +28,7 @@ from uuid import UUID, uuid4
 
 from bazaar_runner.bundle import (
     BUNDLE_ENV,
+    DEMO_BUNDLE,
     BundleError,
     check_bundle_id,
     read_bundle,
@@ -157,7 +158,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--data-version",
         type=_bundle_id,
         help="the one bundle every launch runs on, as the market serves it at /bundles/{id};"
-        f" defaults to ${BUNDLE_ENV}, else demo-bundle-v2",
+        f" defaults to ${BUNDLE_ENV}, else {DEMO_BUNDLE}",
     )
     parser.add_argument("--execution-rule-version", default="exec-v1")
     parser.add_argument("--starting-cash", type=Decimal, default=Decimal(10000))

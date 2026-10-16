@@ -21,9 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from bazaar_runner.clock import ClockScript, TradingSession
 from bazaar_runner.http_market import send
 
-# The one bundle every demo launch and submission runs on. Nothing else names a bundle.
-DEMO_BUNDLE = "demo-bundle-v2"
-# Operator override, shared with the web app; never taken from strategy text or a request.
+# The bundle every demo launch and submission runs on unless BUNDLE_ENV overrides it: the same
+# default as the web app's (bazaar_web.settings.DEFAULT_BUNDLE), so its board and runs agree.
+DEMO_BUNDLE = "demo-bundle-v1"
+# Operator override, shared with the web app and data-init; never taken from strategy text or a
+# request.
 BUNDLE_ENV = "BAZAAR_DATA_BUNDLE"
 # A leading letter or digit: "." and ".." would resolve to other market paths.
 BUNDLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,127}")
