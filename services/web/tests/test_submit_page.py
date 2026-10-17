@@ -255,7 +255,7 @@ def test_prototype_copy_is_verbatim():
         "Sectors",
         "Your strategy",
         "Use the example",
-        "Written from your choices above. Edit freely; moving a slider rewrites it.",
+        "Written from your choices. Edit freely; moving a slider rewrites it.",
         (
             "Example of a decent strategy: Each morning, buy about $2,000 of the tech stock with "
             "the strongest 5-day gain, if it is beating SPY. Sell anything that falls 4% below "
