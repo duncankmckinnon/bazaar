@@ -31,6 +31,9 @@ jobs:
       COMPOSE_PROJECT_NAME: bazaar-docker-test
       BAZAAR_RUNNER_TOKEN: ci-only-runner-token
       BAZAAR_SNAPSHOT_VERSION: docker-smoke
+      # The snapshots below are v2-shaped, so data-init, the board and the runs all use v2 (as
+      # .env.example sets it); unset, everything falls back to demo-bundle-v1.
+      BAZAAR_DATA_BUNDLE: demo-bundle-v2
       # Synthetic v2-shaped universe and config (scripts/tests/docker_snapshots.py); never the real list.
       BAZAAR_SOURCES_CONFIG: config/docker-smoke-sources.toml
       BAZAAR_UNIVERSE_CSV: /snapshots/universe/docker-smoke.csv

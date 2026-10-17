@@ -125,7 +125,7 @@ def test_a_submission_runs_scores_and_reaches_the_board(markets, tmp_path):
     assert record.submission_id == "sub-1"
     assert record.manifest.policy_ref == "submission:momo"
     assert record.manifest.experiment_id == submission_experiment_id("sub-1")
-    assert record.manifest.data_version == "demo-bundle-v2"
+    assert record.manifest.data_version == DEMO_BUNDLE
     assert record.manifest.execution_rule_version == "exec-v1"
     assert record.manifest.starting_cash == 10000
     (order,) = record.orders

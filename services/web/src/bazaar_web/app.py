@@ -359,7 +359,7 @@ def create_app(
         settings.runs_dir.mkdir(parents=True, exist_ok=True)
         with logfire.suppress_instrumentation():  # schema and migration queries at boot
             store = Store(settings.web_db, now) if now else Store(settings.web_db)
-        board = BoardSource(settings.runs_dir)
+        board = BoardSource(settings.runs_dir, bundle=settings.data_bundle)
         worker = Worker(
             store,
             settings,

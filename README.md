@@ -58,7 +58,8 @@ First-time setup:
    ```
 
    This can take tens of minutes and uses `config/sp500-sources.toml` (set `BAZAAR_SOURCES_CONFIG`
-   to change it). `data-init` then imports demo-bundle-v2, the runner's default bundle: bars, its
+   to change it). `data-init` then imports `$BAZAAR_DATA_BUNDLE` (`demo-bundle-v2` in
+   `.env.example`; the web app and runner use the same variable, else `demo-bundle-v1`): bars, its
    universe, news and filings under the v2 data versions. Bars and news resume
    cached pages when rerun. EDGAR refetches live metadata: if it reports a frozen snapshot
    conflict during initial setup, choose a new `BAZAAR_SNAPSHOT_VERSION` in `.env` and retry.
