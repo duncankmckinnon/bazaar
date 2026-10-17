@@ -104,6 +104,22 @@ input[type="range"] { display: block; width: 100%; height: 44px; margin: 0; acce
 .actions { display: grid; gap: 10px; }
 .actions a { display: flex; align-items: center; justify-content: center; min-height: 48px; }
 .logfire { display: inline-flex; align-items: center; min-height: 44px; margin-top: 10px; font-weight: 600; }
+
+/* Wide screens: the name and email side by side, then the builder (left) beside the strategy
+   text (right), so the form is about one screen tall. Visual order stays the DOM order, so tab
+   and screen-reader order match what is seen. The status view keeps the narrow column. */
+@media (min-width: 960px) {
+  main { max-width: 64rem; padding: 20px 32px 48px; }
+  .logos { margin: -20px -32px 0; }
+  #status-view, .lede { max-width: 34rem; }
+  #status-view { margin: 0 auto; }
+  .identity, .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
+  .split { align-items: stretch; margin-bottom: 18px; }
+  .split > .builder, .split > .field { margin-bottom: 0; }
+  /* The strategy text fills the column, as tall as the builder beside it. */
+  .split > .field { display: flex; flex-direction: column; }
+  .split > .field textarea { flex: 1 1 auto; min-height: 12rem; resize: none; }
+}
 </style>
 </head>
 <body>
@@ -119,6 +135,7 @@ input[type="range"] { display: block; width: 100%; height: 44px; margin: 0; acce
     <form id="submit-form" method="post" novalidate>
       <p id="form-error" class="form-error" role="alert" hidden></p>
 
+      <div class="identity">
       <div class="field">
         <label for="name">Strategy name</label>
         <input id="name" name="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" required placeholder="e.g. tech-momentum" aria-describedby="name-hint name-error">
@@ -133,6 +150,9 @@ input[type="range"] { display: block; width: 100%; height: 44px; margin: 0; acce
         <p id="email-error" class="error" hidden></p>
         <p id="email-purpose" class="hint">We save your email as soon as you leave this field, and use it only to contact winners.</p>
       </div>
+      </div>
+
+      <div class="split">
 
       <div class="card builder" role="group" aria-labelledby="builder-title">
         <div class="row">
@@ -167,9 +187,10 @@ input[type="range"] { display: block; width: 100%; height: 44px; margin: 0; acce
           <button id="use-example" class="link-button" type="button">Use the example</button>
         </div>
         <textarea id="instructions" name="instructions" rows="7" maxlength="4000" required aria-describedby="instructions-hint instructions-error"></textarea>
-        <p id="instructions-hint" class="hint">Written from your choices above. Edit freely; moving a slider rewrites it.</p>
+        <p id="instructions-hint" class="hint">Written from your choices. Edit freely; moving a slider rewrites it.</p>
         <p id="instructions-error" class="error" hidden></p>
         <div class="example-box"><b>Example of a decent strategy:</b> Each morning, buy about $2,000 of the tech stock with the strongest 5-day gain, if it is beating SPY. Sell anything that falls 4% below what you paid. One order a day.</div>
+      </div>
       </div>
 
       <button id="submit" class="primary" type="submit">Insert policy</button>
